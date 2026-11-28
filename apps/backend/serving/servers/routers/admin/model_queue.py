@@ -8,7 +8,7 @@ that queue at a status address, ``MODEL_QUEUE_STATUS_URL``. This view reads it,
 names this gateway's models routed to each served model, and counts the batch
 requests waiting for them.
 
-The status is JSON (``docs/developer/hpc-model-host.md`` describes it): the
+The status is JSON (``docs/developer/add-local-model.md`` describes it): the
 host's ``cluster`` and ``scheduler`` names, ``refreshed_at`` (its last read of
 the scheduler's queue), and ``models``, each with its served name, ``state``
 (``serving``, ``loading``, ``queued`` or ``idle``) and ``jobs``. Times are epoch

@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-10 14:42-0400\n"
+"POT-Creation-Date: 2026-11-28 06:31+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -21,238 +21,347 @@ msgstr ""
 "Generated-By: Babel 2.18.0\n"
 
 #: ../developer/translations.md:1
-msgid "Translating the Docs"
-msgstr "翻译文档"
+msgid "Translating the Docs and the Console"
+msgstr "翻译文档与控制台"
 
 #: ../developer/translations.md:3
 msgid ""
-"This page is for translators, and for anyone whose English edit changes a"
-" paragraph that has a translation."
-msgstr "本页面向译者，以及所有在改英文时动到了已有译文段落的人。"
-
-#: ../developer/translations.md:6
-msgid ""
-"The pages are written in English and translated with Sphinx's gettext "
-"workflow, so a translation is attached to *each paragraph of source text*"
-" rather than to a whole file. That is what makes a partial translation "
-"safe: any string without one falls back to English, and the site still "
-"builds complete."
+"This page is for translators, and for anyone whose English edit changes "
+"translated text. The docs and the console are translated separately: the "
+"docs through Sphinx's gettext catalogs, the console through a JSON "
+"catalog. Both show English for anything untranslated, and both follow the"
+" [terminology tables](#chinese-terminology) at the end."
 msgstr ""
-"这些页面用英文写成，通过 Sphinx 的 gettext "
-"流程翻译，所以译文是挂在*源文本的每个段落*上，而不是整个文件上。正因为如此，只翻译一部分也是安全的：没有译文的字符串会回退到英文，站点照样能完整构建。"
+"本页面向译者，以及所有在改英文时动到了已有译文的人。文档和控制台分开翻译：文档使用 Sphinx 的 gettext 目录，控制台使用一个 "
+"JSON 目录。两者对未翻译的内容都显示英文，并且都遵循文末的[术语表](#chinese-terminology)。"
 
-#: ../developer/translations.md:19
+#: ../developer/translations.md:9
+msgid "Translating the docs"
+msgstr "翻译文档"
+
+#: ../developer/translations.md:11
+msgid ""
+"Each translation is attached to one paragraph of English source, not to a"
+" whole file, so a partly translated page still builds complete."
+msgstr "每条译文挂在一个英文段落上，而不是整个文件上，因此只翻译了一部分的页面也能完整构建。"
+
+#: ../developer/translations.md:21
 msgid "A catalog entry pairs the English source with its translation:"
 msgstr "消息目录（catalog）里的每条记录，都由英文原文和对应的译文组成："
 
-#: ../developer/translations.md:27
+#: ../developer/translations.md:29
 msgid ""
-"Because the English text *is* the lookup key, editing a paragraph "
-"invalidates its translation automatically: the next `make docs-translate`"
-" marks that entry `#, fuzzy`, the build stops using it, and the page "
-"falls back to English rather than serving a translation that no longer "
-"matches what the code does. A translator only has to revisit the entries "
-"that are marked. **This is the reason to use catalogs instead of parallel"
-" `.zh.md` files**, which drift silently and give a reader no signal that "
-"what they are reading is out of date."
+"The English text is the lookup key. After you edit a paragraph, the next "
+"`make docs-translate` marks its entry `#, fuzzy`, the build stops using "
+"it, and the page shows the English until someone updates the translation."
+" Translators only revisit marked entries. Use catalogs, not parallel "
+"`.zh.md` files: those drift with no sign that they are out of date."
 msgstr ""
-"由于英文文本*就是*查找键，编辑一个段落会自动让它的译文失效：下一次 `make docs-translate` 会把那条记录标成 `#, "
-"fuzzy`，构建就不再使用它，页面回退到英文，而不是继续提供一份已经和代码对不上的译文。译者只需要回头处理被标记的那些条目。**这正是用消息目录、而不另外维护一份"
-" `.zh.md` 文件的原因**：平行文件会悄悄和原文脱节，读者完全看不出自己读的内容已经过时。"
+"英文原文就是查找键。你修改一个段落后，下一次 `make docs-translate` 会把对应条目标记为 `#, "
+"fuzzy`，构建不再使用它，页面会显示英文，直到有人更新译文。译者只需回头处理被标记的条目。请使用翻译目录，不要使用并行的 `.zh.md` "
+"文件：那样的文件会悄悄过时，读者也看不出来。"
 
 #: ../developer/translations.md:35
-msgid "Commit the `.po` files. `docs/gettext/` is generated and ignored."
-msgstr "`.po` 文件要提交进仓库；`docs/gettext/` 是生成的，已被 git 忽略。"
-
-#: ../developer/translations.md:37
 msgid ""
-"Translating a page does not require translating all of it, and there is "
-"no obligation to keep a language complete — an untranslated paragraph is "
-"a fallback, not a bug."
-msgstr "翻译一个页面不必全部翻完，也没有义务让某种语言一直保持完整——没翻译的段落只是回退到英文，不算 bug。"
+"Commit the `.po` files; `docs/gettext/` is generated and ignored. You do "
+"not have to translate a whole page or keep a language complete."
+msgstr "提交 `.po` 文件；`docs/gettext/` 是生成的，已被忽略。你不必翻译整页，也不必让某种语言保持完整。"
 
-#: ../developer/translations.md:41
-msgid "Translating into Chinese, Japanese or Korean"
-msgstr "翻译成中日韩语言时"
+#: ../developer/translations.md:38
+msgid "Traps in Chinese, Japanese and Korean"
+msgstr "中文、日文和韩文中的陷阱"
 
-#: ../developer/translations.md:43
+#: ../developer/translations.md:40
+msgid "Each of these leaves the build green and the page wrong."
+msgstr "下面每一个陷阱都会让构建保持通过，而页面却是错的。"
+
+#: ../developer/translations.md:42
 msgid ""
-"Four traps, all of them silent — the build stays green and the page is "
-"wrong."
-msgstr "四个坑，全都是静默的——构建照样全绿，页面却是错的。"
-
-#: ../developer/translations.md:45
-msgid ""
-"**A heading that starts with a number is discarded.** Sphinx re-parses a "
-"translated title, and MyST reads `1. ` as an enumerated-list marker "
-"rather than text. The structure no longer matches the source, the "
-"translation is dropped, the English heading is emitted, and nothing warns"
-" — not even under `-W`. Escape the period:"
+"**A heading that starts with a number is dropped.** MyST re-parses a "
+"translated title and reads `1. ` as a list marker. The structure no "
+"longer matches the source, so Sphinx emits the English heading, with no "
+"warning even under `-W`. Escape the period:"
 msgstr ""
-"**以数字开头的标题会被丢弃**。Sphinx 会重新解析翻译后的标题，而 MyST 把 `1. ` "
-"读成有序列表标记而不是文本。结构与原文对不上，翻译被丢弃，输出的是英文标题，而且没有任何警告——`-W` 下也没有。把那个点转义掉："
+"**以数字开头的标题会被丢弃。** MyST 会重新解析翻译后的标题，并把 `1. ` 读成列表标记。结构与原文不再一致，于是 Sphinx "
+"输出英文标题，即使在 `-W` 下也没有任何警告。请转义句点："
 
-#: ../developer/translations.md:55
+#: ../developer/translations.md:51
 msgid ""
 "**In `index.rst`, inline markup that touches a CJK character does not "
-"parse.** reStructuredText requires whitespace or specific punctuation "
-"before an opening `*`, and a Chinese character is neither, so `请求的*模型 "
-"id*` renders literal asterisks. Separate them with an escaped space — "
-"written `\\\\ ` in the catalog, which is a backslash-space in the string:"
+"parse.** reStructuredText needs whitespace or certain punctuation before "
+"an opening `*`, so `请求的*模型 id*` renders literal asterisks. Separate them "
+"with an escaped space, written `\\\\ ` in the catalog:"
 msgstr ""
-"**在 `index.rst` 里，紧贴 CJK 字符的行内标记不会被解析**。reStructuredText 要求开头的 `*` "
-"前面是空白或特定标点，而汉字两者都不是，于是 `请求的*模型 id*` 会把星号原样显示出来。用一个转义空格把它们隔开——在消息目录里写作 "
-"`\\\\ `，也就是字符串里的反斜杠加空格："
+"**在 `index.rst` 中，紧挨 CJK 字符的行内标记无法解析。** reStructuredText 要求开头的 `*` "
+"前面是空白或特定的标点，所以 `请求的*模型 id*` 会显示出字面的星号。请用转义空格把它们隔开，在目录中写作 `\\\\ `："
 
-#: ../developer/translations.md:65
+#: ../developer/translations.md:60
 msgid ""
-"This applies to `index.rst` only. Markdown pages need no escaping: "
-"CommonMark treats a CJK character as neither whitespace nor punctuation, "
-"so `**模型 id**` between Chinese characters is a valid emphasis run."
+"Markdown pages need no such escaping: CommonMark treats a CJK character "
+"as neither whitespace nor punctuation, so `**模型 id**` between Chinese "
+"characters works."
 msgstr ""
-"这条只适用于 `index.rst`。Markdown 页面不需要转义：CommonMark 认为 CJK "
-"字符既不是空白也不是标点，所以夹在汉字之间的 `**模型 id**` 是合法的强调。"
+"Markdown 页面不需要这种转义：CommonMark 把 CJK 字符既不当作空白也不当作标点，因此夹在中文字符之间的 `**模型 "
+"id**` 可以正常工作。"
 
-#: ../developer/translations.md:69
+#: ../developer/translations.md:64
 msgid ""
-"**One Markdown case does break, though**: a closing `**` preceded by a "
-"CJK full stop and followed by a CJK character is not right-flanking, so "
-"`**术语。**后文` leaves literal asterisks. Put the period outside the bold — "
-"`**术语**。后文` — which is better typography anyway, since bolding "
-"punctuation is wrong."
+"**In Markdown, a closing `**` after a CJK full stop breaks** when a CJK "
+"character follows it, so `**术语。**后文` leaves literal asterisks. Put the "
+"full stop outside the bold: `**术语**。后文`."
 msgstr ""
-"**不过 Markdown 有一种情况确实会出问题**：结尾的 `**` 如果前面是中文句号、后面紧跟汉字，就不满足 right-flanking"
-" 条件，于是 `**术语。**后文` 会原样留下星号。把句号移到加粗外面，写成 "
-"`**术语**。后文`；这样的排版本来也更好，给标点加粗本身就不对。"
+"**在 Markdown 中，CJK 句号后面的结束 `**` 会失效**，前提是它后面紧跟 CJK 字符，因此 `**术语。**后文` "
+"会留下字面的星号。请把句号放到加粗之外：`**术语**。后文`。"
+
+#: ../developer/translations.md:68
+msgid ""
+"**A stale `.mo` hides your edits.** Sphinx does not recompile a `.mo` "
+"that is newer than its `.po`. Before any verification build, run:"
+msgstr "**过期的 `.mo` 会掩盖你的修改。** 如果 `.mo` 比对应的 `.po` 新，Sphinx 不会重新编译它。在做任何验证构建之前，运行："
 
 #: ../developer/translations.md:75
 msgid ""
-"**A stale `.mo` masks your edits.** Sphinx skips recompilation when the "
-"`.mo` is newer than its `.po`, so you can verify a build that never read "
-"your changes. Before any verification build:"
+"A fifth problem fails loudly: `make docs-translate` can add `python-"
+"format` to an entry marked `no-python-format`, because a string such as "
+"`≥ 5%` looks like a format string, and `msgfmt -c` then rejects the pair."
+" Delete the added `python-format`."
 msgstr ""
-"**过期的 `.mo` 会掩盖你的改动**。当 `.mo` 比它的 `.po` 新时，Sphinx "
-"会跳过重新编译，于是你验证的那次构建根本没读到你的修改。每次验证构建之前先执行："
+"第五个问题会明确报错：`make docs-translate` 可能给标记为 `no-python-format` 的条目加上 `python-"
+"format`，因为像 `≥ 5%` 这样的字符串看起来像格式字符串，随后 `msgfmt -c` 会拒绝这对矛盾的标记。删掉新加的 "
+"`python-format` 即可。"
 
-#: ../developer/translations.md:83
+#: ../developer/translations.md:80
+msgid "Checking the docs"
+msgstr "检查文档"
+
+#: ../developer/translations.md:86
 msgid ""
-"The check that catches all four at once is a structural diff against the "
-"English build: for each page, compare the counts of `<code>`, `<strong>`,"
-" `<em>` and `<a>`, and the multiset of inline-code literals and link "
-"targets. A dropped marker or a translated link target shows up there and "
-"in no other check."
+"The Docs Build CI job runs the same command. It builds every language "
+"with warnings as errors, extracts fresh catalog templates, checks local "
+"links, and runs `ops/ci/check_docs_translations.py`. That last step is "
+"needed because Sphinx falls back to English for any string it cannot "
+"translate, so a page that has quietly reverted still builds clean. It "
+"fails on:"
 msgstr ""
-"能一次把这四个坑都查出来的办法，是和英文构建结果做结构对比：逐页比较 `<code>`、`<strong>`、`<em>`、`<a>` "
-"的数量，以及行内代码字面量和链接目标的多重集。丢了一个标记，或者连链接目标也翻译了，只有这项检查能发现。"
+"Docs Build CI 任务运行的是同一条命令。它以警告即错误的方式构建所有语言，提取新的目录模板，检查本地链接，然后运行 "
+"`ops/ci/check_docs_translations.py`。需要最后这一步，是因为 Sphinx "
+"对任何无法翻译的字符串都会退回英文原文，所以悄悄退回英文的页面照样能干净地构建。它在以下情况失败："
 
-#: ../developer/translations.md:88
-msgid ""
-"One more, which at least fails loudly: `make docs-translate` can append "
-"`python-format` to an entry you had annotated `no-python-format` — a "
-"source string containing something like `≥ 5%` looks like a format string"
-" to gettext — and `msgfmt -c` then rejects the contradictory pair. Delete"
-" the added `python-format` and keep `no-python-format`."
-msgstr ""
-"还有一个，好在它至少会明着报错：`make docs-translate` 可能会在你已标注 `no-python-format` "
-"的条目上再追加一个 `python-format`——源串里出现类似 `≥ 5%` 的写法，在 gettext 看来就像格式串——随后 "
-"`msgfmt -c` 会拒绝这对互相矛盾的标记。把新加的 `python-format` 删掉，保留 `no-python-format` "
-"即可。"
+#: ../developer/translations.md:92
+msgid "**fuzzy** entries, which Sphinx does not apply;"
+msgstr "**fuzzy** 条目，Sphinx 不会应用它们；"
 
-#: ../developer/translations.md:94
-msgid "How a translation reaches the published site"
-msgstr "译文如何发布到站点上"
-
-#: ../developer/translations.md:96
-msgid ""
-"`make docs` builds every published language from one `sphinx-build`. The "
-"first language named in `DOCS_LANGUAGES` (declared in `conf.py`, "
-"defaulting to `en:English,zh_CN:简体中文`) is the root language and lands at "
-"the top of the output tree; each other language is written to "
-"`docs/build/html/<code>/` by a `build-finished` hook in `conf.py`."
-msgstr ""
-"`make docs` 用一次 `sphinx-build` 构建出所有已发布的语言。`DOCS_LANGUAGES`（在 `conf.py` "
-"里声明，默认是 `en:English,zh_CN:简体中文`）里排第一的语言是根语言，落在输出目录的顶层；其余每种语言由 `conf.py` "
-"里一个 `build-finished` 钩子写进 `docs/build/html/<code>/`。"
-
-#: ../developer/translations.md:102
-msgid ""
-"One invocation rather than one per language, because the published site "
-"is built by a command that lives in the hosting project's settings, not "
-"in this repository — there is no env var to set at publish time, so the "
-"language list has to travel in `conf.py`. Keeping the root language at "
-"the tree root is what preserves every URL the English-only site had: "
-"`/routing.html` stays `/routing.html`, and the translation is at "
-"`/zh_CN/routing.html`."
-msgstr ""
-"之所以只调用一次、而不是每种语言各调用一次，是因为已发布站点的构建命令在托管方的设置里，不在本仓库中——发布时没有环境变量可设，所以语言列表只能写在"
-" `conf.py` 里随代码走。把根语言放在输出目录顶层，是为了保住纯英文站原有的每一个 URL：`/routing.html` 还是 "
-"`/routing.html`，译文在 `/zh_CN/routing.html`。"
-
-#: ../developer/translations.md:109
-msgid ""
-"The sidebar switcher links to the same page in each other language and "
-"renders nothing when fewer than two languages are declared, so a single-"
-"language site never shows a dead control. `DOCS_LANGUAGES=\"en:English\"`"
-" builds English alone when a translation is not what you are working on."
-msgstr ""
-"侧边栏的切换器指向其他每种语言的同一页；声明的语言少于两种时它什么都不渲染，所以单语言站点不会出现一个点了没用的控件。只想构建英文时用 "
-"`DOCS_LANGUAGES=\"en:English\"`。"
-
-#: ../developer/translations.md:114
-msgid "The check that catches a reverted translation"
-msgstr "检查译文是否悄悄退回了英文"
-
-#: ../developer/translations.md:120
-msgid ""
-"`make docs` plus `ops/ci/check_docs_translations.py`, and the same thing "
-"the Docs Build CI job runs. It exists because none of the failures above "
-"are visible to `-W`: Sphinx falls back to the English source for any "
-"string it cannot translate, so a page that has quietly reverted still "
-"builds clean. Five checks —"
-msgstr ""
-"它就是 `make docs` 加上 `ops/ci/check_docs_translations.py`，和 Docs Build 这个 CI"
-" job 跑的内容一样。之所以需要它，是因为上面这些问题 `-W` 一个都发现不了：Sphinx "
-"遇到翻不了的字符串就回退到英文原文，所以一个已经悄悄退回英文的页面照样能干净地构建通过。它包含五项检查——"
-
-#: ../developer/translations.md:126
-msgid "**fuzzy** entries, which Sphinx refuses to apply;"
-msgstr "**fuzzy** 条目，Sphinx 拒绝使用它们；"
-
-#: ../developer/translations.md:127
+#: ../developer/translations.md:93
 msgid "**missing catalogs**, for a page added without `make docs-translate`;"
 msgstr "**缺少消息目录**，即新加了页面却没跑 `make docs-translate`；"
 
-#: ../developer/translations.md:128
+#: ../developer/translations.md:94
 msgid ""
-"**stale catalogs** — an English edit whose `msgid` no longer matches any "
-"entry, which is the commonest case and carries no `fuzzy` marker at all "
-"because nothing re-merged;"
+"**stale catalogs**: an English edit whose `msgid` no longer matches any "
+"entry. This is the commonest case, and it has no `fuzzy` marker;"
+msgstr "**过期的目录**：英文修改后，其 `msgid` 不再匹配任何条目。这是最常见的情况，而且没有 `fuzzy` 标记；"
+
+#: ../developer/translations.md:96
+msgid ""
+"**block starts**: a translation that begins with `1. `, `- `, `# ` or `> "
+"`, which re-parses as a list or a heading and is dropped;"
+msgstr "**块级开头**：以 `1. `、`- `、`# ` 或 `> ` 开头的译文，会被重新解析成列表或标题而被丢弃；"
+
+#: ../developer/translations.md:98
+msgid ""
+"**structural divergence**: different counts of `<code>`, `<strong>`, "
+"`<em>` and `<a>`, or different inline-code literals and link targets, "
+"between a translated page and the English one. This catches the markup "
+"traps above."
 msgstr ""
-"**过期的消息目录**——英文改过了，新的 `msgid` 在消息目录里找不到对应的条目。这是最常见的情况，而且根本不会带 `fuzzy` "
-"标记，因为压根没有重新合并过；"
+"**结构不一致**：翻译页面与英文页面之间 `<code>`、`<strong>`、`<em>` 和 `<a>` "
+"的数量不同，或行内代码和链接目标不同。这能发现上面那些标记陷阱。"
 
-#: ../developer/translations.md:131
-msgid ""
-"**block starts** — a translation that begins with `1. `, `- `, `# ` or `>"
-" `, which re-parses as a list or heading and is dropped;"
-msgstr "**以块标记开头**——译文以 `1. `、`- `、`# ` 或 `> ` 开头，会被重新解析成列表或标题，然后被丢弃；"
+#: ../developer/translations.md:102
+msgid "How the languages are published"
+msgstr "各语言如何发布"
 
-#: ../developer/translations.md:133
+#: ../developer/translations.md:104
 msgid ""
-"**structural divergence** between the built pages, which is what catches "
-"the CJK-adjacent markup traps above."
-msgstr "构建产物之间的**结构差异**，它抓的正是上面那些紧挨 CJK 的标记陷阱。"
+"`make docs` builds every language in one `sphinx-build` run. "
+"`DOCS_LANGUAGES` in `conf.py` lists them (default "
+"`en:English,zh_CN:简体中文`). The first is the root language, at the top of "
+"the output tree, so `/routing.html` keeps its URL and the translation is "
+"at `/zh_CN/routing.html`. A `build-finished` hook writes each other "
+"language to `docs/build/html/<code>/`. The list lives in `conf.py` "
+"because the published site is built by a command in the hosting project's"
+" settings, where no environment variable can be set."
+msgstr ""
+"`make docs` 在一次 `sphinx-build` 中构建所有语言。`conf.py` 中的 `DOCS_LANGUAGES` "
+"列出这些语言（默认 `en:English,zh_CN:简体中文`）。第一种是根语言，位于输出目录的顶层，因此 `/routing.html` 的"
+" URL 保持不变，译文在 `/zh_CN/routing.html`。一个 `build-finished` 钩子把其他每种语言写到 "
+"`docs/build/html/<code>/`。语言列表放在 `conf.py` "
+"中，是因为发布站点由托管项目设置中的一条命令构建，那里无法设置环境变量。"
+
+#: ../developer/translations.md:112
+msgid ""
+"The sidebar switcher links to the same page in the other languages and is"
+" hidden when only one language is declared. "
+"`DOCS_LANGUAGES=\"en:English\"` builds English alone."
+msgstr "侧边栏的语言切换器链接到其他语言的同一页面，只声明了一种语言时会隐藏。`DOCS_LANGUAGES=\"en:English\"` 只构建英文。"
+
+#: ../developer/translations.md:116
+msgid "Translating the console"
+msgstr "翻译控制台"
+
+#: ../developer/translations.md:118
+msgid ""
+"The console can be read in English or Chinese. A signed-in reader chooses"
+" **Language** from the account menu or under **Account Settings**; the "
+"choice is kept in the browser and in the account, so it follows them to "
+"other browsers. A signed-out reader sees the language last chosen in that"
+" browser, or the one the browser asks for. The **Appearance** setting "
+"(**Light**, **Dark** or **System**) is saved per browser only."
+msgstr ""
+"控制台可以用英文或中文阅读。登录的读者在账户菜单或 **账户设置** 中选择 "
+"**语言**；这个选择保存在浏览器和账号中，因此会跟随他们到其他浏览器。未登录的读者看到的是该浏览器中最近一次选择的语言，或者浏览器请求的语言。**外观**"
+" 设置（**浅色**、**深色** 或 **跟随系统**）只按浏览器保存。"
+
+#: ../developer/translations.md:125
+msgid "Writing a console string"
+msgstr "编写控制台文案"
+
+#: ../developer/translations.md:127
+msgid "Every string a reader sees goes through `t(slot, English)`:"
+msgstr "读者看到的每一条文案都经过 `t(slot, English)`："
+
+#: ../developer/translations.md:134
+msgid ""
+"The English at the call site is the source text. Edit it there; there is "
+"no English catalog."
+msgstr "调用处的英文就是源文本。直接在那里修改；没有英文目录。"
 
 #: ../developer/translations.md:136
+msgid ""
+"Name the slot `<area>.<page or component>.<meaning>`, like "
+"`auth.login.title` and `chrome.header.dashboard`."
+msgstr ""
+"slot 命名为 `<area>.<page or component>.<meaning>`，例如 `auth.login.title` 和 "
+"`chrome.header.dashboard`。"
+
+#: ../developer/translations.md:138
+#, python-brace-format
+msgid ""
+"Translate whole sentences, and insert values with `fill()` from "
+"`@/lib/utils/interpolate`, so another language can reorder them: "
+"`fill(t('chrome.account_menu.switched', 'Switched to {name}'), { name "
+"})`."
+msgstr ""
+"翻译完整的句子，并用 `@/lib/utils/interpolate` 中的 `fill()` "
+"插入变量，这样其他语言可以调整顺序：`fill(t('chrome.account_menu.switched', 'Switched to "
+"{name}'), { name })`。"
+
+#: ../developer/translations.md:141
+msgid ""
+"In a server component, get the same function, in the request's language, "
+"from `await requestTranslator()` (`@/lib/i18n/request.server`)."
+msgstr ""
+"在服务端组件中，用 `await "
+"requestTranslator()`（`@/lib/i18n/request.server`）获得同样的函数，语言与请求一致。"
+
+#: ../developer/translations.md:143
+msgid ""
+"Format dates and numbers with `useFormatter()` "
+"(`@/lib/i18n/useFormatter`), not `toLocaleString()`. Amounts stay in US "
+"dollars."
+msgstr ""
+"日期和数字用 `useFormatter()`（`@/lib/i18n/useFormatter`）格式化，而不是 "
+"`toLocaleString()`。金额一律以美元显示。"
+
+#: ../developer/translations.md:145
+msgid ""
+"Both arguments must be literals (or a `cond ? 'a' : 'b'` of literals), so"
+" the catalog check can read them."
+msgstr "两个参数都必须是字面量（或由字面量组成的 `cond ? 'a' : 'b'`），字典检查才能读出它们。"
+
+#: ../developer/translations.md:148
+msgid "The catalog"
+msgstr "字典"
+
+#: ../developer/translations.md:150
+msgid ""
+"`apps/frontend/src/lib/i18n/messages/zh-CN.json` maps each slot to the "
+"English it translates and the translation:"
+msgstr "`apps/frontend/src/lib/i18n/messages/zh-CN.json` 把每个 slot 映射到它所翻译的英文以及译文："
+
+#: ../developer/translations.md:157
+msgid ""
+"An entry is used only while its `source` matches the English the call "
+"site passes, so a changed sentence shows the new English until it is "
+"translated again. A slot that passes different English in different "
+"places holds a list of entries, one per string. Only the active "
+"language's catalog is sent to the browser."
+msgstr ""
+"只有当条目的 `source` 与调用处传入的英文一致时，才会使用该条目，因此修改过的句子会显示新的英文，直到重新翻译。同一个 slot "
+"在不同位置传入不同英文时，它包含一个条目列表，每个字符串一条。只有当前语言的目录会发送到浏览器。"
+
+#: ../developer/translations.md:170
+#, python-brace-format
+msgid ""
+"Missing and stale entries fall back to English. The test suite "
+"(`src/lib/i18n/catalog.test.ts`) fails on a malformed entry, on a "
+"translation whose `{placeholders}` differ from its source, and on stale "
+"or orphaned entries in a shipped catalog, so re-translate or prune in the"
+" same change that edits the English."
+msgstr ""
+"缺失和过期的条目会退回英文。测试套件（`src/lib/i18n/catalog.test.ts`）在以下情况失败：条目格式错误、译文的 "
+"`{placeholders}` 与源文本不同，以及已发布目录中存在过期或孤立的条目。因此请在修改英文的同一个改动中重新翻译或清理。"
+
+#: ../developer/translations.md:176
+msgid ""
+"The Terms of Service and the research-consent statements at sign-up are "
+"translated in full and shown in Chinese alone. Because they are binding, "
+"an edit to their English must come with its translation in the same "
+"change."
+msgstr "服务条款和注册时的研究同意声明全文翻译，并且只显示中文。由于它们具有约束力，修改其英文时必须在同一个改动中附上译文。"
+
+#: ../developer/translations.md:180
+msgid "What stays in English"
+msgstr "保留英文的内容"
+
+#: ../developer/translations.md:182
+msgid ""
+"Pages only the people running the deployment see: administration "
+"(`/dashboard/admin`), first-run setup (`/setup`), and the API Playground,"
+" which only internal accounts can open. The admin layout provides an "
+"English `LocaleProvider` with no catalog and marks its container "
+"`lang=\"en\"`, and admin dates use the `en-US` locale."
+msgstr ""
+"只有运营部署的人才会看到的页面：管理后台（`/dashboard/admin`）、首次运行设置（`/setup`），以及只有内部账号能打开的 "
+"API Playground。管理后台的布局提供一个不带目录的英文 `LocaleProvider`，并把容器标记为 "
+"`lang=\"en\"`；管理后台的日期使用 `en-US` 区域设置。"
+
+#: ../developer/translations.md:187
+msgid ""
+"The last-resort error screens (`global-error` and the boundary around the"
+" whole application), which render outside the language provider."
+msgstr "最后兜底的错误页（`global-error` 以及包住整个应用的错误边界），它们渲染在语言 provider 之外。"
+
+#: ../developer/translations.md:189
+msgid ""
+"Error messages from the gateway, model names, and Markdown written by "
+"administrators (broadcasts, site updates)."
+msgstr "网关返回的错误信息、模型名称，以及管理员撰写的 Markdown 内容（广播、站点更新）。"
+
+#: ../developer/translations.md:192
 msgid "Chinese terminology"
 msgstr "中文术语"
 
-#: ../developer/translations.md:138
+#: ../developer/translations.md:194
 msgid ""
-"Use the same Chinese for an English term on every page, and define a new "
+"Use the same Chinese for an English term everywhere, and define a new "
 "term in the [Glossary](glossary.md) first. Terms that stay in English are"
 " written in English in the Chinese text too."
-msgstr "同一个英文术语，在每个页面上都用同一个中文译法；新术语要先在[术语表](glossary.md)里定义。保留英文的术语，在中文正文里也照写英文。"
+msgstr "同一个英文术语在所有地方使用同一个中文译法；新术语请先在[术语表](glossary.md)中定义。保留英文的术语，在中文文本中也写作英文。"
+
+#: ../developer/translations.md:198
+msgid "In the docs:"
+msgstr "文档中："
 
 #: ../developer/translations.md
 msgid "English"
@@ -264,136 +373,193 @@ msgstr "中文"
 
 #: ../developer/translations.md
 msgid "model id"
-msgstr ""
+msgstr "model id"
 
 #: ../developer/translations.md
 msgid "模型 id"
-msgstr ""
+msgstr "模型 id"
 
 #: ../developer/translations.md
 msgid "alias"
-msgstr ""
+msgstr "alias"
 
 #: ../developer/translations.md
 msgid "别名"
-msgstr ""
+msgstr "别名"
 
 #: ../developer/translations.md
 msgid "model registry"
-msgstr ""
+msgstr "model registry"
 
 #: ../developer/translations.md
 msgid "模型注册表"
-msgstr ""
+msgstr "模型注册表"
 
 #: ../developer/translations.md
 msgid "route"
-msgstr ""
+msgstr "route"
 
 #: ../developer/translations.md
 msgid "路由"
-msgstr ""
+msgstr "路由"
 
 #: ../developer/translations.md
 msgid "endpoint"
-msgstr ""
+msgstr "endpoint"
 
 #: ../developer/translations.md
 msgid "端点"
-msgstr ""
+msgstr "端点"
 
 #: ../developer/translations.md
 msgid "upstream"
-msgstr ""
+msgstr "upstream"
 
 #: ../developer/translations.md
 msgid "上游"
-msgstr ""
+msgstr "上游"
 
 #: ../developer/translations.md
 msgid "weight"
-msgstr ""
+msgstr "weight"
 
 #: ../developer/translations.md
 msgid "权重"
-msgstr ""
+msgstr "权重"
 
 #: ../developer/translations.md
 msgid "fallback"
-msgstr ""
+msgstr "fallback"
 
 #: ../developer/translations.md
 msgid "回退"
-msgstr ""
+msgstr "回退"
 
 #: ../developer/translations.md
 msgid "circuit breaker"
-msgstr ""
+msgstr "circuit breaker"
 
 #: ../developer/translations.md
 msgid "熔断器"
-msgstr ""
+msgstr "熔断器"
 
 #: ../developer/translations.md
 msgid "distribution"
-msgstr ""
+msgstr "distribution"
 
 #: ../developer/translations.md
 msgid "发行版"
-msgstr ""
+msgstr "发行版"
 
 #: ../developer/translations.md
 msgid "dry run"
-msgstr ""
+msgstr "dry run"
 
 #: ../developer/translations.md
 msgid "试运行"
-msgstr ""
+msgstr "试运行"
 
 #: ../developer/translations.md
 msgid "console"
-msgstr ""
+msgstr "console"
 
 #: ../developer/translations.md
 msgid "控制台"
-msgstr ""
+msgstr "控制台"
 
 #: ../developer/translations.md
 msgid "operational store"
-msgstr ""
+msgstr "operational store"
 
 #: ../developer/translations.md
 msgid "运行数据存储"
-msgstr ""
+msgstr "运行数据存储"
 
 #: ../developer/translations.md
 msgid "setting"
-msgstr ""
+msgstr "setting"
 
 #: ../developer/translations.md
 msgid "设置项"
-msgstr ""
+msgstr "设置项"
 
 #: ../developer/translations.md
 msgid "first-run setup"
-msgstr ""
+msgstr "first-run setup"
 
 #: ../developer/translations.md
 msgid "首次运行设置"
-msgstr ""
+msgstr "首次运行设置"
 
 #: ../developer/translations.md
 msgid "setup code"
-msgstr ""
+msgstr "setup code"
 
 #: ../developer/translations.md
 msgid "设置码"
-msgstr ""
+msgstr "设置码"
 
 #: ../developer/translations.md
 msgid "provider, kind, adapter, router, overlay, manifest"
-msgstr ""
+msgstr "provider, kind, adapter, router, overlay, manifest"
 
 #: ../developer/translations.md
 msgid "provider、kind、adapter、router、overlay、manifest"
-msgstr ""
+msgstr "provider、kind、adapter、router、overlay、manifest"
+
+#: ../developer/translations.md:220
+msgid "In the console:"
+msgstr "控制台中："
+
+#: ../developer/translations.md
+msgid "Dashboard (the console)"
+msgstr "Dashboard（控制台）"
+
+#: ../developer/translations.md
+msgid "Log in / Sign up"
+msgstr "Log in / Sign up"
+
+#: ../developer/translations.md
+msgid "登录 / 注册"
+msgstr "登录 / 注册"
+
+#: ../developer/translations.md
+msgid "Usage"
+msgstr "Usage"
+
+#: ../developer/translations.md
+msgid "用量"
+msgstr "用量"
+
+#: ../developer/translations.md
+msgid "Quota"
+msgstr "Quota"
+
+#: ../developer/translations.md
+msgid "额度"
+msgstr "额度"
+
+#: ../developer/translations.md
+msgid "Docs Assistant"
+msgstr "Docs Assistant"
+
+#: ../developer/translations.md
+msgid "文档助手"
+msgstr "文档助手"
+
+#: ../developer/translations.md
+msgid "Status (page)"
+msgstr "Status（页面）"
+
+#: ../developer/translations.md
+msgid "服务状态"
+msgstr "服务状态"
+
+#: ../developer/translations.md
+msgid "API key, token, model id, endpoint, Playground"
+msgstr "API key、token、model id、endpoint、Playground"
+
+#: ../developer/translations.md
+msgid "unchanged"
+msgstr "保持英文"
+

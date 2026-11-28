@@ -1,8 +1,7 @@
 # Contributing
 
 HybridInference is MIT-licensed (see `LICENSE`) and contributions are welcome.
-This page covers what the repository contains, the checks a change has to pass,
-and how a change gets proposed.
+This page covers the checks a change must pass and how to propose it.
 
 ## Getting set up
 
@@ -15,44 +14,36 @@ git switch -c yourname/tests/routing-config-defaults upstream/dev
 make setup-dev
 ```
 
-Replace `yourname` in the branch name with your GitHub username. To keep your
-main checkout free for other work, create the branch in a separate
-[worktree](https://git-scm.com/docs/git-worktree) instead, for example
-`git worktree add -b <branch> ../hybridinference-<feature> upstream/dev`. If you
-cloned the upstream repository rather than a fork, start from `origin/dev` and
-push to your fork remote.
+Replace `yourname` with your GitHub username. To keep your main checkout free,
+create the branch in a [worktree](https://git-scm.com/docs/git-worktree)
+instead: `git worktree add -b <branch> ../hybridinference-<feature> upstream/dev`.
+If you cloned upstream rather than a fork, start from `origin/dev` and push to
+your fork remote.
 
-`make setup-dev` creates `.venv` on Python 3.12, installs the project editable,
-syncs the `dev` dependency group and installs the pre-commit hooks. Full
-prerequisites and the ways to run the gateway are in
-[Installation](installation.md).
-
-Every `make` target that touches Python runs through `uv run`. Override that if
-your environment needs it:
-
-```bash
-make lint UV_RUN="uv run --active"
-```
+`make setup-dev` creates `.venv` on Python 3.12, installs the project editable
+with the `dev` dependency group, and installs the pre-commit hooks;
+[Installation](installation.md) has the full prerequisites. Every `make` target
+that runs Python goes through `uv run`; override it if you need to, for example
+`make lint UV_RUN="uv run --active"`.
 
 ## Your first contribution
 
-Start by running the [Quickstart](router-tutorial.md) in your worktree, or use
-the [source development setup](installation.md#development-checkout-no-docker).
-Seeing the gateway answer one request makes it easier to tell whether a later
-failure comes from your change or from setup. A local example deployment is
-enough; contributing does not require access to a maintainer's server.
+Run the [Quickstart](router-tutorial.md) or the
+[source development setup](installation.md#development-checkout-no-docker)
+first, so you can tell a failure your change causes from a setup problem. A
+local example deployment is enough. Pick a small reproducible bug, an
+uncovered configuration case or a confusing instruction, and search the issues
+and tests first. For a larger feature, open a feature request to agree on the
+behavior before writing it.
 
-Choose a small reproducible bug, an uncovered configuration case, or a confusing
-instruction you can verify yourself. Search the issue tracker and existing
-tests first. For a larger feature, open a feature request to agree on the
-behavior before writing it; the repository provides bug and feature forms.
-
-For a concrete first exercise, cover a routing YAML endpoint that uses an
-environment-variable default. Read `_expand_env_value` and
-`load_routing_config` in `apps/backend/routing/config.py`, then the neighboring
-tests in `tests/unit/routing/test_config.py`. An unset variable should use the
-default URL; a set variable should override it. The test below exercises both
-through the public loader and restores the environment after each case:
+For a first exercise, test a routing-policy endpoint that uses an
+environment-variable default, such as
+`${TEST_ROUTING_ENDPOINT:-https://default.example}`. Read `_expand_env_value`
+and `load_routing_config` in `apps/backend/routing/config.py`, and the tests in
+`tests/unit/routing/test_config.py`. The gateway keeps its routing policy in the
+database as JSON; `load_routing_config` parses the same structure from a file,
+which keeps the test self-contained. An unset variable should give the default
+URL, and a set one should override it:
 
 ```python
 @pytest.mark.parametrize("endpoint", [None, "https://override.example"])
@@ -73,33 +64,27 @@ def test_endpoint_env_default(tmp_path, monkeypatch, endpoint):
     assert config.remote_deployment[0].models == ["example-chat"]
 ```
 
-Add it to that test file only if the case is still uncovered. This is a
-test-only contribution when the loader already behaves correctly. For a bug
-fix, first make your regression test fail on the original code, then change
-the smallest responsible function until it passes.
-
-Run the focused tests while editing:
+Add it only if the case is still uncovered. For a bug fix, make the regression
+test fail on the original code first, then change the smallest responsible
+function until it passes. Run the focused tests while editing:
 
 ```bash
 uv run pytest -q tests/unit/routing/test_config.py
 ```
 
 For a runtime change, repeat the affected request against your local gateway.
-With the [Quickstart](router-tutorial.md)'s example running,
-`make build s=backend DISTRIBUTION=example` rebuilds
-changed backend code; `make smoke DISTRIBUTION=example` checks health, the
-model list and a routed completion. Exercise the changed behavior as well:
-a generic smoke passing does not establish that a particular bug is fixed.
-The [Quickstart](router-tutorial.md) explains the separate full-console check
-when your change involves accounts or the frontend.
+With the Quickstart's example running, `make build s=backend DISTRIBUTION=example`
+rebuilds the backend, and `make smoke DISTRIBUTION=example` checks health, the
+model list and a routed completion. A passing smoke does not show that your bug
+is fixed, so exercise the changed behavior too.
 
-Before opening the PR, run `make format`, `make lint` and `make test`, plus the
-[frontend](#frontend) or [documentation](#documentation) checks when relevant.
-Review `git diff` so the patch contains only your intended files. Push your
-branch to your fork and open a PR targeting upstream `dev`, using a title such
-as `test(routing): cover endpoint environment defaults`. Fill in the existing
-PR template with the behavior covered and the exact checks you ran; include
-the reproduction and before/after result for a bug fix.
+Before opening the pull request, run `make format`, `make lint` and `make test`,
+plus the [frontend](#frontend) or [documentation](#documentation) checks when
+relevant, and review `git diff`. Push to your fork and open a pull request
+against upstream `dev`, with a title such as
+`test(routing): cover endpoint environment defaults`. In the template, list the
+behavior covered and the checks you ran; for a bug fix, add the reproduction
+and the before and after result.
 
 ## Repository layout
 
@@ -113,25 +98,27 @@ apps/
     migrations/   versioned schema migrations (`python -m migrations`)
   frontend/       Next.js web and admin console
 config/
-  examples/       reference model registry and routing config; also the
-                  built-in fallback a checkout with no overlay resolves to
-distributions/    deployment overlays, one directory each: manifest, config,
-                  branding, deploy env files. `example/` is the runnable
-                  example the Quickstart uses
+  examples/       example JSON documents (model catalog, routing policy, site
+                  configuration, branding) to copy or import; never loaded
+                  automatically
+distributions/
+  example/        the runnable example overlay the Quickstart uses; real
+                  deployment overlays live in their own repositories
 deploy/
   docker/         Dockerfiles and docker-compose.yml
+  kubernetes/     example RBAC for discovering a proxy Pod's address
   systemd/        unit files for host-level deployments
+  public-paths.json  the public path table
 docs/
   developer/      this guide (MyST Markdown, built with Sphinx)
   agents/         design specs and plans
-ops/              maintenance and CI helper scripts (admin, ci, db), and the
-                  OpenInfra reporter that GPU hosts run (openinfra)
+ops/              maintenance and CI helper scripts (admin, ci, db, dev), and
+                  the OpenInfra reporter that GPU hosts run (openinfra)
 tests/            see the test tiers below
 ```
 
-The backend packages are `serving` and `routing`, rooted at `apps/backend`.
-`make setup-dev` installs them into `.venv`, so `uv run` or an activated
-`.venv` imports them from any directory; outside that environment, set
+The backend packages, `serving` and `routing`, are rooted at `apps/backend`.
+`make setup-dev` installs them into `.venv`; outside it, set
 `PYTHONPATH=apps/backend`.
 
 ## Quality gates
@@ -144,36 +131,26 @@ The backend packages are `serving` and `routing`, rooted at `apps/backend`.
 | `make check` | `lint` + `test` |
 | `make all` | `format` + `check` |
 
-`make all` does **not** type-check. `mypy` is in the `dev` dependency group and
-you may run it by hand, but `pyproject.toml` has no `[tool.mypy]` section and no
-target invokes it, so nothing enforces it.
+Nothing type-checks the backend: `mypy` is in the `dev` group, but no target
+runs it and `pyproject.toml` has no `[tool.mypy]` section. Tooling enforces
+style: ruff (line length 100, target `py311`, rules `E`, `W`, `F`, `I`, `UP`,
+`B`, `C4`, `SIM`, `TCH` and `RUF`) and pydocstyle (Google convention), which skips `tests`,
+`.venv`, `node_modules`, `apps/frontend`, `ops` and `docs` and so enforces
+docstrings in `apps/backend`.
 
-Style is enforced by tooling, not by review:
-
-- **ruff**, line length 100, target `py311`, with `E`/`W`/`F`/`I`/`UP`/`B`/`C4`/
-  `SIM`/`TCH`/`RUF` enabled (`[tool.ruff]` in `pyproject.toml`).
-- **pydocstyle**, Google convention. It skips `tests`, `.venv`,
-  `node_modules`, `apps/frontend`, `ops` and `docs`, so docstrings are required
-  in `apps/backend` and enforced there.
-
-Pre-commit hooks run on commit and are installed by `make setup-dev`:
-
-```bash
-pre-commit run --all-files     # run them over the whole tree
-```
-
-They cover ruff (pinned to the version CI uses), pydocstyle, `gitleaks` secret
-scanning, the standard whitespace/YAML/JSON/TOML checks, and eslint + prettier
-for `apps/frontend`.
+The pre-commit hooks (`pre-commit run --all-files` runs them on the whole tree)
+cover ruff at the version CI uses, pydocstyle, `gitleaks` secret scanning, the
+standard whitespace, YAML, JSON and TOML checks, and eslint and prettier for
+`apps/frontend`.
 
 Before opening a pull request, run `make format` and make sure `make test`
 passes.
 
 ## Tests
 
-Markers are the contract; directories are a convention. The markers declared in
-`pyproject.toml` are `unit`, `integration`, `slow`, `perf`, `external` and
-`dbtest`, and `--strict-markers` means an undeclared marker is an error.
+A test's marker decides its tier; the directories are a convention. The markers
+declared in `pyproject.toml` are `unit`, `integration`, `external` and
+`dbtest`, and `--strict-markers` makes any other marker an error.
 
 | Tier | Lives in | Marker | In `make test`? |
 |---|---|---|---|
@@ -183,8 +160,8 @@ Markers are the contract; directories are a convention. The markers declared in
 | Needs a live Postgres | mostly `tests/integration/` | `dbtest` | no |
 | Hits live external servers | `tests/external/` | `external` | no |
 
-`testpaths` is `["tests", "distributions"]`, so overlay-owned tests run in the
-default suite alongside `tests/`.
+`testpaths` is `["tests", "distributions"]`, so tests an overlay ships run in
+the default suite too.
 
 ```bash
 make test                              # the default suite
@@ -198,29 +175,12 @@ uv run pytest tests/unit/routing/test_manager.py           # one file
 uv run pytest -m dbtest tests/integration/                 # one tier
 ```
 
-The `dbtest` tier needs a reachable PostgreSQL. Every test finds it through
-`tests/fixtures/postgres.py`, which reads `TEST_DB_HOST`, `TEST_DB_PORT`,
-`TEST_DB_USER`, `TEST_DB_PASSWORD` and `TEST_DB_NAME` (defaulting to
-`localhost:5432`, `postgres`/`postgres` and `hybridinference_test_db`). Starting
-just the database container is enough:
-
-```bash
-docker compose -f deploy/docker/docker-compose.yml --env-file .env up -d postgres
-```
-
-`make test-db` prepares the schema first and sets `TEST_DB_REQUIRED=1`, so a
-database test that cannot connect fails instead of skipping, and `TEST_DB_HOST`
-and `TEST_DB_PORT` must be set explicitly. CI sets the same variable. No setup
-step is needed otherwise: each test process creates and migrates its own
-database on first use. `uv run python -m tests.fixtures.postgres prepare
---workers N` does the same up front, which is faster before a run with `-n N`.
-
-With Docker, `make test-db-local` needs no setup at all. It starts one
-PostgreSQL container for the whole machine (`hybridinference-test-postgres` on
-`127.0.0.1:54329`, data in memory), gives each checkout its own database named
-from its path, prepares it, and runs the tier with one worker per CPU, up to
-eight. The container and the databases are kept between runs, so a re-run only
-re-reads the schema; the whole tier takes about 15 seconds.
+The `dbtest` tier needs PostgreSQL. With Docker, `make test-db-local` needs no
+setup: it starts one container for the whole machine
+(`hybridinference-test-postgres` on `127.0.0.1:54329`, data in memory), gives
+each checkout its own database, prepares it, and runs the tier with one worker
+per CPU, up to eight. The container and databases are kept, so a re-run takes
+about 15 seconds.
 
 ```bash
 make test-db-local                                     # the dbtest tier
@@ -231,10 +191,24 @@ make test-db-local-clean                               # drop removed worktrees'
 make test-db-local-down                                # remove the container: every checkout's databases
 ```
 
-`make test` parallelises with `pytest-xdist` at file granularity. Run serially
-when you are debugging a specific failure, but check a suspected env-leak
-failure under `-n auto` too — cross-file environment leakage only shows up
-under the parallel run.
+Otherwise, every test finds the database through `tests/fixtures/postgres.py`,
+from `TEST_DB_HOST`, `TEST_DB_PORT`, `TEST_DB_USER`, `TEST_DB_PASSWORD` and
+`TEST_DB_NAME` (defaults `localhost:5432`, `postgres`/`postgres`,
+`hybridinference_test_db`). Starting the database container is enough:
+
+```bash
+docker compose -f deploy/docker/docker-compose.yml --env-file .env up -d postgres
+```
+
+Each test process creates and migrates its own database on first use;
+`uv run python -m tests.fixtures.postgres prepare --workers N` does it up front
+before a run with `-n N`. `make test-db` sets `TEST_DB_REQUIRED=1`, as CI does:
+a database test that cannot connect then fails instead of skipping, and
+`TEST_DB_HOST` and `TEST_DB_PORT` must be set.
+
+`make test` runs files in parallel. Run serially to debug one failure, but
+check a suspected environment leak under `-n auto` as well: leaks between files
+show up only in the parallel run.
 
 ### Frontend
 
@@ -250,60 +224,52 @@ make frontend-check         # all three
 make check-all              # backend lint + test, then frontend-check
 ```
 
-CI additionally runs `npm run format:check` (prettier) and
+CI also runs `npm run format:check` (prettier) and
 `npm audit --omit=dev --audit-level=high` in `apps/frontend`.
 
 ## Documentation
 
-These pages are MyST Markdown compiled by Sphinx from `docs/developer/`, with
-`docs/developer/index.rst` as the root toctree. Build them, and run the checks
-CI runs, from the repository root:
+These pages are MyST Markdown built by Sphinx from `docs/developer/`, with
+`docs/developer/index.rst` as the root toctree. Before pushing, run the checks
+CI runs:
 
 ```bash
 make docs-verify
 ```
 
-That builds the English and Chinese sites with warnings treated as errors,
-checks the local links in every Markdown file, and checks that no translated
-paragraph has quietly fallen back to English. A broken cross-reference or a page
-missing from the toctree fails it, so run it before pushing. Sphinx,
-`myst-parser` and `sphinx-rtd-theme` come from the `dev` dependency group, so
-`make setup-dev` is enough to build. `make docs` builds the site alone.
-
-Add a new page to `docs/developer/index.rst` as well as writing it; an orphan
-file is a warning, and warnings are errors in CI.
+It builds the English and Chinese sites with warnings as errors, checks local
+links, and checks that no translation has fallen back to English. `make docs`
+builds the site alone. Add a new page to `docs/developer/index.rst`; an orphan
+page is a warning, and warnings fail the build.
 
 ### Writing a page
 
-These pages ship with the source, and most readers arrive from a search or the
-sidebar with one task in mind. Write for that reader:
+Most readers arrive from a search or the sidebar with one task in mind:
 
 - **Say who the page is for and what they can do after reading it**, in the
   first paragraph.
 - **Lead with the action or the answer.** Put exceptions and edge cases after
-  it, in a note if they run long, and do not open a section with what the
-  software lacks.
+  it, and do not open a section with what the software lacks.
 - **Name a file only when the reader will open or edit it.** Do not cite
   functions or line numbers to prove a statement; tests and review do that.
-- **Describe the software as it is now.** What changed, how it used to work and
-  how you checked belong in the pull request or the release notes.
-- **Leave out the details of any one installation** — its hosts, model ids,
-  accounts and measurements. They belong in that distribution's own
-  documentation.
-- **Use the words in the [Glossary](glossary.md)**, and add a term there before
-  relying on a new one.
+- **Describe the software as it is now.** What changed and how you checked
+  belong in the pull request or the release notes.
+- **Leave out the details of any one installation**: its hosts, model ids,
+  accounts and measurements belong in that distribution's own documentation.
+- **Use the words in the [Glossary](glossary.md)**, and add a new term there
+  first.
 - **Keep a paragraph to one idea.** When it piles up conditions, make it a list
   or a table.
 - **When a setting does not do what its name suggests, say so in one
   sentence**, add it to
   [Settings that currently have no effect](configuration.md#settings-that-currently-have-no-effect),
-  and open an issue, rather than explaining the internals at length.
+  and open an issue.
 
 ### Translations
 
-The site is published in English and Chinese, and an English edit changes the
-paragraph a translation is attached to. Update the Chinese in the same pull
-request; [Translating the Docs](translations.md) explains how.
+The site is published in English and Chinese, and a translation is attached to
+each English paragraph. Update the Chinese in the same pull request;
+[Translating the Docs and the Console](translations.md) explains how.
 
 ## Proposing a change
 
@@ -311,38 +277,37 @@ request; [Translating the Docs](translations.md) explains how.
   requests against `main` and `dev`.
 - **Name branches `<user>/<scope>/<feature-name>`**, e.g.
   `jane/routing/weighted-fallback`.
-- **Write commit and pull-request titles as conventional commits** —
+- **Write commit and pull-request titles as conventional commits**:
   `type(scope): summary`, e.g. `fix(routing): keep the fallback route on 429`.
-  History on `dev` is squashed one commit per pull request, so the title you
-  write becomes the commit subject — `git log --oneline` shows the shape to
-  match.
+  Each pull request is squashed into one commit on `dev`, so its title becomes
+  the commit subject.
 - Keep a pull request to one feature or fix, update the docs in the same change,
-  and add tests for new behaviour.
-- Call out changes to API behavior, configuration, defaults or database schema
-  in the PR, with migration steps and rollback limits. See
+  and add tests for new behavior.
+- Call out changes to API behavior, configuration, defaults or database schema,
+  with migration steps and rollback limits. See
   [Releases and upgrades](releases.md#compatibility-and-breaking-changes).
 - Do not commit to `main` or `dev` directly.
 
 ### What CI will run
 
-The `CI` workflow (`.github/workflows/ci.yml`) classifies which paths a pull
-request touched and then runs only the relevant jobs:
+The `CI` workflow (`.github/workflows/ci.yml`) runs the jobs relevant to the
+paths a pull request touches:
 
 | Job | What it does |
 |---|---|
 | Backend Quality | `ruff format --check`, `ruff check --no-fix`, `pydocstyle` |
 | Frontend Quality | prettier, eslint, `tsc --noEmit`, vitest, `npm audit` |
 | Site UI Containers | builds the frontend image with no module and with the example's Site UI module, requires a module build that lacks its context to fail, and checks how the running example serves its assets |
-| Docs Build | `make docs-verify`: both languages built with warnings as errors, local links checked, and every translation checked against the English |
-| `test` | pytest across four shards with a PostgreSQL service, `-m "not external"` — so the `dbtest` tier does run in CI even though it is excluded from `make test` |
+| Docs Build | `make docs-verify` |
+| `test` | pytest in four shards for the default selection, plus a `db` shard that runs the `dbtest` tier against PostgreSQL |
 | Security Scan | `gitleaks detect` over the tree, then `pip-audit` against the exported production requirements |
 | `docker-build` | builds the affected images, then starts the runnable example and smokes it |
 | Tutorial E2E | runs the Quickstart's `make up` → `make smoke` → `make demo` → `make demo-smoke` sequence |
 | CI Gate | aggregates the results of the jobs above into one check |
 
-Because CI includes `dbtest`, a change to storage or auth can be green locally
-and red in CI. Run `make test-db` against a local Postgres when you touch
-`apps/backend/serving/storage/` or the auth surface.
-
-If a pull request shows no CI run at all, check whether it has a merge conflict
-first — a conflicted pull request does not trigger the `pull_request` workflow.
+Because CI runs `dbtest`, a change can pass `make test` and fail in CI. When you
+touch storage (`apps/backend/serving/storage/`), SQL, the schema, auth or a
+database test, run `make test-db-local`, or `make test-db` against your own
+PostgreSQL, before you push. If a pull request shows no CI run at all, check it
+for a merge conflict: a conflicted pull request does not trigger the
+`pull_request` workflow.

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LocaleProvider } from '@/components/providers/LocaleProvider';
 import type { Catalog } from '@/lib/i18n/translate';
 import zhCN from '@/lib/i18n/messages/zh-CN.json';
-import OpenInfraPage from './page';
+import OpenInfraPage, { generateMetadata } from './page';
 import { OpenInfraContent } from './OpenInfraContent';
 import { dashboard, history } from './testFixtures';
 
@@ -27,7 +27,10 @@ vi.mock('@/components/providers', () => ({ useAuth: () => ({ state: auth.state }
 
 const site = vi.hoisted(() => ({ openinfraUrl: '' }));
 vi.mock('@/config/site-config.server', () => ({
-  loadRuntimeSiteConfig: async () => ({ openinfraUrl: site.openinfraUrl }),
+  loadRuntimeSiteConfig: async () => ({
+    openinfraUrl: site.openinfraUrl,
+    branding: { appName: 'Runtime Example' },
+  }),
 }));
 const redirect = vi.hoisted(() =>
   vi.fn((url: string) => {
@@ -39,6 +42,12 @@ vi.mock('next/navigation', () => ({ redirect }));
 const saved = vi.hoisted(() => [] as Array<{ name: string; mime: string }>);
 vi.mock('./download', () => ({
   saveFile: (name: string, _content: unknown, mime: string) => saved.push({ name, mime }),
+}));
+
+// The page's metadata is computed on the server, from the request's language
+// and the runtime site configuration (mocked above); there is no request here.
+vi.mock('@/lib/i18n/request.server', () => ({
+  requestTranslator: async () => (_slot: string, fallback: string) => fallback,
 }));
 
 function ok<T>(data: T) {
@@ -341,5 +350,15 @@ describe('OpenInfraPage, for a reader who chose Chinese', () => {
       }
     }
     expect(english).toEqual([]);
+  });
+});
+
+describe('OpenInfraPage metadata', () => {
+  it('names the site as the deployment configures it, not as the image was built', async () => {
+    const meta = await generateMetadata();
+    expect(meta.title).toBe('OpenInfra | Runtime Example');
+    expect(meta.description).toBe(
+      'Live GPU, host and inference-engine metrics from the servers behind Runtime Example.',
+    );
   });
 });
