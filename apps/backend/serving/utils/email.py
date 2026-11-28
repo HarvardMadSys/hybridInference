@@ -2,6 +2,7 @@
 
 import html as html_lib
 import smtplib
+import socket
 import ssl
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -12,7 +13,7 @@ from markdown_it import MarkdownIt
 from serving.config.settings import settings
 from serving.config.site_identity import get_site_identity
 from serving.utils import cloudflare_email
-from serving.utils.delivery import EmailMessage, EmailProvider, get_email_provider
+from serving.utils.delivery import EmailDelivery, EmailMessage, get_email_provider
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -52,19 +53,6 @@ def get_smtp_config() -> dict[str, str | int]:
     }
 
 
-#: The built-in transport that is not SMTP, which ``send_email`` sends itself.
-_CLOUDFLARE = EmailProvider(
-    is_configured=cloudflare_email.is_configured, send=cloudflare_email.send
-)
-
-
-def _selected_provider(name: str) -> EmailProvider | None:
-    """Return the non-SMTP transport *name* selects: built in, or an extension's."""
-    if name == "cloudflare":
-        return _CLOUDFLARE
-    return get_email_provider(name)
-
-
 def is_email_enabled() -> bool:
     """Check whether the selected email delivery provider is configured.
 
@@ -73,8 +61,60 @@ def is_email_enabled() -> bool:
     """
     if settings.email_provider == "smtp":
         return bool(settings.smtp_host and settings.smtp_user and settings.smtp_password)
-    provider = _selected_provider(settings.email_provider)
+    if settings.email_provider == "cloudflare":
+        return cloudflare_email.is_configured()
+    provider = get_email_provider(settings.email_provider)
     return provider is not None and provider.is_configured()
+
+
+#: What each built-in transport needs before it sends: (Settings field, setting name).
+_TRANSPORT_SETTINGS: dict[str, tuple[tuple[str, str], ...]] = {
+    "smtp": (
+        ("smtp_host", "SMTP_HOST"),
+        ("smtp_user", "SMTP_USER"),
+        ("smtp_password", "SMTP_PASSWORD"),
+    ),
+    "cloudflare": (
+        ("cloudflare_account_id", "CLOUDFLARE_ACCOUNT_ID"),
+        ("cloudflare_email_api_token", "CLOUDFLARE_EMAIL_API_TOKEN"),
+    ),
+}
+
+#: How the console names each built-in transport.
+TRANSPORT_LABELS: dict[str, str] = {"smtp": "SMTP", "cloudflare": "Cloudflare Email Sending"}
+
+
+def _joined(names: list[str]) -> str:
+    if len(names) <= 1:
+        return "".join(names)
+    return f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def email_configuration_problem() -> str | None:
+    """Say why the selected transport cannot send, or ``None`` when it can.
+
+    Agrees with :func:`is_email_enabled`, and names the settings to fill in
+    where the transport is a built-in one.
+    """
+    if is_email_enabled():
+        return None
+    name = settings.email_provider
+    needed = _TRANSPORT_SETTINGS.get(name)
+    if needed is not None:
+        # SMTP's check is the one is_email_enabled makes; Cloudflare's strips.
+        missing = [
+            key
+            for field, key in needed
+            if not (
+                getattr(settings, field).strip()
+                if name == "cloudflare"
+                else getattr(settings, field)
+            )
+        ]
+        return f"{TRANSPORT_LABELS[name]} needs {_joined(missing) or 'its settings'}."
+    if get_email_provider(name) is None:
+        return f"The email provider {name!r} is not available: no loaded extension provides it."
+    return f"The {name} email provider is not configured."
 
 
 def send_email(
@@ -100,53 +140,101 @@ def send_email(
 
     Returns:
         True if email sent successfully, False otherwise.
+        :func:`deliver_email` also says why it was not.
+    """
+    return deliver_email(
+        to_email,
+        subject,
+        html_body,
+        text_body,
+        template=template,
+        template_data=template_data,
+    ).sent
+
+
+def deliver_email(
+    to_email: str | None,
+    subject: str,
+    html_body: str,
+    text_body: str | None = None,
+    *,
+    template: str = "notice",
+    template_data: dict[str, str] | None = None,
+) -> EmailDelivery:
+    """Send an email like :func:`send_email`, and say why it was not sent.
+
+    Never falls back to another transport. The reason is for an
+    administrator: it names settings, a host or a provider's error code, never
+    a credential or the message.
     """
     if not to_email or not to_email.strip():
         logger.warning("Email not sent: the recipient has no email address")
-        return False
+        return EmailDelivery(False, "There is no address to send the message to.")
 
-    if not is_email_enabled():
+    problem = email_configuration_problem()
+    if problem is not None:
         logger.warning("Email sending disabled: delivery provider not configured")
-        return False
+        return EmailDelivery(False, problem)
 
-    if settings.email_provider != "smtp":
-        provider = _selected_provider(settings.email_provider)
-        if provider is None:
-            return False
-        return provider.send(
-            EmailMessage(
-                to_email=to_email,
-                subject=subject,
-                html_body=html_body,
-                text_body=text_body,
-                template=template,
-                template_data=template_data,
-            )
-        )
+    message = EmailMessage(
+        to_email=to_email,
+        subject=subject,
+        html_body=html_body,
+        text_body=text_body,
+        template=template,
+        template_data=template_data,
+    )
+    name = settings.email_provider
+    if name == "smtp":
+        return _deliver_smtp(message)
+    if name == "cloudflare":
+        return cloudflare_email.deliver(message)
+    # An extension's transport: the configuration check above found it registered.
+    provider = get_email_provider(name)
+    if provider is not None and provider.send(message):
+        return EmailDelivery(True)
+    return EmailDelivery(
+        False,
+        f"The {name} email provider did not send the message. The backend log says why.",
+    )
 
+
+#: What the SMTP conversation was doing, in the words a failure reports.
+_SMTP_STAGES = {
+    "connect": "while connecting",
+    "starttls": "while starting TLS",
+    "login": "while logging in",
+    "send": "while sending the message",
+}
+
+
+def _deliver_smtp(message: EmailMessage) -> EmailDelivery:
+    """Send *message* over SMTP with TLS that checks the server, and say what happened."""
     config = get_smtp_config()
+    to_email = message.to_email
+    port = int(config["port"])
+    where = f"{config['host']}:{port}"
+    stage = "connect"
 
     try:
-        # Create message
         msg = MIMEMultipart("alternative")
         msg["From"] = f"{config['from_name']} <{config['from_email']}>"
         msg["To"] = to_email
-        msg["Subject"] = subject
+        msg["Subject"] = message.subject
 
-        # Add text and HTML parts
-        if text_body:
-            msg.attach(MIMEText(text_body, "plain"))
-        msg.attach(MIMEText(html_body, "html"))
+        if message.text_body:
+            msg.attach(MIMEText(message.text_body, "plain"))
+        msg.attach(MIMEText(message.html_body, "html"))
 
         # Send email, over TLS that checks the server's certificate and name.
         context = _smtp_tls_context()
-        port = int(config["port"])
         if port == SMTP_IMPLICIT_TLS_PORT:
             connection = smtplib.SMTP_SSL(config["host"], port, timeout=10, context=context)
         else:
             connection = smtplib.SMTP(config["host"], port, timeout=10)
         with connection as server:
             if port != SMTP_IMPLICIT_TLS_PORT:
+                stage = "starttls"
                 try:
                     server.starttls(context=context)
                 except ssl.SSLError:
@@ -154,11 +242,13 @@ def send_email(
                     # closed here, the failure reported is the handshake's.
                     server.close()
                     raise
+            stage = "login"
             server.login(config["user"], config["password"])
+            stage = "send"
             server.send_message(msg)
 
         logger.info(f"Email sent successfully to {to_email}")
-        return True
+        return EmailDelivery(True)
 
     except ssl.SSLCertVerificationError as e:
         # Said in full: until this check existed any certificate was accepted,
@@ -173,11 +263,64 @@ def send_email(
             config["port"],
             e.verify_message or e,
         )
-        return False
+        return EmailDelivery(
+            False,
+            f"The SMTP server {where} did not present a certificate this host trusts for its "
+            f"name ({e.verify_message or 'verification failed'}). Give it a certificate from a "
+            "public authority, or point SSL_CERT_FILE at a bundle with the system's "
+            "authorities and the one that signed it.",
+        )
 
     except Exception as e:
         logger.error(f"Failed to send email to {to_email}: {e}")
-        return False
+        return EmailDelivery(False, _smtp_failure(e, stage, where, str(config["from_email"])))
+
+
+def _smtp_failure(error: Exception, stage: str, where: str, sender: str) -> str:
+    """Say what an SMTP failure means and where to look, without the server's own text."""
+    during = _SMTP_STAGES.get(stage, "")
+    if isinstance(error, smtplib.SMTPAuthenticationError):
+        return (
+            f"The SMTP server {where} rejected the username or password (SMTP {error.smtp_code})."
+        )
+    if isinstance(error, smtplib.SMTPNotSupportedError):
+        if stage == "starttls":
+            return (
+                f"The SMTP server {where} does not offer STARTTLS. Use port 465 if it expects "
+                "TLS from the first byte, or a port that offers STARTTLS, such as 587."
+            )
+        return f"The SMTP server {where} does not accept a login on this connection."
+    if isinstance(error, smtplib.SMTPSenderRefused):
+        return (
+            f"The SMTP server {where} refused the sender address {sender} "
+            f"(SMTP {error.smtp_code}). Use an address the server may send from."
+        )
+    if isinstance(error, smtplib.SMTPRecipientsRefused):
+        return f"The SMTP server {where} refused the recipient address."
+    if isinstance(error, smtplib.SMTPServerDisconnected):
+        return (
+            f"The SMTP server {where} closed the connection {during}. If it expects TLS from "
+            "the first byte, use port 465."
+        )
+    if isinstance(error, smtplib.SMTPResponseException):
+        return f"The SMTP server {where} answered SMTP {error.smtp_code} {during}."
+    if isinstance(error, ssl.SSLError):
+        return (
+            f"The TLS handshake with the SMTP server {where} failed. Port 465 expects TLS from "
+            "the first byte and other ports use STARTTLS: check that the port matches the server."
+        )
+    if isinstance(error, socket.gaierror):
+        return f"The SMTP host in {where} could not be found. Check the host name."
+    if isinstance(error, TimeoutError):
+        return (
+            f"The SMTP server {where} did not answer within 10 seconds. Check the host and "
+            "port, and that this host may connect to it."
+        )
+    if isinstance(error, ConnectionRefusedError):
+        return f"The SMTP server {where} refused the connection. Check the host and port."
+    if isinstance(error, OSError):
+        return f"Could not reach the SMTP server {where} ({type(error).__name__})."
+    return f"The message could not be sent through SMTP {during} ({type(error).__name__})."
 
 
 def send_verification_email(to_email: str, verification_token: str, base_url: str) -> bool:

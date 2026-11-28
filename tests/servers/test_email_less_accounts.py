@@ -366,7 +366,7 @@ class TestAdminEndpoints:
 
     async def test_broadcast_test_send_without_an_email(self, client, db_logger, monkeypatch):
         sent = MagicMock()
-        monkeypatch.setattr("serving.servers.routers.admin.broadcast.send_email", sent)
+        monkeypatch.setattr("serving.servers.routers.admin.broadcast.deliver_email", sent)
 
         resp = await client.post(
             "/admin/broadcast-email/test",
