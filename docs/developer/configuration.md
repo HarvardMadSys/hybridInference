@@ -22,11 +22,13 @@ configuration paths.
 ### Application documents
 
 **Admin → Routing → Models** edits `MODEL_CATALOG`, with each model's runtime
-role and concurrency overrides beside it;
-**Admin → Settings → Site & Setup → Advanced settings → Application** edits the
-other documents. All of them are validated JSON and use the same conditional
-saves, audit, security confirmation and backup controls as other settings. No
-JSON file is a runtime fallback either.
+role and concurrency overrides beside it. **Admin → Settings** edits each of the
+other documents under the **Advanced settings** of the tab it configures:
+`ROUTING_POLICY` on **Routing**, `ALERT_RULES` on **Alerts**, `SSO_PROVIDERS` on
+**Sign-in & security**, and `SITE_CONFIGURATION` and `SITE_BRANDING` on
+**General**. All of them are validated JSON and use the same conditional saves,
+audit, security confirmation and backup controls as other settings. No JSON
+file is a runtime fallback either.
 
 Admin shows each document as fields, one per value, named by its path, such as
 `models[0].route[0].base_url`. Each field is a plain string. A number or
@@ -160,7 +162,7 @@ Admin when deployment-wide policy is needed. Per-model `router` and
 `router_params` remain in the catalog; runtime strategy changes belong in Admin
 Routing. Fixed and RouteWise retain their existing selection and accounting.
 
-In the console, **Admin > Settings > Site & Setup > Application** shows `ROUTING_POLICY` as one card, with each value under a readable name and its key beside it. An empty field leaves the key out, so the default applies: the **Router** (`default_router`) for every model that names none, Fixed by default; the **Local share** (`routing_parameter.local_fraction`) and the **Local deployments** and **Remote deployments** it splits between; and the local deployments' **Health checks** (`health_check`, `timeout`). The card says what the policy does, keeps any key it does not edit, and switches to JSON for a policy it cannot show exactly. Two of these values do less than their names suggest. The local/remote split is applied once, at startup, and only on a gateway without a database; with one, route weights come from Admin Routing and the split has no effect. A health check is logged and shown on `GET /routing`, but never changes where a request goes. Every change applies after a backend restart.
+In the console, **Admin > Settings > Routing > Advanced settings > Routing policy** shows `ROUTING_POLICY` as one card, with each value under a readable name and its key beside it. An empty field leaves the key out, so the default applies: the **Router** (`default_router`) for every model that names none, Fixed by default; the **Local share** (`routing_parameter.local_fraction`) and the **Local deployments** and **Remote deployments** it splits between; and the local deployments' **Health checks** (`health_check`, `timeout`). The card says what the policy does, keeps any key it does not edit, and switches to JSON for a policy it cannot show exactly. Two of these values do less than their names suggest. The local/remote split is applied once, at startup, and only on a gateway without a database; with one, route weights come from Admin Routing and the split has no effect. A health check is logged and shown on `GET /routing`, but never changes where a request goes. Every change applies after a backend restart.
 
 ## Settings that currently have no effect
 
@@ -231,8 +233,8 @@ only when the upstream answered in the OpenAI error format. Other response
 bodies, redirect targets and connection details are not shown.
 
 A deployment whose gateway must not reach its own network can set
-`ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0` (Settings → Site & Setup → Advanced
-settings → Network). Base URLs saved or probed in Admin, and the model queue
+`ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0` (Settings → Network). Base URLs saved
+or probed in Admin, and the model queue
 status address, must then
 resolve to public addresses. This is checked when the URL is validated and
 again for every connection the probe opens. Routes saved earlier keep serving:
@@ -266,6 +268,16 @@ it up on reload without rewriting their catalog. Route listings include
 Edit the application documents other than the model catalog, credentials,
 delivery settings, network policy, runtime switches and quotas here. Required
 fields and restart requirements are shown beside each setting.
+
+The page opens on **Overview**: how the site's address, email, sign-up, API
+access and alerts stand, each with the tab that changes it. One tab per topic
+follows, under four headings: **Access** (Sign-up, Sign-in & security, Usage
+limits), **Inference** (Providers, Routing, Batches), **Monitoring** (Alerts,
+Logging & privacy, Analytics) and **Deployment** (General, Email, Network,
+Integrations, Backup & restore). A tab with nothing to set on a gateway is not
+listed. Each opens on what is commonly changed and keeps its tuning under
+**Advanced settings**. A built-in setting is shown under a plain name with its
+variable beside it, and the search finds it by either.
 
 ### How the two layers combine
 
@@ -465,7 +477,7 @@ The smoke is explicit real inference and consumes the usual quota.
 
 `EMAIL_PROVIDER` defaults to `smtp`; `SMS_PROVIDER` defaults to `none`. The gateway sends mail itself in two ways: `smtp`, through an SMTP server the deployment names, and `cloudflare`, through Cloudflare Email Sending. Neither comes configured. The first-run setup step offers the choice, and it and **Admin > Configuration** show only the selected transport's settings. Every other provider is an optional module that a deployment loads explicitly. A gateway that does not load a provider neither offers it nor lists its settings. Without an SMS provider, it does not list `SMS_PROVIDER` either, which would have only one value to choose, or any of the phone settings. Selecting an unavailable provider is a configuration error; delivery never silently falls back to another provider.
 
-In the console, **Admin > Settings > Site & Setup > Email** shows email as one card: choose the delivery service, then fill in that service's settings, listed under readable names with the variable beside each. **Send test email** sends a fixed test message through the saved settings, to an address you enter or to your own account's address. When it is not sent, the console says why: the settings still missing, an SMTP server that refused the login or the TLS connection, or what Cloudflare's error code means, such as a token without the Email Sending: Edit permission. The reason never includes a credential. Broadcasts record the same reason for each recipient that was not sent to.
+In the console, **Admin > Settings > Email** shows email as one card: choose the delivery service, then fill in that service's settings, listed under readable names with the variable beside each. **Send test email** sends a fixed test message through the saved settings, to an address you enter or to your own account's address. When it is not sent, the console says why: the settings still missing, an SMTP server that refused the login or the TLS connection, or what Cloudflare's error code means, such as a token without the Email Sending: Edit permission. The reason never includes a credential. Broadcasts record the same reason for each recipient that was not sent to.
 
 ### SMTP
 

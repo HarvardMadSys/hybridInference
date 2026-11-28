@@ -191,7 +191,7 @@ describe('AnalyticsTab overview', () => {
     ).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open Settings to enable a section' })).toHaveAttribute(
       'href',
-      '/dashboard/admin/settings?tab=operations#settings-analytics',
+      '/dashboard/admin/settings?tab=analytics#settings-analytics',
     );
     expect(screen.queryByRole('button', { name: 'Day' })).not.toBeInTheDocument();
     for (const fetch of Object.values(SECTION_FETCHES)) expect(fetch).not.toHaveBeenCalled();

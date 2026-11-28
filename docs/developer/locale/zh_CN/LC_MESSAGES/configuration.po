@@ -63,24 +63,8 @@ msgstr ""
 " `SMS_PROVIDER`（它只有一个值可选），也不会列出任何手机号相关设置。选择不可用的服务属于配置错误；发送永远不会静默回退到其他服务。"
 
 #: ../developer/configuration.md:464
-msgid ""
-"In the console, **Admin > Settings > Site & Setup > Email** shows email as "
-"one card: choose the delivery service, then fill in that service's "
-"settings, listed under readable names with the variable beside each. **Send "
-"test email** sends a fixed test message through the saved settings, to an "
-"address you enter or to your own account's address. When it is not sent, "
-"the console says why: the settings still missing, an SMTP server that "
-"refused the login or the TLS connection, or what Cloudflare's error code "
-"means, such as a token without the Email Sending: Edit permission. The "
-"reason never includes a credential. Broadcasts record the same reason for "
-"each recipient that was not sent to."
-msgstr ""
-"在控制台中，**Admin > Settings > Site & Setup > Email** 把邮件设置显示为一张"
-"卡片：先选择发送服务，再填写该服务的配置；每项配置都以易读的名称列出，旁边注明对应的变量名。**Send test em"
-"ail** 会使用已保存的配置发送一封内容固定的测试邮件，收件人可以是你输入的地址，也可以是你自己账户的地址。如果没有发"
-"出，控制台会说明原因：尚缺哪些配置、SMTP 服务器拒绝了登录或 TLS 连接，或者 Cloudflare 错误码的含义"
-"，例如令牌缺少 Email Sending: Edit 权限。原因中从不包含凭据。群发邮件也会为每个未发出的收件人记录同"
-"样的原因。"
+msgid "In the console, **Admin > Settings > Email** shows email as one card: choose the delivery service, then fill in that service's settings, listed under readable names with the variable beside each. **Send test email** sends a fixed test message through the saved settings, to an address you enter or to your own account's address. When it is not sent, the console says why: the settings still missing, an SMTP server that refused the login or the TLS connection, or what Cloudflare's error code means, such as a token without the Email Sending: Edit permission. The reason never includes a credential. Broadcasts record the same reason for each recipient that was not sent to."
+msgstr "在控制台中，**Admin > Settings > Email** 把邮件设置显示为一张卡片：先选择发送服务，再填写该服务的配置；每项配置都以易读的名称列出，旁边注明对应的变量名。**Send test email** 会使用已保存的配置发送一封内容固定的测试邮件，收件人可以是你输入的地址，也可以是你自己账户的地址。如果没有发出，控制台会说明原因：尚缺哪些配置、SMTP 服务器拒绝了登录或 TLS 连接，或者 Cloudflare 错误码的含义，例如令牌缺少 Email Sending: Edit 权限。原因中从不包含凭据。群发邮件也会为每个未发出的收件人记录同样的原因。"
 
 #: ../developer/configuration.md:438
 msgid "SMTP"
@@ -2571,8 +2555,8 @@ msgstr "`.ops.env`，从 `.ops.env.example` 复制"
 msgid "Application documents"
 msgstr "应用文档"
 
-msgid "**Admin → Routing → Models** edits `MODEL_CATALOG`, with each model's runtime role and concurrency overrides beside it; **Admin → Settings → Site & Setup → Advanced settings → Application** edits the other documents. All of them are validated JSON and use the same conditional saves, audit, security confirmation and backup controls as other settings. No JSON file is a runtime fallback either."
-msgstr "**Admin → Routing → Models** 编辑 `MODEL_CATALOG`，旁边是每个模型的运行时角色和并发覆盖项；**Admin → Settings → Site & Setup → Advanced settings → Application** 编辑其他文档。这些文档都是经过验证的 JSON，与其他设置使用相同的条件保存、审计、安全确认和备份机制。JSON 文件也不会成为运行时回退来源。"
+msgid "**Admin → Routing → Models** edits `MODEL_CATALOG`, with each model's runtime role and concurrency overrides beside it. **Admin → Settings** edits each of the other documents under the **Advanced settings** of the tab it configures: `ROUTING_POLICY` on **Routing**, `ALERT_RULES` on **Alerts**, `SSO_PROVIDERS` on **Sign-in & security**, and `SITE_CONFIGURATION` and `SITE_BRANDING` on **General**. All of them are validated JSON and use the same conditional saves, audit, security confirmation and backup controls as other settings. No JSON file is a runtime fallback either."
+msgstr "**Admin → Routing → Models** 编辑 `MODEL_CATALOG`，旁边是每个模型的运行时角色和并发覆盖项。**Admin → Settings** 在每个文档所配置的那个标签页的 **Advanced settings** 中编辑其他文档：`ROUTING_POLICY` 在 **Routing** 中，`ALERT_RULES` 在 **Alerts** 中，`SSO_PROVIDERS` 在 **Sign-in & security** 中，`SITE_CONFIGURATION` 和 `SITE_BRANDING` 在 **General** 中。这些文档都是经过验证的 JSON，与其他设置使用相同的条件保存、审计、安全确认和备份机制。JSON 文件也不会成为运行时回退来源。"
 
 #: ../developer/configuration.md
 msgid "Admin shows each document as fields, one per value, named by its path, such as `models[0].route[0].base_url`. Each field is a plain string. A number or `true`/`false` keeps its type, and a list of strings is one comma-separated field. To add or remove a key or a list item, switch the document to **JSON**. A save from the fields stores the whole document as indented JSON."
@@ -2650,8 +2634,8 @@ msgstr "先将 `TEAM_PROVIDER_KEY` 添加为秘密设置。文档拒绝内嵌凭
 msgid "There is no runtime routing file. Set the optional `ROUTING_POLICY` document in Admin when deployment-wide policy is needed. Per-model `router` and `router_params` remain in the catalog; runtime strategy changes belong in Admin Routing. Fixed and RouteWise retain their existing selection and accounting."
 msgstr "运行时不再使用路由文件。需要部署级策略时，在 Admin 中设置可选的 `ROUTING_POLICY` 文档。每个模型的 `router` 和 `router_params` 仍保存在目录中；运行时策略修改在 Admin Routing 中完成。Fixed 和 RouteWise 保留现有选择和计量逻辑。"
 
-msgid "In the console, **Admin > Settings > Site & Setup > Application** shows `ROUTING_POLICY` as one card, with each value under a readable name and its key beside it. An empty field leaves the key out, so the default applies: the **Router** (`default_router`) for every model that names none, Fixed by default; the **Local share** (`routing_parameter.local_fraction`) and the **Local deployments** and **Remote deployments** it splits between; and the local deployments' **Health checks** (`health_check`, `timeout`). The card says what the policy does, keeps any key it does not edit, and switches to JSON for a policy it cannot show exactly. Two of these values do less than their names suggest. The local/remote split is applied once, at startup, and only on a gateway without a database; with one, route weights come from Admin Routing and the split has no effect. A health check is logged and shown on `GET /routing`, but never changes where a request goes. Every change applies after a backend restart."
-msgstr "在控制台中，**Admin > Settings > Site & Setup > Application** 把 `ROUTING_POLICY` 显示为一张卡片，每个值都以易读的名称列出，旁边注明对应的键。留空的字段不会写入该键，因此使用默认值：**Router**（`default_router`）用于所有未指定路由器的模型，默认为 Fixed；**Local share**（`routing_parameter.local_fraction`）以及它在其间分配流量的 **Local deployments** 和 **Remote deployments**；以及本地部署的 **Health checks**（`health_check`、`timeout`）。卡片会说明该策略的作用，保留它不编辑的任何键；对于无法准确显示的策略，则改用 JSON 编辑。其中有两个值的作用比名称所暗示的要小。本地/远程分流只在启动时应用一次，并且只在不带数据库的网关上生效；带数据库时，路由权重来自 Admin Routing，分流不起作用。健康检查的结果会记入日志并显示在 `GET /routing` 中，但从不改变请求的去向。所有修改都在后端重启后生效。"
+msgid "In the console, **Admin > Settings > Routing > Advanced settings > Routing policy** shows `ROUTING_POLICY` as one card, with each value under a readable name and its key beside it. An empty field leaves the key out, so the default applies: the **Router** (`default_router`) for every model that names none, Fixed by default; the **Local share** (`routing_parameter.local_fraction`) and the **Local deployments** and **Remote deployments** it splits between; and the local deployments' **Health checks** (`health_check`, `timeout`). The card says what the policy does, keeps any key it does not edit, and switches to JSON for a policy it cannot show exactly. Two of these values do less than their names suggest. The local/remote split is applied once, at startup, and only on a gateway without a database; with one, route weights come from Admin Routing and the split has no effect. A health check is logged and shown on `GET /routing`, but never changes where a request goes. Every change applies after a backend restart."
+msgstr "在控制台中，**Admin > Settings > Routing > Advanced settings > Routing policy** 把 `ROUTING_POLICY` 显示为一张卡片，每个值都以易读的名称列出，旁边注明对应的键。留空的字段不会写入该键，因此使用默认值：**Router**（`default_router`）用于所有未指定路由器的模型，默认为 Fixed；**Local share**（`routing_parameter.local_fraction`）以及它在其间分配流量的 **Local deployments** 和 **Remote deployments**；以及本地部署的 **Health checks**（`health_check`、`timeout`）。卡片会说明该策略的作用，保留它不编辑的任何键；对于无法准确显示的策略，则改用 JSON 编辑。其中有两个值的作用比名称所暗示的要小。本地/远程分流只在启动时应用一次，并且只在不带数据库的网关上生效；带数据库时，路由权重来自 Admin Routing，分流不起作用。健康检查的结果会记入日志并显示在 `GET /routing` 中，但从不改变请求的去向。所有修改都在后端重启后生效。"
 
 msgid "The retired model/routing/alert path variables and distribution active/dark modes no longer select configuration. Use the application documents instead. The standalone cloud agent owns its own settings; obsolete gateway `AGENT_*` values do not configure it."
 msgstr "已停用的模型、路由、告警路径变量和分发 active/dark 模式不再选择配置。请使用应用文档。独立云代理管理自己的设置；网关中废弃的 `AGENT_*` 值不会配置该代理。"
@@ -2706,6 +2690,9 @@ msgstr "创建模型、验证路由、修改目标和能力、调整权重，以
 
 msgid "Edit the application documents other than the model catalog, credentials, delivery settings, network policy, runtime switches and quotas here. Required fields and restart requirements are shown beside each setting."
 msgstr "在此编辑模型目录以外的应用文档、凭据、消息投递设置、网络策略、运行时开关和配额。每项设置旁都会显示必填项和重启要求。"
+
+msgid "The page opens on **Overview**: how the site's address, email, sign-up, API access and alerts stand, each with the tab that changes it. One tab per topic follows, under four headings: **Access** (Sign-up, Sign-in & security, Usage limits), **Inference** (Providers, Routing, Batches), **Monitoring** (Alerts, Logging & privacy, Analytics) and **Deployment** (General, Email, Network, Integrations, Backup & restore). A tab with nothing to set on a gateway is not listed. Each opens on what is commonly changed and keeps its tuning under **Advanced settings**. A built-in setting is shown under a plain name with its variable beside it, and the search finds it by either."
+msgstr "页面打开时显示 **Overview**：站点地址、邮件、注册、API 访问和告警的当前状态，每项都附有修改它的标签页。之后每个主题一个标签页，分在四个标题下：**Access**（Sign-up、Sign-in & security、Usage limits）、**Inference**（Providers、Routing、Batches）、**Monitoring**（Alerts、Logging & privacy、Analytics）和 **Deployment**（General、Email、Network、Integrations、Backup & restore）。在某个网关上没有可设置内容的标签页不会列出。每个标签页先显示常用的设置，调优项收在 **Advanced settings** 下。内置设置以易读的名称显示，旁边注明对应的变量名，搜索时两者都能找到它。"
 
 msgid "The model catalog provides the baseline. Stored runtime models, routes, strategy/capability overrides, weights and availability choices apply on top. Changing an override never edits the baseline document."
 msgstr "模型目录提供基线。持久化的运行时模型、路由、策略与能力覆盖项、权重及可用性选择叠加其上。修改覆盖项不会编辑基线文档。"
@@ -2796,5 +2783,5 @@ msgid "A provider's Base URL may name any host, private and loopback ones includ
 msgstr "供应商的 Base URL 可以指向任何主机，包括私网和回环地址，以便接入自建推理引擎（vLLM、SGLang、Ollama）。云实例元数据地址无论以何种写法出现都会被拒绝：嵌入在 IPv6 中的 IPv4（IPv4 兼容、NAT64、6to4 等）按其实际到达的 IPv4 地址判断。探测失败时，只有当上游以 OpenAI 错误格式应答，才会显示上游的错误信息；其他响应体、重定向目标和连接细节均不显示。"
 
 #: ../developer/configuration.md
-msgid "A deployment whose gateway must not reach its own network can set `ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0` (Settings → Site & Setup → Advanced settings → Network). Base URLs saved or probed in Admin, and the model queue status address, must then resolve to public addresses. This is checked when the URL is validated and again for every connection the probe opens. Routes saved earlier keep serving: the switch governs what Admin accepts and probes, not existing inference traffic. Restrict the gateway's egress at the network layer as well."
-msgstr "如果部署要求网关不能访问自身所在网络，可以设置 `ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0`（Settings → Site & Setup → Advanced settings → Network）。此后在 Admin 中保存或探测的 Base URL，以及模型队列状态地址，都必须解析到公网地址。校验 URL 时检查一次，探测建立的每个连接再检查一次。之前保存的路由继续服务：该开关只约束 Admin 接受和探测的地址，不影响已有的推理流量。同时也请在网络层限制网关的出站流量。"
+msgid "A deployment whose gateway must not reach its own network can set `ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0` (Settings → Network). Base URLs saved or probed in Admin, and the model queue status address, must then resolve to public addresses. This is checked when the URL is validated and again for every connection the probe opens. Routes saved earlier keep serving: the switch governs what Admin accepts and probes, not existing inference traffic. Restrict the gateway's egress at the network layer as well."
+msgstr "如果部署要求网关不能访问自身所在网络，可以设置 `ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0`（Settings → Network）。此后在 Admin 中保存或探测的 Base URL，以及模型队列状态地址，都必须解析到公网地址。校验 URL 时检查一次，探测建立的每个连接再检查一次。之前保存的路由继续服务：该开关只约束 Admin 接受和探测的地址，不影响已有的推理流量。同时也请在网络层限制网关的出站流量。"

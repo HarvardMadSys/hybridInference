@@ -311,14 +311,8 @@ msgstr ""
 "应答：交互式调用方会收到这条消息，批处理请求则一直等到模型开始服务。要看到队列本身，让代理在一个状态地址上描述队列，再把这个地址告诉网关："
 
 #: ../developer/hpc-model-host.md:224
-msgid ""
-"`MODEL_QUEUE_STATUS_URL` (Admin → Settings → Providers & Routing → "
-"Advanced settings) is the address as the gateway's backend reaches it, "
-"for example `http://host.docker.internal:8010/status`."
-msgstr ""
-"`MODEL_QUEUE_STATUS_URL`（Admin → Settings → Providers & Routing → "
-"Advanced settings）是网关后端访问该状态的地址，例如 "
-"`http://host.docker.internal:8010/status`。"
+msgid "`MODEL_QUEUE_STATUS_URL` (Admin → Settings → Providers → Advanced settings) is the address as the gateway's backend reaches it, for example `http://host.docker.internal:8010/status`."
+msgstr "`MODEL_QUEUE_STATUS_URL`（Admin → Settings → Providers → Advanced settings）是网关后端访问该状态的地址，例如 `http://host.docker.internal:8010/status`。"
 
 #: ../developer/hpc-model-host.md:227
 msgid ""

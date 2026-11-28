@@ -132,7 +132,7 @@ describe('ModelQueueTab', () => {
     expect(await screen.findByText('No model queue is configured')).toBeInTheDocument();
     expect(screen.getByText('MODEL_QUEUE_STATUS_URL')).toBeInTheDocument();
     expect(
-      screen.getByRole('link', { name: 'Settings → Providers & Routing → Advanced' }),
+      screen.getByRole('link', { name: 'Settings → Providers → Advanced settings' }),
     ).toHaveAttribute('href', '/dashboard/admin/settings?tab=providers#MODEL_QUEUE_STATUS_URL');
   });
 

@@ -115,13 +115,13 @@ const cnyQuotaSetting = {
 /** The harness renders the page; the runtime's accounting unit comes from the state above. */
 function renderCnySettings() {
   siteConfigState.accountingCurrency = 'CNY';
-  return renderSettings();
+  return renderSettings('Usage limits');
 }
 
 describe('SettingsTab role quota', () => {
   it('renders Apply button only on quota settings and runs the confirm flow', async () => {
     const api = await import('@/lib/api/admin');
-    await renderSettings();
+    await renderSettings('Usage limits');
 
     const applyBtn = await screen.findByRole('button', { name: /apply to existing users/i });
     fireEvent.click(applyBtn);
@@ -142,7 +142,7 @@ describe('SettingsTab role quota', () => {
 
   it('holds Apply back while its quota has an unsaved change', async () => {
     const api = await import('@/lib/api/admin');
-    await renderSettings();
+    await renderSettings('Usage limits');
 
     // Applying writes the saved quota, not the one being typed.
     const apply = await screen.findByRole('button', { name: /apply to existing users/i });
@@ -179,11 +179,11 @@ describe('SettingsTab role quota', () => {
           finishPreview = resolve;
         }),
     );
-    await renderSettings();
+    await renderSettings('Usage limits');
 
     fireEvent.click(await screen.findByRole('button', { name: /apply to existing users/i }));
     await waitFor(() => expect(api.previewRoleQuotaApply).toHaveBeenCalledWith('pro'));
-    await openSettingsTab(/^Access/);
+    await openSettingsTab(/^Sign-up/);
     fireEvent.click(await screen.findByRole('button', { name: 'Remove example.com' }));
     const review = screen.getByRole('dialog', {
       name: 'Remove example.com from the signup allowlist?',
@@ -207,7 +207,7 @@ describe('SettingsTab role quota', () => {
 
     // Applying was not queued behind it: it needs its own click and review.
     expect(screen.queryByRole('dialog')).toBeNull();
-    await openSettingsTab(/^Access/);
+    await openSettingsTab('Usage limits');
     fireEvent.click(screen.getByRole('button', { name: /apply to existing users/i }));
     expect(
       await screen.findByRole('dialog', { name: 'Apply the pro quota to existing keys?' }),
@@ -228,7 +228,7 @@ describe('SettingsTab CNY role quota', () => {
       value: 18,
       amount: 120,
     });
-    renderCnySettings();
+    await renderCnySettings();
 
     // The native amount, default and currency, never the USD figures.
     const field = await screen.findByLabelText('user_daily_quota_pro value');
@@ -267,7 +267,7 @@ describe('SettingsTab CNY role quota', () => {
   it('keeps the native draft until Discard, which restores the saved amount', async () => {
     const api = await import('@/lib/api/admin');
     vi.mocked(api.listRuntimeSettings).mockResolvedValueOnce({ settings: [cnyQuotaSetting] });
-    renderCnySettings();
+    await renderCnySettings();
 
     const field = await screen.findByLabelText('user_daily_quota_pro value');
     fireEvent.change(field, { target: { value: '130' } });
@@ -300,7 +300,7 @@ describe('SettingsTab CNY role quota', () => {
       amount: 100,
       keys_updated: 42,
     });
-    renderCnySettings();
+    await renderCnySettings();
 
     fireEvent.click(await screen.findByRole('button', { name: /apply to existing users/i }));
     const dialog = await screen.findByRole('dialog', {

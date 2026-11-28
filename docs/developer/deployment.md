@@ -694,7 +694,7 @@ the routing-observation and `X-Provider` behaviour is unchanged.
 ## Alerting
 
 The backend sends alerts to one Slack or WeCom (企业微信) group webhook. In
-**Admin → Settings → Operations**, in the **Alerts** section, choose a
+**Admin → Settings → Alerts**, in the **Alerts** section, choose a
 **Notification channel** and enter its webhook URL. Only the selected channel's
 field is shown; saved URLs remain write-only. Choose **None** to turn off
 notifications.

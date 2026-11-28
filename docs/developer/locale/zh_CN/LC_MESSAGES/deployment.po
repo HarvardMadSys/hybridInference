@@ -1124,16 +1124,8 @@ msgid "Alerting"
 msgstr "告警"
 
 #: ../developer/deployment.md:345
-msgid ""
-"The backend sends alerts to one Slack or WeCom (企业微信) group webhook. In "
-"**Admin → Settings → Operations**, in the **Alerts** section, choose a "
-"**Notification channel** and enter its webhook URL. Only the selected "
-"channel's field is shown; saved URLs remain write-only. Choose **None** "
-"to turn off notifications."
-msgstr ""
-"后端将告警发送到一个 Slack 或企业微信群 webhook。在 **Admin → Settings → Operations** 的 "
-"**Alerts** 部分选择 **Notification channel**（通知渠道），并填入对应的 webhook "
-"URL。界面只显示所选渠道的配置字段；已保存的 URL 只可写入，不会回显。选择 **None** 可关闭通知。"
+msgid "The backend sends alerts to one Slack or WeCom (企业微信) group webhook. In **Admin → Settings → Alerts**, in the **Alerts** section, choose a **Notification channel** and enter its webhook URL. Only the selected channel's field is shown; saved URLs remain write-only. Choose **None** to turn off notifications."
+msgstr "后端将告警发送到一个 Slack 或企业微信群 webhook。在 **Admin → Settings → Alerts** 的 **Alerts** 部分选择 **Notification channel**（通知渠道），并填入对应的 webhook URL。界面只显示所选渠道的配置字段；已保存的 URL 只可写入，不会回显。选择 **None** 可关闭通知。"
 
 #: ../developer/deployment.md:350
 msgid ""

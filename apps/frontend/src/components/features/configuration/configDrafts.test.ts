@@ -352,6 +352,22 @@ describe('grouping and search', () => {
       expect(none.map((group) => group.id)).toEqual(['providers', 'routing']);
       expect(splitGroups(groups, [])).toEqual(groups);
     });
+
+    it('describes a part in its own words when it has them', () => {
+      const policy: ConfigSectionSplit = {
+        ...tuning,
+        id: 'routing:policy',
+        keys: new Set(['ENABLE_ROUTEWISE']),
+        label: () => 'Routing policy',
+        description: 'The default router.',
+      };
+      const split = splitGroups(groups, [policy, tuning]);
+      const describe = (id: string) => split.find((group) => group.id === id)?.description;
+      expect(describe('routing:policy')).toBe('The default router.');
+      expect(split.find((group) => group.id === 'routing:policy')?.label).toBe('Routing policy');
+      // Without words of its own, a part keeps its category's.
+      expect(describe('routing:advanced')).toBe('Route selection.');
+    });
   });
 
   it('matches the name, description, category and models', () => {
@@ -366,6 +382,9 @@ describe('grouping and search', () => {
     expect(matchesQuery(provider, 'GLM-4')).toBe(true);
     expect(matchesQuery(provider, 'providers', 'Providers')).toBe(true);
     expect(matchesQuery(provider, 'smtp')).toBe(false);
+    // And whatever else a page shows it under, such as a plain name.
+    expect(matchesQuery(provider, 'z.ai key', '', ['Z.ai API key'])).toBe(false);
+    expect(matchesQuery(provider, 'z.ai api', '', ['Z.ai API key'])).toBe(true);
   });
 });
 

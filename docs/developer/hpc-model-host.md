@@ -221,8 +221,8 @@ requests wait for the scheduler. Its proxy answers `503` with error code
 batch requests wait until the model serves. To see the queue itself, have the
 proxy describe it at a status address, and give the gateway that address:
 
-- `MODEL_QUEUE_STATUS_URL` (Admin → Settings → Providers & Routing → Advanced
-  settings) is the address as the gateway's backend reaches it, for example
+- `MODEL_QUEUE_STATUS_URL` (Admin → Settings → Providers → Advanced settings)
+  is the address as the gateway's backend reaches it, for example
   `http://host.docker.internal:8010/status`.
 - `MODEL_QUEUE_STATUS_API_KEY` is the bearer key the address requires. Empty, the
   gateway sends `LOCAL_API_KEY`.
