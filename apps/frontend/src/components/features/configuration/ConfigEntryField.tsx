@@ -101,6 +101,7 @@ const LINK_BUTTON_CLASS =
 export function ConfigEntryField({
   entry,
   label = entry.key,
+  showKey = false,
   allowSecretClear = true,
   presentation = 'default',
   layout = 'stacked',
@@ -115,6 +116,11 @@ export function ConfigEntryField({
 }: {
   entry: ConfigEntry;
   label?: string;
+  /**
+   * Show the variable's name beside a friendly `label`, for the administrator
+   * who sets it in `.env` or reads it in the docs.
+   */
+  showKey?: boolean;
   allowSecretClear?: boolean;
   /** Compact cards supply their own privacy and restart notes. */
   presentation?: 'default' | 'compact';
@@ -339,10 +345,14 @@ export function ConfigEntryField({
               // A document's fields have no one control to point at: they and
               // its JSON view name themselves after this label instead.
               htmlFor={documentEditor ? undefined : controlId}
-              className={`break-all text-[13px] font-medium text-gray-900 ${compact ? '' : 'font-mono'}`}
+              // A variable's name is set in mono; a friendly label is not.
+              className={`break-all text-[13px] font-medium text-gray-900 ${compact || label !== entry.key ? '' : 'font-mono'}`}
             >
               {label}
             </label>
+            {showKey && label !== entry.key ? (
+              <span className="break-all font-mono text-[11px] text-gray-400">{entry.key}</span>
+            ) : null}
             {badges.map((badge) => (
               <span
                 key={badge.label}

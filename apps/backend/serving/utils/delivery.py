@@ -35,6 +35,20 @@ class EmailMessage:
 
 
 @dataclass(frozen=True)
+class EmailDelivery:
+    """What one send did: whether the transport took the message, and if not, why.
+
+    ``reason`` is written for the administrator who has to fix the
+    configuration: a sentence the gateway composed, naming at most a host, a
+    port, the sender address or a provider's error code. It never carries the
+    message, a credential, or free text a server sent back.
+    """
+
+    sent: bool
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
 class EmailProvider:
     """Synchronous configuration check and email transport."""
 
