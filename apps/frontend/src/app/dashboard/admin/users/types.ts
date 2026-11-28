@@ -24,6 +24,8 @@ export interface UserRow {
   reviewed_by: string | null;
   signup_reason: string | null;
   admin_note: string | null;
+  /** Admin-created API-key-only account; absent from an older gateway. */
+  is_service_account?: boolean;
   created_at: string;
   last_login_at: string | null;
   has_key: boolean;
@@ -37,6 +39,8 @@ export interface UserRow {
   usage_alltime_usd: string;
   usage_alltime_requests: number | null;
   usage_alltime_tokens: number | null;
+  /** The user tags that apply to the account; absent from an older gateway. */
+  tags?: string[];
 }
 
 export interface CostHistoryPoint {
@@ -91,6 +95,8 @@ export type QuotaStateFilter = 'near' | 'over' | 'custom' | 'default';
 
 export interface FilterState {
   status: UserStatus | null;
+  /** Account tier. Null lists every tier. */
+  role: UserRole | null;
   search: string;
   sortBy: SortBy;
   minCostToday: number | null;
@@ -99,6 +105,8 @@ export interface FilterState {
   provider: string | null;
   activeWithinHours: number | null;
   anomaly: boolean | null;
+  /** Only the users this user tag applies to. */
+  tag: string | null;
   view: string | null; // built-in or saved-view id
 }
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal, get_args, get_origin, get_type_hints
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -15,8 +15,11 @@ from httpx import ASGITransport, AsyncClient
 from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.audit import AuditActor, AuditTarget
+from serving.config.settings import VALID_ROLES
+from serving.schemas_admin import RoleCounts
 from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin as admin_router
+from serving.servers.routers.admin.users import list_users
 from serving.utils import password as password_utils
 from serving.utils.login_rate_limit import reset_login_rate_limit_state
 
@@ -51,6 +54,8 @@ def mock_stores():
     op_store.get_active_key_by_account = AsyncMock(return_value=None)
     op_store.list_user_identities = AsyncMock(return_value=[])
     op_store.get_two_factor = AsyncMock(return_value=None)
+    op_store.get_tags_for_users = AsyncMock(return_value={})
+    op_store.get_user_tag_memberships = AsyncMock(return_value=[])
 
     log_store = MagicMock()
     log_store.get_batch_usage = AsyncMock(return_value={})
@@ -233,6 +238,53 @@ async def test_list_users_search_combined_with_status(admin_client):
     data = response.json()
     assert data["total"] == 0
     assert len(data["users"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_list_users_filters_by_role(admin_client):
+    """GET /admin/users?role=admin lists that tier and still counts every tier."""
+    client, op_store, _log_store, _log = admin_client
+
+    sc = {
+        "all": 4,
+        "pending_approval": 0,
+        "active": 4,
+        "suspended": 0,
+        "rejected": 0,
+        "deleted": 0,
+        "roles": {"free": 1, "pro": 2, "internal": 0, "admin": 1},
+    }
+    op_store.list_users.return_value = (1, [_user_row(role="admin")], sc)
+
+    response = await client.get("/admin/users?role=admin", headers=AUTH)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["users"][0]["role"] == "admin"
+    assert body["role_counts"] == {"free": 1, "pro": 2, "internal": 0, "admin": 1}
+    assert op_store.list_users.await_args.kwargs["role"] == "admin"
+
+
+@pytest.mark.asyncio
+async def test_list_users_rejects_an_unknown_role(admin_client):
+    client, op_store, _log_store, _log = admin_client
+
+    response = await client.get("/admin/users?role=banana", headers=AUTH)
+
+    assert response.status_code == 422
+    op_store.list_users.assert_not_awaited()
+
+
+def test_account_tier_lists_match_valid_roles():
+    """RoleCounts and the list filter accept exactly the roles the gateway knows."""
+    assert set(RoleCounts.model_fields) == set(VALID_ROLES)
+
+    accepted: set[str] = set()
+    for option in get_args(get_type_hints(list_users)["role"]):
+        if get_origin(option) is Literal:
+            accepted.update(get_args(option))
+    assert accepted == set(VALID_ROLES)
 
 
 @pytest.mark.asyncio

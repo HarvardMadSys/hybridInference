@@ -98,16 +98,11 @@ import {
   updateProviderRouteCapabilities,
   resetProviderRouteCapabilities,
   updateProviderRouteStrategy,
-  updateRoutewiseSetting,
   verifyProviderRoute,
   verifyProviderRouteModel,
   verifyProviderRouteCandidate,
 } from '@/lib/api/admin';
-import type {
-  ListProviderApiKeysResponse,
-  ProviderRoute,
-  RoutewiseSettingItem,
-} from '@/lib/api/admin';
+import type { ListProviderApiKeysResponse, ProviderRoute } from '@/lib/api/admin';
 import { chooseValue, openOptions } from '@/test-utils/select';
 import toast from 'react-hot-toast';
 import { APIError } from '@/lib/utils/errors';
@@ -590,102 +585,24 @@ describe('ProviderRoutesTab', () => {
     expect(setOffloadRoute).toHaveBeenCalledTimes(1);
   });
 
-  it('holds the model selection while RouteWise parameters have unsaved changes', async () => {
-    const otherRoute = {
-      ...route,
-      model_id: 'other-routewise',
-      route_id: 'other-routewise:chutes-api',
-      endpoint_id: 'other-routewise:chutes-api',
-    };
+  it('does not show RouteWise parameters: they are on Settings → Providers & Routing', async () => {
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,
       openrouter_provider_options: openRouterProviderOptions,
-      routes: [route, otherRoute],
-    });
-    vi.mocked(listRoutewiseSettings).mockResolvedValue({
-      model_id: 'minimax-fast',
-      settings: [
-        {
-          key: 'routewise_budget_alpha',
-          value: 0.75,
-          value_type: 'float',
-          default_value: 0.75,
-          source: 'global_default',
-          overridden: false,
-          description: 'RouteWise LP cost budget interpolation.',
-          min: 0,
-          max: 1,
-        },
-      ],
+      routes: [route],
     });
 
-    render(<ProviderRoutesTab showRoutewiseSettings />);
-    const alpha = await screen.findByLabelText('Cost budget alpha value');
-    const selector = screen.getByLabelText('Selected model');
-    expect(selector).toBeEnabled();
+    render(<ProviderRoutesTab />);
 
-    fireEvent.change(alpha, { target: { value: '0.4' } });
-    expect(selector).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Create model' })).toBeDisabled();
-
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Discard changes to RouteWise parameters' }),
-    );
-    expect(selector).toBeEnabled();
-    chooseValue(selector, 'other-routewise');
-    await waitFor(() => expect(listRoutewiseSettings).toHaveBeenLastCalledWith('other-routewise'));
-    expect(updateRoutewiseSetting).not.toHaveBeenCalled();
+    expect(await screen.findByLabelText('Selected model')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'RouteWise parameters' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Cost budget alpha value')).not.toBeInTheDocument();
+    expect(listRoutewiseSettings).not.toHaveBeenCalled();
   });
 
   describe('routing policy and the panels it shows', () => {
     const HELD = 'Save or discard the unsaved changes first';
     const BLOCKED = 'Save or discard the other unsaved changes first';
-    const budgetSetting: RoutewiseSettingItem = {
-      key: 'routewise_budget_alpha',
-      value: 0.75,
-      value_type: 'float',
-      default_value: 0.75,
-      source: 'global_default',
-      overridden: false,
-      description: 'RouteWise LP cost budget interpolation.',
-      min: 0,
-      max: 1,
-    };
-
-    function renderRoutewiseWithParameters() {
-      vi.mocked(listProviderRoutes).mockResolvedValue({
-        provider_options: providerOptions,
-        openrouter_provider_options: openRouterProviderOptions,
-        routes: [route],
-      });
-      vi.mocked(listRoutewiseSettings).mockResolvedValue({
-        model_id: 'minimax-fast',
-        settings: [budgetSetting],
-      });
-      render(<ProviderRoutesTab showRoutewiseSettings />);
-      return screen.findByLabelText('Cost budget alpha value');
-    }
-
-    const discardParameters = () =>
-      fireEvent.click(
-        screen.getByRole('button', { name: 'Discard changes to RouteWise parameters' }),
-      );
-
-    it('holds the routing policy while RouteWise parameters have unsaved changes', async () => {
-      const alpha = await renderRoutewiseWithParameters();
-      const policy = screen.getByLabelText('Routing policy');
-      expect(policy).toBeEnabled();
-
-      // Switching to fixed would unmount the RouteWise panel and drop its drafts.
-      fireEvent.change(alpha, { target: { value: '0.4' } });
-      expect(policy).toBeDisabled();
-      expect(policy).toHaveAttribute('title', HELD);
-
-      discardParameters();
-      expect(policy).toBeEnabled();
-      expect(policy).not.toHaveAttribute('title');
-    });
-
     it('holds the routing policy while a Queue offload draft is unsaved', async () => {
       const fixedRoute = { ...route, strategy: 'fixed', route_type: 'on_demand' };
       vi.mocked(listProviderRoutes).mockResolvedValue({
@@ -717,26 +634,6 @@ describe('ProviderRoutesTab', () => {
 
       fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Queue offload' }));
       expect(policy).toBeEnabled();
-    });
-
-    it('holds a policy switch while a parameter change made after it is unsaved', async () => {
-      const alpha = await renderRoutewiseWithParameters();
-      const policy = screen.getByLabelText('Routing policy');
-      chooseValue(policy, 'fixed');
-      const savePolicy = screen.getByRole('button', {
-        name: 'Save changes to minimax-fast routing policy',
-      });
-      expect(savePolicy).toBeEnabled();
-
-      fireEvent.change(alpha, { target: { value: '0.4' } });
-      expect(savePolicy).toBeDisabled();
-      expect(screen.getByText(BLOCKED)).toBeVisible();
-      // The policy chosen first can still be changed back by hand.
-      expect(policy).toBeEnabled();
-
-      discardParameters();
-      expect(savePolicy).toBeEnabled();
-      expect(updateProviderRouteStrategy).not.toHaveBeenCalled();
     });
 
     it('holds the routing policy while a fixed weight is unsaved, and the other way round', async () => {
@@ -776,190 +673,6 @@ describe('ProviderRoutesTab', () => {
       expect(updateProviderRouteStrategy).not.toHaveBeenCalled();
       expect(setRouteWeight).not.toHaveBeenCalled();
     });
-  });
-
-  it('renders settings and runs RouteWise probes when requested', async () => {
-    const tencentRoute = {
-      ...route,
-      route_id: 'minimax-fast:lkeap-api',
-      route_type: 'on_demand',
-      provider: 'lkeap',
-      upstream_provider: 'lkeap',
-      key_provider: 'lkeap',
-      base_url: 'https://api.lkeap.cloud.tencent.com/v1',
-      deployment_type: 'auto' as const,
-      provider_model_id: 'MiniMax-M2.5',
-      endpoint_id: 'minimax-fast:lkeap-api',
-    };
-    vi.mocked(listProviderRoutes).mockResolvedValue({
-      provider_options: [
-        ...providerOptions,
-        {
-          provider: 'lkeap',
-          label: 'Tencent Token Plan',
-          kind: 'lkeap',
-          key_provider: 'lkeap',
-          default_base_url: 'https://api.lkeap.cloud.tencent.com/v1',
-        },
-      ],
-      openrouter_provider_options: openRouterProviderOptions,
-      routes: [route, tencentRoute],
-    });
-    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'featherless', keys: [] });
-    vi.mocked(listRoutewiseSettings).mockResolvedValue({
-      model_id: 'minimax-fast',
-      settings: [
-        {
-          key: 'routewise_budget_alpha',
-          value: 0.75,
-          value_type: 'float',
-          default_value: 0.75,
-          source: 'global_default',
-          overridden: false,
-          description: 'RouteWise LP cost budget interpolation.',
-          min: 0,
-          max: 1,
-        },
-        {
-          key: 'routewise_latency_slo_sec',
-          value: 3,
-          value_type: 'float',
-          default_value: 3,
-          source: 'global_default',
-          overridden: false,
-          description: 'Latency SLO in seconds for Routewise LP decisions.',
-          min: 0.1,
-          max: null,
-        },
-        {
-          key: 'routewise_probe_enabled',
-          value: false,
-          value_type: 'bool',
-          default_value: false,
-          source: 'global_default',
-          overridden: false,
-          description: 'Enable RouteWise background active latency probes.',
-          min: null,
-          max: null,
-        },
-      ],
-    });
-    vi.mocked(listRoutewiseProbeSamples).mockResolvedValue({
-      samples: [
-        {
-          model_id: 'minimax-fast',
-          endpoint_id: 'minimax-fast:featherless-api',
-          ok: true,
-          ttft_ms: 123.4,
-          error: null,
-          checked_at: '2026-06-22T00:00:00Z',
-        },
-        {
-          model_id: 'minimax-fast',
-          endpoint_id: 'minimax-fast:featherless-api',
-          ok: false,
-          ttft_ms: null,
-          error: 'RuntimeError',
-          checked_at: '2026-06-21T23:59:00Z',
-        },
-        {
-          model_id: 'minimax-fast',
-          endpoint_id: 'minimax-fast:openrouter[akashml]-api',
-          ok: false,
-          ttft_ms: null,
-          error:
-            '{"error":{"message":"Provider returned error","code":429,"metadata":{"raw":"/-m2.5 is temporarily rate-limited upstream. Please retry shortly. diagnostic-tail-that-should-be-truncated"}}}',
-          checked_at: '2026-06-22T00:00:01Z',
-        },
-        {
-          model_id: 'minimax-fast',
-          endpoint_id: 'minimax-fast:lkeap-api',
-          ok: true,
-          ttft_ms: 456.7,
-          error: null,
-          checked_at: '2026-06-22T00:00:02Z',
-        },
-      ],
-    });
-    vi.mocked(runRoutewiseProbe).mockResolvedValue({
-      results: [
-        {
-          model_id: 'minimax-fast',
-          endpoint_id: 'minimax-fast:featherless-api',
-          ok: true,
-          ttft_ms: 120,
-          error: null,
-        },
-      ],
-    });
-    vi.mocked(updateRoutewiseSetting).mockImplementation(async (_modelId, key, value) => ({
-      key,
-      value,
-      value_type: key === 'routewise_probe_enabled' ? 'bool' : 'float',
-      default_value: key === 'routewise_probe_enabled' ? false : 0.75,
-      source: 'runtime_override',
-      overridden: true,
-      description:
-        key === 'routewise_probe_enabled'
-          ? 'Enable RouteWise background active latency probes.'
-          : 'RouteWise LP cost budget interpolation.',
-      min: key === 'routewise_probe_enabled' ? null : 0,
-      max: key === 'routewise_probe_enabled' ? null : 1,
-    }));
-
-    render(<ProviderRoutesTab showRoutewiseSettings />);
-
-    expect(
-      await screen.findByRole('heading', { name: 'RouteWise parameters' }),
-    ).toBeInTheDocument();
-    const alphaInput = await screen.findByLabelText('Cost budget alpha value');
-    expect(alphaInput).toHaveValue(0.75);
-    fireEvent.change(alphaInput, { target: { value: '0.4' } });
-
-    const probeToggle = screen.getByLabelText('Background probes enabled');
-    expect(probeToggle).not.toBeChecked();
-    fireEvent.click(probeToggle);
-    expect(updateRoutewiseSetting).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Save changes to RouteWise parameters' }));
-
-    await waitFor(() => {
-      expect(updateRoutewiseSetting).toHaveBeenCalledWith(
-        'minimax-fast',
-        'routewise_budget_alpha',
-        0.4,
-      );
-    });
-    await waitFor(() => {
-      expect(updateRoutewiseSetting).toHaveBeenCalledWith(
-        'minimax-fast',
-        'routewise_probe_enabled',
-        true,
-      );
-    });
-    await waitFor(() => {
-      expect(screen.getByLabelText('Cost budget alpha value')).toHaveValue(0.4);
-    });
-
-    expect((await screen.findAllByText('minimax-fast:featherless-api')).length).toBeGreaterThan(0);
-    expect(screen.getAllByText('on_demand · Tencent Token Plan').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('minimax-fast:lkeap-api').length).toBeGreaterThan(0);
-    expect(screen.getByText('123 ms')).toBeInTheDocument();
-    expect(screen.queryByText('RuntimeError')).not.toBeInTheDocument();
-    expect(screen.getByText(/temporarily rate-limited upstream/)).toBeInTheDocument();
-    expect(screen.queryByText(/diagnostic-tail-that-should-be-truncated/)).not.toBeInTheDocument();
-    expect(listRoutewiseProbeSamples).toHaveBeenCalledWith(expect.objectContaining({ limit: 100 }));
-
-    fireEvent.click(screen.getByRole('button', { name: 'Run probe' }));
-    expect(screen.queryByRole('dialog')).toBeNull();
-
-    await waitFor(() => {
-      expect(runRoutewiseProbe).toHaveBeenCalledWith({
-        model_id: 'minimax-fast',
-        endpoint_id: null,
-        idle_only: false,
-      });
-    });
-    expect(await screen.findByText('Probe succeeded')).toBeInTheDocument();
   });
 
   it('shows fixed weight when adding a fixed provider route', async () => {

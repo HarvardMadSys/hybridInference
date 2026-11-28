@@ -35,12 +35,6 @@ export default {
   theme: {
     extend: {
       colors: {
-        brand: {
-          primary: '#111827',
-          accent: '#3B82F6',
-          bgLight: '#F9FAFB',
-          bgDark: '#0B1220',
-        },
         // The accent ramp is a CSS variable so the active distribution's
         // branding document can re-point it without a second set of
         // components. The fallback channels are the neutral crimson, and the
@@ -81,9 +75,6 @@ export default {
           'SimSun',
           'serif',
         ],
-      },
-      borderRadius: {
-        lg: '0.5rem',
       },
       boxShadow: {
         subtle: '0 1px 2px rgba(0,0,0,0.06)',

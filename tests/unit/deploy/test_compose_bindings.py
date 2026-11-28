@@ -254,8 +254,8 @@ _PINNED = (
 
 @pytest.mark.parametrize(
     "overlay",
-    [None, "docker-compose.artifacts.yml", "docker-compose.digest-backend.yml"],
-    ids=["source", "deploy-and-rollback", "digest"],
+    [None, "docker-compose.artifacts.yml"],
+    ids=["source", "deploy-and-rollback"],
 )
 def test_a_rolled_back_backend_still_gets_its_configuration_selectors(
     tmp_path: Path, docker_cli: str, overlay: str | None

@@ -15,6 +15,7 @@ import {
   enableProviderEnvKey,
   listProviderKeyProviders,
   listProviderKeys,
+  removeProviderEnvKey,
   setProviderEnvKeyMinRole,
   setProviderKeyMinRole,
   setProviderKeyStatus,
@@ -23,9 +24,17 @@ import {
 import { getErrorMessage } from '@/lib/utils/errors';
 import { Select } from '@/components/ui/Select';
 
+import { useLeaveGuard } from './useLeaveGuard';
+
 interface Props {
   refreshKey?: number;
   initialProvider?: string;
+  /**
+   * Keep `initialProvider` when it is not listed, and say that its keys are not
+   * managed here: it was asked for. Off, it is only the provider shown last,
+   * and one no longer listed gives way to the first provider.
+   */
+  keepUnlistedProvider?: boolean;
   onProviderChange?: (provider: string) => void;
 }
 
@@ -67,7 +76,12 @@ function formatRelative(s: string | null): string {
   return `${d}d ago`;
 }
 
-export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProviderChange }: Props) {
+export function ProviderKeysTab({
+  refreshKey = 0,
+  initialProvider = '',
+  keepUnlistedProvider = true,
+  onProviderChange,
+}: Props) {
   const toast = useAccountToast();
   const confirmation = useConfirmAction();
   const [providers, setProviders] = useState<string[]>([]);
@@ -97,13 +111,15 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
       setProviders(names);
       setProvidersLoaded(true);
       if (names.length > 0) {
-        setSelectedProvider((current) => current || names[0]);
-        setFormProvider((current) => current || names[0]);
+        const pick = (current: string) =>
+          current && (keepUnlistedProvider || names.includes(current)) ? current : names[0];
+        setSelectedProvider(pick);
+        setFormProvider(pick);
       }
     } catch (err) {
       toast.error(`Failed to load providers: ${getErrorMessage(err)}`);
     }
-  }, [toast]);
+  }, [keepUnlistedProvider, toast]);
 
   const loadKeys = useCallback(
     async (provider: string) => {
@@ -240,6 +256,31 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
     });
   };
 
+  const requestRemoveEnv = (key: ProviderApiKeyItem) => {
+    const id = key.id;
+    if (!id) return;
+    const provider = selectedProvider;
+    confirmation.request({
+      title: `Delete key ${key.key_prefix}?`,
+      confirmLabel: 'Delete',
+      busyLabel: 'Deleting…',
+      tone: 'danger',
+      body: (
+        <p>
+          The {key.provider} key {keyName(key)} is removed from its pools and its saved setting is
+          cleared. The environment variable does not put it back.
+        </p>
+      ),
+      run: async () => {
+        await removeProviderEnvKey(key.provider, id);
+        toast.success(
+          'Key cleared from configuration. The environment variable does not put it back.',
+        );
+        await loadKeys(provider);
+      },
+    });
+  };
+
   // Enable and Disable act on the click: each undoes the other.
   const setEnvStatus = async (key: ProviderApiKeyItem, enable: boolean) => {
     const id = key.id;
@@ -290,8 +331,10 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
   const tiersTarget = `${selectedProvider} key tiers`;
   const changedTiers = sortedKeys.filter((k) => k.id && draftId(k) in tierDrafts);
   // Unsaved tier changes hold the provider selector and adding a key, which
-  // would switch the page to another provider's keys.
+  // would switch the page to another provider's keys. Leaving the page, for
+  // another Providers section or tab, asks first.
   const tiersChanged = changedTiers.length > 0;
+  useLeaveGuard(changedTiers.length);
 
   const changeTierDraft = (key: ProviderApiKeyItem, value: ProviderKeyMinRole) => {
     setTierDrafts((prev) => {
@@ -515,27 +558,38 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
                               reservation only
                             </span>
                           ) : k.source === 'env' ? (
-                            disabled ? (
+                            <>
+                              {disabled ? (
+                                <button
+                                  type="button"
+                                  onClick={() => void setEnvStatus(k, true)}
+                                  disabled={!k.id || confirmation.busy}
+                                  aria-label={`Enable key ${k.key_prefix}`}
+                                  className="rounded-md px-2 py-1 text-[12px] font-medium text-green-700 hover:bg-green-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+                                >
+                                  Enable
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => void setEnvStatus(k, false)}
+                                  disabled={!k.id || confirmation.busy}
+                                  aria-label={`Disable key ${k.key_prefix}`}
+                                  className="rounded-md px-2 py-1 text-[12px] font-medium text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+                                >
+                                  Disable
+                                </button>
+                              )}
                               <button
                                 type="button"
-                                onClick={() => void setEnvStatus(k, true)}
+                                onClick={() => requestRemoveEnv(k)}
                                 disabled={!k.id || confirmation.busy}
-                                aria-label={`Enable key ${k.key_prefix}`}
-                                className="rounded-md px-2 py-1 text-[12px] font-medium text-green-700 hover:bg-green-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+                                aria-label={`Delete key ${k.key_prefix}`}
+                                className="rounded-md px-2 py-1 text-[12px] font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
                               >
-                                Enable
+                                Delete
                               </button>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => void setEnvStatus(k, false)}
-                                disabled={!k.id || confirmation.busy}
-                                aria-label={`Disable key ${k.key_prefix}`}
-                                className="rounded-md px-2 py-1 text-[12px] font-medium text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
-                              >
-                                Disable
-                              </button>
-                            )
+                            </>
                           ) : (
                             <>
                               <button

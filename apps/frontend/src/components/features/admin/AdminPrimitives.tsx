@@ -18,7 +18,7 @@ interface AdminSubTab<K extends string> {
   meta?: ReactNode;
 }
 
-/** The underlined sub-tab bar the Providers tab uses, as an ARIA tablist. */
+/** The underlined sub-tab bar of a tab's in-page sub-tabs (Settings, Announcements), as an ARIA tablist. */
 export function AdminSubTabs<K extends string>({
   label,
   tabs,

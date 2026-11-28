@@ -96,11 +96,11 @@ and:
    to configure**.
 4. Finish setup, then add a provider/key and create a model in **Admin → Routing**.
    Verify the route before making the model available to users. For advanced
-   metadata and aliases, edit the model catalog in **Admin → Settings → Models**.
+   metadata and aliases, edit the model catalog in **Admin → Providers → Models**.
    Follow **Restart required** markers when saving a catalog or credential.
 
 Everything set here can be changed later on the admin console's
-**Settings** tab; [Settings stored in the database](configuration.md#settings-stored-in-the-database)
+**Settings** tab, and the model catalog under **Providers → Models**; [Settings stored in the database](configuration.md#settings-stored-in-the-database)
 explains how. [The first admin account](deployment.md#the-first-admin-account)
 covers the other ways to create an administrator and how to reset its
 password.
@@ -330,10 +330,10 @@ complete; sign in, or reset the administrator's password as in
 
 **A required setting is missing** — signed-in users see a banner, and the
 settings it means are marked **Missing** on the **Configuration** tab. Fill
-them in there; a provider credential takes effect after **Restart backend**.
-If the deployment leaves a model's credential unset on purpose, mark that
-route `optional: true` in the model registry instead, so the variable is no
-longer required.
+them in there. Provider keys and URLs the model registry references are never
+required: until one is set, the route that needs it is skipped (with its model,
+unless the route is `optional: true`) and the backend log names it. A provider
+credential takes effect after **Restart backend**.
 
 **Signing in fails after a settings change** — change the setting back from
 the command line, which needs no sign-in; see

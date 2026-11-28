@@ -52,7 +52,6 @@ from typing import TYPE_CHECKING, Any, Literal
 from serving.accounting import USD, get_accounting_policy
 from serving.storage.erasure_fence import (
     ERASURE_FENCE_TABLE,
-    fence_account_advisory_key,
     fence_account_digest,
     lock_fence_keys_shared,
 )
@@ -1327,8 +1326,3 @@ class Reconciliation:
     admitted_at: Any
     member: Member
     evidence: tuple[dict[str, Any], ...] = ()
-
-
-def fence_advisory_key(user_id: str, secret: str) -> int:
-    """The 64-bit fence lock key of *user_id* (for tests that hold it)."""
-    return fence_account_advisory_key(fence_account_digest(user_id, secret))

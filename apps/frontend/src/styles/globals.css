@@ -13,16 +13,6 @@
   --brand-accent-light: 200 50 74;
 }
 
-/* Hero glow. A component class rather than an arbitrary Tailwind value so the
-   accent can come from the CSS variable above. */
-.hero-glow {
-  background-image: radial-gradient(
-    circle at top,
-    rgb(var(--brand-accent, 165 28 48) / 0.06),
-    transparent 55%
-  );
-}
-
 @layer base {
   html {
     @apply min-h-full;
@@ -108,26 +98,4 @@
   .animate-admin-reveal {
     animation: none;
   }
-}
-
-.dark-scrollbar {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
-}
-
-.dark-scrollbar::-webkit-scrollbar {
-  width: 6px;
-}
-
-.dark-scrollbar::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.dark-scrollbar::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.08);
-  border-radius: 3px;
-}
-
-.dark-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.15);
 }

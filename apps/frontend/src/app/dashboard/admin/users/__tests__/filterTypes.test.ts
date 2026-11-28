@@ -12,6 +12,8 @@ describe('filterStateFromUrl / filterStateToUrl', () => {
       quotaState: 'near' as const,
       provider: 'anthropic',
       anomaly: true,
+      tag: 'unattended',
+      role: 'admin' as const,
       view: null,
     };
     const url = filterStateToUrl(state);
@@ -39,6 +41,12 @@ describe('filterStateFromUrl / filterStateToUrl', () => {
     const params = new URLSearchParams('?status=banana');
     const parsed = filterStateFromUrl(params);
     expect(parsed.status).toBeNull();
+  });
+
+  it('round-trips a tier and ignores an unknown one', () => {
+    const url = filterStateToUrl({ ...DEFAULT_FILTER_STATE, role: 'internal' });
+    expect(filterStateFromUrl(new URLSearchParams(url)).role).toBe('internal');
+    expect(filterStateFromUrl(new URLSearchParams('role=banana')).role).toBeNull();
   });
 });
 

@@ -67,7 +67,4 @@ def test_systemd_units_bound_the_wait_for_open_requests(unit: Path) -> None:
 
 
 def test_the_scan_still_sees_the_systemd_units() -> None:
-    assert {unit.name for unit in SYSTEMD_UNITS} >= {
-        "hybrid_inference.service",
-        "hybrid_inference.staging.service",
-    }
+    assert {unit.name for unit in SYSTEMD_UNITS} >= {"hybrid_inference.service"}

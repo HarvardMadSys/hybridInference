@@ -267,6 +267,21 @@ def boot_value(key: str, default: str | None = None) -> str | None:
     return value if value is not None else fallback
 
 
+def cleared_by_admin(key: str) -> bool:
+    """Whether *key* resolves blank because a stored row empties it.
+
+    An administrator cleared the setting (on the Settings tab, or by removing a
+    provider key), as opposed to never setting it: an empty environment value
+    is never imported into a row (:func:`_import_environment`), so a blank that
+    comes from the environment, or from nothing at all, does not count. Judged
+    on the rows :func:`config_value` serves.
+    """
+    if key in _STATE.managed:
+        return False
+    row = _STATE.effective.get(key)
+    return row is not None and not row.value.strip()
+
+
 def _document_entry(key: str) -> ConfigEntry | None:
     """Return *key*'s entry when it is an application document, else ``None``.
 
@@ -2164,6 +2179,8 @@ def describe(*, offered_only: bool = False) -> dict[str, Any]:
     (:func:`~serving.config.app_config_registry.is_offered`), except one that
     needs the administrator: missing, refused, or waiting for a restart.
     """
+    from serving.config.documents import KEY_KINDS
+
     state = _STATE
     health = refresh_health()
     context = _requirement_context()
@@ -2211,12 +2228,21 @@ def describe(*, offered_only: bool = False) -> dict[str, Any]:
                 # Immutable and already settled: no value can be stored now.
                 "locked": _immutable_reason(entry, state.rows) is not None,
                 "setup": entry.setup,
+                "choices": list(entry.choices),
+                "case_sensitive": entry.case_sensitive,
+                "applies_when": (
+                    {"key": entry.applies_when.key, "values": list(entry.applies_when.values)}
+                    if entry.applies_when is not None
+                    else None
+                ),
                 "one_time": registry.is_one_time(entry),
                 "origin": entry.origin,
                 "custom": entry.origin == "custom",
                 "invalid": invalid,
                 "used_by": list(entry.used_by),
                 "security_relevant": _security_relevant_entry(key, entry),
+                # A JSON object, which the console edits one value at a time.
+                "document": key in KEY_KINDS,
                 "updated_at": stamped.updated_at if stamped is not None else None,
                 "updated_by": stamped.updated_by if stamped is not None else None,
                 "group": registry.managed_group(key),
@@ -2249,7 +2275,12 @@ def entry(key: str) -> ConfigEntry | None:
 
 
 #: Categories every setting of which is security-relevant (:func:`security_relevant`).
-SECURITY_CATEGORIES: frozenset[str] = frozenset({"security", "network", "phone", "privacy"})
+#: The two that hold the application documents are among them: the model catalog
+#: and the routing policy say where requests go, the single sign-on providers who
+#: may sign in.
+SECURITY_CATEGORIES: frozenset[str] = frozenset(
+    {"security", "network", "phone", "privacy", "models", "application"}
+)
 
 #: Security-relevant settings outside :data:`SECURITY_CATEGORIES`: where mail goes,
 #: who hears about new accounts and where users are told to write, the identity
@@ -2262,6 +2293,7 @@ SECURITY_SETTING_KEYS: frozenset[str] = frozenset(
         "SMTP_HOST",
         "SMTP_PORT",
         "SMTP_USER",
+        "CLOUDFLARE_ACCOUNT_ID",
         "SMTP_FROM_EMAIL",
         "SIGNUP_NOTIFY_EMAILS",
         "SITE_SUPPORT_EMAIL",
@@ -2301,7 +2333,6 @@ def _security_relevant_entry(key: str, setting: ConfigEntry | None) -> bool:
         or setting.category in SECURITY_CATEGORIES
         or setting.origin != "static"
         or key in SECURITY_SETTING_KEYS
-        or setting.category == "application"
         or key.endswith("_URL")
     )
 

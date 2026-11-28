@@ -111,8 +111,7 @@ describe('the public path manifest', () => {
 
 describe('the console against the manifest', () => {
   it('serves every gateway path by exactly one route handler or one rewrite', async () => {
-    const { beforeFiles, afterFiles } = await config.rewrites();
-    // A neutral build compiles in no legacy agent rewrite (see next.config.js).
+    const { beforeFiles = [], afterFiles } = await config.rewrites();
     expect(beforeFiles).toEqual([]);
 
     const handled = gatewayRouteFiles().map(({ route }) => entryOf(route));

@@ -64,10 +64,10 @@ from serving.servers.routers.completions import (
 )
 from serving.servers.routers.responses import (
     ResponsesServices,
-    ResponsesStream,
     execute_responses,
+    render_responses_http,
 )
-from serving.servers.streaming_response import ClosingStreamingResponse, close_body
+from serving.servers.streaming_response import close_body
 from serving.servers.surface_http import client_origin, timeout_probe
 from serving.spend_ledger import SPEND_CHECK_KEY
 from serving.surfaces.context import (
@@ -75,6 +75,11 @@ from serving.surfaces.context import (
     InteractiveAdmission,
     admission_from,
     read_only,
+)
+from serving.user_tags import (
+    TAG_QUOTA_DAILY_KEY,
+    TAG_QUOTA_MONTHLY_KEY,
+    tag_concurrency_cap,
 )
 from serving.utils.logging import get_logger
 
@@ -201,7 +206,13 @@ async def _reserve_playground_spend(
     user_id = str(user["user_id"])
     read_at = time.monotonic()
     daily, monthly, daily_amount, monthly_amount = await _account_quotas(
-        op_store, {"id": user_id, "role": role}
+        op_store,
+        {
+            "id": user_id,
+            "role": role,
+            # The account's user-tag quotas, for an account with no live key.
+            **{key: user.get(key) for key in (TAG_QUOTA_DAILY_KEY, TAG_QUOTA_MONTHLY_KEY)},
+        },
     )
     identity = {
         "user_id": user_id,
@@ -283,6 +294,7 @@ async def _playground_slot(
                 role,
                 is_admin,
                 max_concurrent,
+                tag_cap=tag_concurrency_cap(user),
             )
         finally:
             if intake_key is not None:
@@ -632,7 +644,7 @@ async def playground_responses(
     cost_tracker=Depends(get_cost_tracker),
     response_store=Depends(get_response_store),
     _streams: list[ChatStream] = Depends(release_unstarted_chat_streams, scope="request"),
-) -> JSONResponse | StreamingResponse:
+) -> Response:
     """Serve an OpenAI Responses request for the console playground.
 
     Runs the same execution as ``/v1/responses`` under the console session, so
@@ -668,15 +680,9 @@ async def playground_responses(
             response_store=response_store,
         ),
     )
-    if isinstance(result, ResponsesStream):
-        if result.chat_stream is not None:
-            _streams.append(result.chat_stream)
-        return ClosingStreamingResponse(
-            result.events,
-            media_type="text/event-stream",
-            headers=_RESPONSES_SSE_HEADERS,
-        )
-    return JSONResponse(content=result.body)
+    return await render_responses_http(
+        result, request, streams=_streams, headers=_RESPONSES_SSE_HEADERS
+    )
 
 
 @router.post("/messages", response_model=None)

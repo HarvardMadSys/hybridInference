@@ -498,6 +498,12 @@ async def login(
         await _record("failure", failure_reason="invalid_password", user_id=user_row["id"])
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
+    # Service accounts are API-key-only: even a somehow-matching password
+    # never opens a browser session for one.
+    if user_row.get("is_service_account"):
+        await _record("failure", failure_reason="service_account", user_id=user_row["id"])
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
     # Check account status *before* email verification. A suspended, rejected,
     # or pending account must be reported as such: otherwise an account that is
     # both non-active and unverified would be told to "verify your email" — a

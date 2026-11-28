@@ -95,8 +95,7 @@ explains how to configure and extend an overlay.
 .. Distribution-facing customization lives in three pages:
    distribution-customization (capability matrix, manifest, branding,
    upgrades), site-ui-modules (the public UI contract) and backend-extensions.
-   Extend them when adding a customization capability; keep implementation
-   notes under docs/agents/specs.
+   Extend them when adding a customization capability.
 
 .. toctree::
    :maxdepth: 2
@@ -149,6 +148,7 @@ explains how to configure and extend an overlay.
    accounting
    trusted-proxies-and-client-ips
    automation-score
+   user-tags
 
 .. toctree::
    :maxdepth: 2

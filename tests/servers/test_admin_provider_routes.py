@@ -358,6 +358,7 @@ async def admin_client(monkeypatch):
         return_value=[], side_effect=list_provider_keys_full
     )
     op_store.list_disabled_provider_env_key_hashes = AsyncMock(return_value=set())
+    op_store.list_removed_provider_env_key_hashes = AsyncMock(return_value=set())
     op_store.get_user_by_id = AsyncMock(return_value=None)
     op_store.create_audit_log = AsyncMock()
 

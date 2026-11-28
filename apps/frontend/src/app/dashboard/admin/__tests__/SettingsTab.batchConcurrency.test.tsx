@@ -31,6 +31,7 @@ vi.mock('@/lib/api/admin', async () => {
     listSignupAllowedDomains: vi.fn(async () => ({ domains: [] })),
     listModelVisibility: vi.fn(async () => ({ models: [] })),
     listModelConcurrency: vi.fn(async () => ({ models: [] })),
+    listProviderRoutes: vi.fn(async () => ({ provider_options: [], routes: [] })),
     listBatchModelLimits: vi.fn(async () => ({
       default_concurrency: 4,
       models: [
@@ -64,10 +65,10 @@ describe('SettingsTab batch concurrency', () => {
     cleanup();
   });
 
-  it('lists the section on the Batch sub-tab and shows update toasts', async () => {
+  it('lists the section on the Operations tab and shows update toasts', async () => {
     const api = await import('@/lib/api/admin');
 
-    await renderSettings('Batch');
+    await renderSettings('Operations');
     expect(
       within(screen.getByRole('tabpanel')).getByRole('region', { name: 'Batch Concurrency' }),
     ).toBeInTheDocument();

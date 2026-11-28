@@ -686,6 +686,7 @@ class CachedOperationalStore(OperationalStore):
         status: str = "active",
         signup_reason: str | None = None,
         login_name: str | None = None,
+        is_service_account: bool = False,
     ) -> None:
         """Delegate to wrapped store."""
         return await self._store.create_user(
@@ -697,6 +698,41 @@ class CachedOperationalStore(OperationalStore):
             status=status,
             signup_reason=signup_reason,
             login_name=login_name,
+            is_service_account=is_service_account,
+        )
+
+    async def create_service_account(
+        self,
+        *,
+        user_id: str,
+        login_name: str,
+        password_hash: str,
+        user_name: str,
+        role: str,
+        key_hash: str,
+        key_prefix: str,
+        quota_daily_cost_usd: Decimal | float = 1000.0,
+        quota_monthly_cost_usd: Decimal | float | None = None,
+        quota_daily_cost_amount: Decimal | float | None = None,
+        quota_monthly_cost_amount: Decimal | float | None = None,
+        expires_at: datetime | None = None,
+        notes: str | None = None,
+    ) -> Row:
+        """Delegate to wrapped store (a new account has nothing cached to invalidate)."""
+        return await self._store.create_service_account(
+            user_id=user_id,
+            login_name=login_name,
+            password_hash=password_hash,
+            user_name=user_name,
+            role=role,
+            key_hash=key_hash,
+            key_prefix=key_prefix,
+            quota_daily_cost_usd=quota_daily_cost_usd,
+            quota_monthly_cost_usd=quota_monthly_cost_usd,
+            quota_daily_cost_amount=quota_daily_cost_amount,
+            quota_monthly_cost_amount=quota_monthly_cost_amount,
+            expires_at=expires_at,
+            notes=notes,
         )
 
     async def get_or_create_setup_code(
@@ -741,14 +777,6 @@ class CachedOperationalStore(OperationalStore):
             actor=actor,
         )
 
-    async def get_user_counts_by_status(self) -> dict[str, int]:
-        """Delegate to wrapped store."""
-        return await self._store.get_user_counts_by_status()
-
-    async def get_active_user_counts(self) -> dict[str, int]:
-        """Delegate to wrapped store."""
-        return await self._store.get_active_user_counts()
-
     async def list_user_activity_providers(self, *, days: int = 30) -> list[str]:
         """Delegate to wrapped store."""
         return await self._store.list_user_activity_providers(days=days)
@@ -780,6 +808,8 @@ class CachedOperationalStore(OperationalStore):
         active_within_hours: int | None = None,
         anomaly: bool | None = None,
         include_usage_totals: bool = True,
+        tag: str | None = None,
+        role: str | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Delegate to wrapped store."""
         return await self._store.list_users(
@@ -795,6 +825,8 @@ class CachedOperationalStore(OperationalStore):
             active_within_hours=active_within_hours,
             anomaly=anomaly,
             include_usage_totals=include_usage_totals,
+            tag=tag,
+            role=role,
         )
 
     async def update_key_last_used(self, key_id: int) -> None:
@@ -937,6 +969,104 @@ class CachedOperationalStore(OperationalStore):
         revoked = await self._store.revoke_session_by_sid(user_id, sid)
         await self._forget_sessions(user_id)
         return revoked
+
+    # -- user tags ---------------------------------------------------------------
+    #
+    # The tags of an account ride its cached auth contexts and its cached user
+    # row, folded into its limits (``serving.user_tags``). A membership change
+    # evicts that account's entries; a change to a tag's limits, or deleting
+    # a tag, reaches every member at once, so it evicts every account's. Other
+    # processes catch up within the entries' TTLs, as with any account change
+    # made elsewhere. The automatic rule's run (``serving.admin.user_tag_detector``)
+    # writes through its own connection and relies on those TTLs.
+
+    async def _forget_tag_holders(self) -> None:
+        await self.invalidate_auth_caches()
+        await self._cache.delete_pattern("user:*")
+
+    async def _forget_tag_holder(self, user_id: str) -> None:
+        await self._cache.delete(self._user_key(user_id))
+        await self.invalidate_user_auth_caches(user_id)
+
+    async def list_user_tags(self) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_user_tags()
+
+    async def get_user_tag(self, name: str) -> Row | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_user_tag(name)
+
+    async def create_user_tag(self, name: str, fields: dict[str, Any]) -> Row | None:
+        """Delegate to wrapped store: a new tag has no members to evict."""
+        return await self._store.create_user_tag(name, fields)
+
+    async def update_user_tag(self, name: str, fields: dict[str, Any]) -> Row | None:
+        """Delegate then evict every account's entries: the tag's limits ride them."""
+        row = await self._store.update_user_tag(name, fields)
+        if row is not None and fields:
+            await self._forget_tag_holders()
+        return row
+
+    async def delete_user_tag(self, name: str) -> bool:
+        """Delegate then evict every account's entries."""
+        deleted = await self._store.delete_user_tag(name)
+        if deleted:
+            await self._forget_tag_holders()
+        return deleted
+
+    async def list_user_tag_members(
+        self,
+        name: str,
+        *,
+        sources: Sequence[str] | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[int, list[Row]]:
+        """Delegate to wrapped store."""
+        return await self._store.list_user_tag_members(
+            name, sources=sources, limit=limit, offset=offset
+        )
+
+    async def add_user_tag_members(
+        self, name: str, user_ids: Sequence[str], *, assigned_by: str | None
+    ) -> tuple[list[str], list[str]]:
+        """Delegate then evict the entries of every account whose membership changed."""
+        result = await self._store.add_user_tag_members(name, user_ids, assigned_by=assigned_by)
+        for user_id in result[0]:
+            await self._forget_tag_holder(user_id)
+        return result
+
+    async def remove_user_tag_member(
+        self, name: str, user_id: str, *, removed_by: str | None
+    ) -> str | None:
+        """Delegate then evict the account's entries."""
+        source = await self._store.remove_user_tag_member(name, user_id, removed_by=removed_by)
+        if source is not None:
+            await self._forget_tag_holder(user_id)
+        return source
+
+    async def get_user_tag_memberships(self, user_id: str) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.get_user_tag_memberships(user_id)
+
+    async def get_tags_for_users(self, user_ids: Sequence[str]) -> dict[str, list[str]]:
+        """Delegate to wrapped store."""
+        return await self._store.get_tags_for_users(user_ids)
+
+    async def preview_user_tag_members(
+        self, name: str, *, window_hours: int, min_active_hours: int, limit: int = 200
+    ) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.preview_user_tag_members(
+            name, window_hours=window_hours, min_active_hours=min_active_hours, limit=limit
+        )
+
+    async def detect_user_tag_members(self, name: str) -> list[str] | None:
+        """Delegate then evict the entries of every account that gained the tag."""
+        added = await self._store.detect_user_tag_members(name)
+        for user_id in added or ():
+            await self._forget_tag_holder(user_id)
+        return added
 
     # -- second factor (pass-through) ------------------------------------------
     #
@@ -2133,6 +2263,7 @@ class CachedOperationalStore(OperationalStore):
         key_hash: str,
         key_prefix: str,
         disabled_by: str | None,
+        removed: bool = False,
     ) -> None:
         """Delegate to wrapped store."""
         await self._store.disable_provider_env_key(
@@ -2140,11 +2271,16 @@ class CachedOperationalStore(OperationalStore):
             key_hash=key_hash,
             key_prefix=key_prefix,
             disabled_by=disabled_by,
+            removed=removed,
         )
 
     async def list_disabled_provider_env_key_hashes(self, provider: str) -> set[str]:
         """Delegate to wrapped store."""
         return await self._store.list_disabled_provider_env_key_hashes(provider)
+
+    async def list_removed_provider_env_key_hashes(self, provider: str) -> set[str]:
+        """Delegate to wrapped store."""
+        return await self._store.list_removed_provider_env_key_hashes(provider)
 
     async def list_disabled_provider_env_keys(self, provider: str) -> list[tuple[str, str]]:
         """Delegate to wrapped store."""

@@ -335,12 +335,46 @@ class OperationalStore(ABC):
         status: str = "active",
         signup_reason: str | None = None,
         login_name: str | None = None,
+        is_service_account: bool = False,
     ) -> None:
         """Insert a new user row.
 
         ``signup_reason`` captures the free-text use case the user submitted at
         registration; surfaced in the admin user list to aid manual approval.
         ``email`` may be None only for an account that has a ``login_name``.
+        ``is_service_account`` marks an admin-created, API-key-only account
+        (no email, unknowable password); browser sign-in refuses those.
+        """
+
+    @abstractmethod
+    async def create_service_account(
+        self,
+        *,
+        user_id: str,
+        login_name: str,
+        password_hash: str,
+        user_name: str,
+        role: str,
+        key_hash: str,
+        key_prefix: str,
+        quota_daily_cost_usd: Decimal | float = 1000.0,
+        quota_monthly_cost_usd: Decimal | float | None = None,
+        quota_daily_cost_amount: Decimal | float | None = None,
+        quota_monthly_cost_amount: Decimal | float | None = None,
+        expires_at: datetime | None = None,
+        notes: str | None = None,
+    ) -> Row:
+        """Create an active service account and its first API key in one transaction.
+
+        The account has no email, holds *role*, is flagged
+        ``is_service_account`` and gets its Default project; the key is issued
+        on that project with the given quota, which becomes the account's.
+        Nothing is written unless all of it is. Returns the key row (at least
+        ``id`` and ``created_at``).
+
+        Raises:
+            LoginNameTakenError: Another account holds *login_name*
+                (case-insensitively), including one created concurrently.
         """
 
     @abstractmethod
@@ -559,8 +593,14 @@ class OperationalStore(ABC):
         active_within_hours: int | None = None,
         anomaly: bool | None = None,
         include_usage_totals: bool = True,
+        tag: str | None = None,
+        role: str | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Return ``(total_count, user_rows, status_counts_row)``.
+
+        *tag* keeps only the users that tag applies to.
+        *role* keeps only accounts in that tier (``free``, ``pro``,
+        ``internal``, ``admin``).
 
         *sort_by* values that reference cost (``cost_today``, ``cost_month``,
         ``cost_alltime``) or usage (``requests``, ``tokens``) require joining
@@ -574,7 +614,8 @@ class OperationalStore(ABC):
         uncomputed metrics are ``None``. Sorting still computes its selected metric.
 
         ``status_counts_row`` is a dict with keys ``all``, ``pending_approval``,
-        ``active``, ``suspended``, ``rejected``, ``deleted``.
+        ``active``, ``suspended``, ``rejected``, ``deleted``, plus ``roles``:
+        unfiltered counts for ``free``, ``pro``, ``internal`` and ``admin``.
 
         Additional kw-only filters (all default to ``None`` — no-op):
         - ``min_cost_today`` / ``min_cost_month``: filter to users whose
@@ -628,17 +669,6 @@ class OperationalStore(ABC):
         reason: str,
     ) -> None:
         """Set status='rejected', record reviewer and reason."""
-
-    @abstractmethod
-    async def get_user_counts_by_status(self) -> dict[str, int]:
-        """Return ``{status_value: count}`` for all statuses."""
-
-    @abstractmethod
-    async def get_active_user_counts(self) -> dict[str, int]:
-        """Return ``{"total": N, "dau": N, "mau": N}``.
-
-        Derived from ``users.last_login_at`` — does not touch api_logs.
-        """
 
     # -- api keys ------------------------------------------------------------
 
@@ -1038,6 +1068,96 @@ class OperationalStore(ABC):
 
         Whichever browser holds it can no longer refresh it. Returns whether a
         session was still live to revoke.
+        """
+
+    # -- user tags -------------------------------------------------------------
+    #
+    # Named groups of accounts (``user_tags``) and which account carries which
+    # (``user_tag_members``). See ``serving.user_tags`` for what a tag's limits
+    # mean and ``serving.storage.user_tags`` for the rows.
+
+    @abstractmethod
+    async def list_user_tags(self) -> list[Row]:
+        """Every tag with its limits, rule and member counts, built-in first.
+
+        Each row: ``name, description, quota_daily_cost, quota_monthly_cost,
+        accounting_currency, max_concurrent_requests, allowed_models,
+        auto_enabled, auto_window_hours, auto_min_active_hours, system,
+        created_at, updated_at, manual_members, auto_members,
+        dismissed_members``.
+        """
+
+    @abstractmethod
+    async def get_user_tag(self, name: str) -> Row | None:
+        """One tag, shaped as :meth:`list_user_tags` rows are, or None."""
+
+    @abstractmethod
+    async def create_user_tag(self, name: str, fields: dict[str, Any]) -> Row | None:
+        """Create a tag with *fields* set; None when one of that name exists."""
+
+    @abstractmethod
+    async def update_user_tag(self, name: str, fields: dict[str, Any]) -> Row | None:
+        """Set *fields* on a tag and return it; None when there is none."""
+
+    @abstractmethod
+    async def delete_user_tag(self, name: str) -> bool:
+        """Delete a tag that is not built in, and its memberships."""
+
+    @abstractmethod
+    async def list_user_tag_members(
+        self,
+        name: str,
+        *,
+        sources: Sequence[str] | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[int, list[Row]]:
+        """``(total, rows)`` of a tag's memberships, applied ones first.
+
+        Each row: ``user_id, source, assigned_at, assigned_by, email,
+        login_name, phone, user_name, status``.
+        """
+
+    @abstractmethod
+    async def add_user_tag_members(
+        self, name: str, user_ids: Sequence[str], *, assigned_by: str | None
+    ) -> tuple[list[str], list[str]]:
+        """Make accounts manual members of a tag; return ``(changed, unknown)`` ids."""
+
+    @abstractmethod
+    async def remove_user_tag_member(
+        self, name: str, user_id: str, *, removed_by: str | None
+    ) -> str | None:
+        """Take a tag away from an account; return the membership's source, or None.
+
+        Under a tag with an automatic rule the membership is kept as
+        ``dismissed``, so the rule counts only the account's later requests.
+        """
+
+    @abstractmethod
+    async def get_user_tag_memberships(self, user_id: str) -> list[Row]:
+        """An account's memberships, dismissed ones included, with each tag's limits."""
+
+    @abstractmethod
+    async def get_tags_for_users(self, user_ids: Sequence[str]) -> dict[str, list[str]]:
+        """The tags that apply to each of *user_ids*; accounts with none are absent."""
+
+    @abstractmethod
+    async def preview_user_tag_members(
+        self, name: str, *, window_hours: int, min_active_hours: int, limit: int = 200
+    ) -> list[Row]:
+        """The active accounts an automatic rule of these bounds matches now.
+
+        Each row: ``user_id, active_hours, member_source`` and the account's
+        ``email, login_name, phone, user_name, status``. Changes nothing.
+        """
+
+    @abstractmethod
+    async def detect_user_tag_members(self, name: str) -> list[str] | None:
+        """Apply a tag's saved automatic rule now; return the ids of the accounts that gained it.
+
+        None when the tag is gone or its rule is off, as read under the tag's
+        lock.
         """
 
     # -- second factor ---------------------------------------------------------
@@ -2345,12 +2465,26 @@ class OperationalStore(ABC):
         key_hash: str,
         key_prefix: str,
         disabled_by: str | None,
+        removed: bool = False,
     ) -> None:
-        """Persist a tombstone for an env-sourced provider API key."""
+        """Persist a tombstone for an env-sourced provider API key.
+
+        ``removed=False`` is a disable: the key stays listed and can be
+        re-enabled. ``removed=True`` is a delete: workers still exclude the
+        hash, and a later disable (``removed=False``) clears that flag.
+        """
 
     @abstractmethod
     async def list_disabled_provider_env_key_hashes(self, provider: str) -> set[str]:
-        """Return disabled env-sourced provider key hashes for ``provider``."""
+        """Return disabled env-sourced provider key hashes for ``provider``.
+
+        Includes hashes an administrator removed. Pools exclude every tombstone,
+        whether or not the admin list still shows it.
+        """
+
+    @abstractmethod
+    async def list_removed_provider_env_key_hashes(self, provider: str) -> set[str]:
+        """Return env-key hashes an administrator removed, not merely disabled."""
 
     @abstractmethod
     async def list_disabled_provider_env_keys(self, provider: str) -> list[tuple[str, str]]:
@@ -2358,7 +2492,8 @@ class OperationalStore(ABC):
 
         Unlike ``list_disabled_provider_env_key_hashes`` (boot-time hash set),
         this carries the masked prefix so the admin UI can display a disabled
-        env key and offer to re-enable it.
+        env key and offer to re-enable it. Removed hashes are included; the
+        caller decides which of those to show.
         """
 
     @abstractmethod

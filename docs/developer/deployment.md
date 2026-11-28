@@ -516,9 +516,9 @@ something invalid, the console shows a configuration error with a retry button
 instead of guessing. Check the frontend logs and whether the backend is up,
 then retry. The example deployment needs no extra settings for this.
 
-A few older build-time options remain for existing build pipelines: the old
-branding variables, which Compose still accepts as build arguments, and two
-agent build arguments that it no longer sets. Standard builds do not need them.
+The old branding variables remain as build-time options for existing build
+pipelines; Compose still accepts them as build arguments, and standard builds
+do not need them.
 Anything that really is a `NEXT_PUBLIC_*` build value is compiled into the
 browser bundle and needs `make build s=frontend`; see
 [The public path table](public-path-table.md).
@@ -547,9 +547,8 @@ exceptions below. The switches
 on the **Settings** tab are copied into their own store the same way. The
 existing `JWT_SECRET_KEY` and `API_KEY_SECRET` are among the copied values, so
 sessions and API keys keep working, and a database that already has accounts
-never shows the setup page. If the console then reports missing settings for
-credentials the deployment leaves unset on purpose, mark those routes
-`optional: true` in the model registry; see
+never shows the setup page. Provider credentials the deployment leaves unset
+are not reported as missing settings; see
 [Missing settings](configuration.md#missing-settings).
 
 From then on the database value wins. Editing such a line in `.env` changes
@@ -942,8 +941,13 @@ address and is an admin on their first login.
 Email verification is on by default, and with it on an account cannot log in
 until it has followed a link sent to the address, which restores the
 ownership check that `ADMIN_EMAILS` itself does not perform. This needs working
-SMTP; without it nobody can complete a signup, and the console reports
-`SMTP_USER` and `SMTP_PASSWORD` as missing settings.
+mail; without it nobody can complete a signup, and the console reports the
+selected transport's settings as missing: `SMTP_HOST`, `SMTP_USER` and
+`SMTP_PASSWORD` while `EMAIL_PROVIDER` is `smtp`, or `CLOUDFLARE_ACCOUNT_ID`
+and `CLOUDFLARE_EMAIL_API_TOKEN` while it is `cloudflare`. There is no default
+mail service: a deployment sends through its own SMTP server or Cloudflare
+account. See
+[Email and SMS delivery providers](configuration.md#email-and-sms-delivery-providers).
 
 `ADMIN_EMAILS` also picks the default recipients for signup approval mail. To
 narrow the notification list without changing who holds the admin role, set
@@ -1006,8 +1010,7 @@ one with its password:
 ```
 
 `TWO_FACTOR_STEP_UP_MINUTES` (default 10) is how long a code keeps confirming
-those changes before the console asks for a new one. The design is in
-[the design record](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-11-15-admin-two-factor-design.md).
+those changes before the console asks for a new one.
 
 ## Database
 
@@ -1029,7 +1032,7 @@ they succeed.
 | Deployment | The step |
 |---|---|
 | The bundled Compose stack | `make migrate`; `make up` and `make build` run it for you |
-| Compose with a pinned image (`docker-compose.digest-backend.yml`) | `docker compose ... run --rm --no-deps backend python -m migrations upgrade` once PostgreSQL is up, with the same files and `BACKEND_IMAGE` as the `up` that follows |
+| Pinned images (`make deploy`) | `make deploy` runs it before switching over; `make rollback` never runs an older image's migrations |
 | A systemd unit (`deploy/systemd/`) | `.venv/bin/python -m migrations upgrade` in the unit's working directory, with its environment, before `systemctl restart` |
 
 Rules for a deploy script that does this itself:

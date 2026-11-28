@@ -1,7 +1,7 @@
 // Database-backed application configuration (admin) and backend restart.
 //
-// Shapes mirror `GET /admin/config` in
-// docs/agents/specs/2026-10-10-db-backed-config-first-run-setup-design.md.
+// Shapes mirror `GET /admin/config` (`ConfigResponse` in
+// apps/backend/serving/schemas_config.py).
 
 import { fetchWithAuth, getAccessToken } from './client';
 import { apiErrorFromResponse, readJson } from './detail';
@@ -32,6 +32,12 @@ export interface ConfigCategory {
   id: string;
   label: string;
   description: string;
+}
+
+/** The setting `key` decides whether another applies: it does while `key` is one of `values`. */
+export interface ConfigAppliesWhen {
+  key: string;
+  values: string[];
 }
 
 export interface ConfigEntry {
@@ -66,6 +72,22 @@ export interface ConfigEntry {
   /** Shown on the first-run configuration step. */
   setup: boolean;
   /**
+   * The accepted values, in the order to offer them, when the setting is a
+   * choice (`EMAIL_PROVIDER`); empty otherwise. An older backend omits it.
+   */
+  choices?: string[];
+  /**
+   * Whether `choices` are compared exactly. Otherwise case is ignored and the
+   * value is kept as stored, so `LOG_LEVEL=info` is the choice `INFO`.
+   */
+  case_sensitive?: boolean;
+  /**
+   * Set when the setting does something only while another one holds certain
+   * values: the SMTP settings while `EMAIL_PROVIDER` is `smtp`. The console
+   * hides it while another value is selected. An older backend omits it.
+   */
+  applies_when?: ConfigAppliesWhen | null;
+  /**
    * Usually set once, when the gateway is deployed: listed after the settings
    * changed more often. An older backend omits it, and its order stays.
    */
@@ -87,6 +109,13 @@ export interface ConfigEntry {
    * are sent. An older backend omits it, and asks for nothing.
    */
   security_relevant?: boolean;
+  /**
+   * An application document, such as `MODEL_CATALOG`: a JSON object, which
+   * the console edits as one field per value. Its value is still the whole
+   * document's JSON text. An older backend omits it, and the document is
+   * edited as text.
+   */
+  document?: boolean;
   /** When the database row was last written; `null` when there is none. */
   updated_at: string | null;
   updated_by: string | null;

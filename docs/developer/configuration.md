@@ -14,16 +14,24 @@ configuration paths.
 
 | Configuration | Owner |
 |---|---|
-| Application settings and documents | `app_config`, edited in Admin Settings |
+| Application settings and documents | `app_config`, edited in Admin Settings, the model catalog in Admin Providers → Models |
 | Providers, credentials, live routes and overrides | Admin Providers and Routing |
 | Database connection, host ports and container networking | `.env` and Compose |
 | Persistent lifecycle options | `.ops.env`, copied from `.ops.env.example` |
 
 ### Application documents
 
-The Models settings sub-tab includes these validated JSON documents. They use
-the same conditional saves, audit, security confirmation and backup controls as
-other settings. No JSON file is a runtime fallback either.
+**Admin → Providers → Models** edits `MODEL_CATALOG`, with each model's runtime
+role and concurrency overrides beside it; **Admin → Settings → Application**
+edits the other documents. All of them are validated JSON and use the same conditional
+saves, audit, security confirmation and backup controls as other settings. No
+JSON file is a runtime fallback either.
+
+Admin shows each document as fields, one per value, named by its path, such as
+`models[0].route[0].base_url`. Each field is a plain string. A number or
+`true`/`false` keeps its type, and a list of strings is one comma-separated
+field. To add or remove a key or a list item, switch the document to **JSON**.
+A save from the fields stores the whole document as indented JSON.
 
 | Setting | Purpose | Application |
 |---|---|---|
@@ -170,10 +178,10 @@ and the files, once no earlier release will run.
 
 Provider/key changes and ordinary route edits are persisted in the operational
 store. Backend processes observe committed changes and converge on their scoped
-model transitions, normally within ten seconds. The Models settings sub-tab shows
-**Applied in each backend process**, including failed, stale or unsupported
-processes. A stale process is never counted as successfully updated. Compare the
-registered process count with your deployment inventory.
+model transitions, normally within ten seconds. **Admin → Providers → Models**
+shows **Applied in each backend process** beside the model catalog, including failed,
+stale or unsupported processes. A stale process is never counted as successfully
+updated. Compare the registered process count with your deployment inventory.
 
 Catalog changes marked **Restart required** still need a controlled backend
 restart. A save is not evidence that every process has applied the change.
@@ -191,8 +199,26 @@ before deleting the key.
 
 ### Providers tab
 
-Add and verify providers and keys here. Credentials remain write-only. Built-in
-adapter kinds and catalog-owned provider names remain reserved.
+Providers has a page for each part of the upstream setup, each with its own
+address:
+
+- **Overview** lists the providers. Add, verify, edit or delete a custom
+  provider here; **Manage keys** opens that provider's keys.
+- **Keys** adds and verifies a provider's keys, reserves one for a user tier,
+  and disables or removes it. It also lists the upstream concurrency of every
+  key in use.
+- **Models** edits the model catalog, and the runtime overrides that apply on
+  top of it: the role each model requires, and whether its requests count
+  toward the per-user concurrency limit. Neither override changes the catalog.
+- **Availability** takes a provider out of routing for every model, and puts it
+  back.
+- **Quotas** shows what each key has used of its plan's limits, where a quota
+  extension reports them.
+- **Performance** shows how each model's providers perform: latency, errors,
+  cache hits and throughput.
+
+Credentials remain write-only. Built-in adapter kinds and catalog-owned provider
+names remain reserved.
 
 A provider's Base URL may name any host, private and loopback ones included,
 so that a self-hosted engine (vLLM, SGLang, Ollama) can be added. Cloud
@@ -234,9 +260,9 @@ it up on reload without rewriting their catalog. Route listings include
 
 ### Settings tab
 
-Edit application documents, credentials, delivery settings, network policy,
-runtime switches and quotas here. Required fields and restart requirements are
-shown beside each setting.
+Edit the application documents other than the model catalog, credentials,
+delivery settings, network policy, runtime switches and quotas here. Required
+fields and restart requirements are shown beside each setting.
 
 ### How the two layers combine
 
@@ -409,8 +435,11 @@ The CLI never prints a secret value.
 ### Missing settings
 
 The console shows **Ask admin to configure**. Administrators can open Settings
-or create a model in Routing. Other users should contact their administrator.
+or Models from it, or create a model in Routing. Other users should contact their administrator.
 No borrowed provider, model, key or deployment identity is silently selected.
+Provider keys and URLs the model catalog references never count as missing:
+until one is set, the route that needs it is skipped (with its model, unless the
+route is `optional: true`) and the backend log names it.
 
 ## Environment variables
 
@@ -431,9 +460,28 @@ The smoke is explicit real inference and consumes the usual quota.
 
 ## Email and SMS delivery providers
 
-`EMAIL_PROVIDER` defaults to `smtp`; `SMS_PROVIDER` defaults to `none`. Every other provider is an optional module that a deployment loads explicitly. A gateway that does not load a provider neither offers it nor lists its settings in **Admin > Configuration**. Without a provider beyond the built-in one, it does not list `EMAIL_PROVIDER` or `SMS_PROVIDER` either, which would have only one value to choose, and without an SMS provider it lists none of the phone settings. Selecting an unavailable provider is a configuration error; delivery never silently falls back to another provider.
+`EMAIL_PROVIDER` defaults to `smtp`; `SMS_PROVIDER` defaults to `none`. The gateway sends mail itself in two ways: `smtp`, through an SMTP server the deployment names, and `cloudflare`, through Cloudflare Email Sending. Neither comes configured. The first-run setup step offers the choice, and it and **Admin > Configuration** show only the selected transport's settings. Every other provider is an optional module that a deployment loads explicitly. A gateway that does not load a provider neither offers it nor lists its settings. Without an SMS provider, it does not list `SMS_PROVIDER` either, which would have only one value to choose, or any of the phone settings. Selecting an unavailable provider is a configuration error; delivery never silently falls back to another provider.
+
+### SMTP
 
 SMTP mail travels over TLS that checks the server's certificate before the password is sent. Port 465 uses TLS from the first byte; any other `SMTP_PORT` must offer STARTTLS. The certificate must be valid for `SMTP_HOST` and issued by an authority the backend trusts. A server with a self-signed or privately issued certificate is refused, and the backend log names the server and says why. Give it a certificate from a public authority, or set `SSL_CERT_FILE` in the backend's environment to a bundle that holds the system's authorities and the one that signed it.
+
+### Cloudflare Email Sending
+
+With `EMAIL_PROVIDER=cloudflare`, each message the gateway sends (verification, password reset, approval and rejection notices, signup alerts and admin broadcasts) is one request to Cloudflare's REST API, carrying the HTML and text bodies the gateway rendered. Cloudflare applies no template. To use it:
+
+1. In the Cloudflare dashboard, onboard the sending domain under **Email Service > Email Sending**.
+2. Create an API token with the **Email Sending: Edit** permission on that account.
+3. Set `CLOUDFLARE_ACCOUNT_ID` to the account's Account ID, 32 hexadecimal digits, and `CLOUDFLARE_EMAIL_API_TOKEN` to the token.
+4. Set `SMTP_FROM_EMAIL` to an address on the onboarded domain. `SMTP_FROM_EMAIL` and `SMTP_FROM_NAME` are the sender of both built-in transports.
+
+The token is a secret: the configuration API redacts it, and anyone who holds it can send mail from every domain onboarded on that account. Both values are read on every send, so a rotated token applies without a restart. While either is empty, nothing is sent, and configuration health reports both as missing when public signup requires email verification, instead of asking for SMTP credentials.
+
+A message counts as sent once Cloudflare reports it delivered or queued. A refusal, a permanent bounce or a recipient on the account's suppression list is logged with Cloudflare's error code, and the send fails. Calls are not automatically retried, because a timeout can follow acceptance. On the Workers Free plan, Cloudflare delivers only to verified destination addresses.
+
+Cloudflare also accepts SMTP submission at `smtp.mx.cloudflare.net`, port 465, user `api_token`, with the token as the password, which the `smtp` transport can use instead. The `cloudflare` transport adds Cloudflare's answer for each message: delivered, queued, bounced or suppressed.
+
+### Extension providers
 
 Each distribution can add the providers its own inference hub needs, such as a regional email or SMS service. A trusted module selected through `BACKEND_EXTENSIONS` registers its email or SMS transport and configuration entries before database-backed settings load. The shared interfaces are `register_email_provider` and `register_sms_provider` in `serving.utils.delivery`, and `register_config_entries` in `serving.config.app_config_registry`. Extension settings keep the normal database → environment → registered default precedence, validation, secret masking and worker refresh. The extension reads them through `config_value()` instead of adding vendor fields to shared `Settings`.
 

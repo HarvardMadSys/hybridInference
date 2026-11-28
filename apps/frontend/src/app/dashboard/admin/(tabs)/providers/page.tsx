@@ -1,7 +1,5 @@
-'use client';
-
-import { ProvidersTab } from '@/components/features/admin/ProvidersTab';
+import { ProviderOverviewSection } from '@/components/features/admin/ProvidersTab';
 
 export default function Page() {
-  return <ProvidersTab />;
+  return <ProviderOverviewSection />;
 }

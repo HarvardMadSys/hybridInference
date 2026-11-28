@@ -123,7 +123,6 @@ class RoutingConfig(BaseModel):  # type: ignore[no-any-unimported]
     default_router: str = Field(default="fixed")
     timeout: int = 2
     health_check: int = 0  # seconds; 0 disables health checking
-    logging: dict[str, Any] = Field(default_factory=dict)
 
     local_deployment: list[Deployment] = Field(default_factory=list)
     remote_deployment: list[Deployment] = Field(default_factory=list)
@@ -229,22 +228,6 @@ def routing_config_from_data(raw: Any) -> RoutingConfig:
         return cast("RoutingConfig", RoutingConfig.model_validate(expanded))
     except ValidationError as e:
         raise ValueError(f"Invalid routing config: {e}") from e
-
-
-def load_routing_config_text(text: str) -> RoutingConfig:
-    """Load and validate routing configuration from a YAML document.
-
-    Args:
-        text: YAML document. ``${VAR}`` references resolve the same way they do
-            when the document is read from a file.
-
-    Returns:
-        Validated RoutingConfig object with references expanded.
-
-    Raises:
-        ValueError: If the document is invalid.
-    """
-    return routing_config_from_data(yaml.safe_load(text) or {})
 
 
 def load_routing_config(path: Path) -> RoutingConfig:

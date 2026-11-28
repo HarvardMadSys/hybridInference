@@ -3,7 +3,8 @@ import '@testing-library/jest-dom/vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { BatchesView, progress } from './BatchesView';
+import { BatchesView } from './BatchesView';
+import { progress } from './batchText';
 import { WebhookSettings } from './WebhookSettings';
 import { AccountToastContext } from '@/lib/hooks/useAccountToast';
 import type { BatchAccess } from '@/lib/hooks/queries/useBatchCapabilities';

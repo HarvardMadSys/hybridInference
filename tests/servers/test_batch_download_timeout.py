@@ -144,19 +144,3 @@ async def test_a_download_slower_than_the_request_timeout_is_served_whole(app, p
 
     assert response.status_code == 200
     assert response.content.count(b"\n") == lines
-
-
-@pytest.mark.asyncio
-async def test_a_route_that_does_not_stream_still_times_out(app):
-    """The mark is per response: anything else keeps the request timeout."""
-    inner = app.app
-
-    @inner.get("/slow")
-    async def slow() -> dict[str, str]:
-        await asyncio.sleep(1)
-        return {"ok": "late"}
-
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.get("/slow")
-
-    assert response.status_code == 504

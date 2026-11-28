@@ -18,9 +18,11 @@ import {
   type UpdateUserData,
 } from '@/lib/api/admin';
 import { SummaryCards } from './SummaryCards';
+import { UserTagsPanel } from './UserTagsPanel';
 import { SavedViews } from './SavedViews';
 import { FilterBar } from './FilterBar';
 import { UserTable } from './UserTable';
+import { ServiceAccountCreate } from './ServiceAccountCreate';
 import { Pagination, PAGE_SIZE_OPTIONS } from './Pagination';
 import { useUsers, USERS_LIST_QUERY_KEY } from './hooks/useUsers';
 import { useBulkUsageTotals, USAGE_TOTALS_QUERY_KEY } from './hooks/useUserUsageTotals';
@@ -29,7 +31,8 @@ import { useBulkTurnAverages } from './hooks/useUserTurnAverages';
 import { useBulkAskQuestionFractions } from './hooks/useUserAskQuestionFractions';
 import { useBulkAutomationScores } from './hooks/useUserAutomationScores';
 import { compareByScore } from './lib/automation';
-import { filterStateFromUrl, filterStateToUrl } from './lib/filterTypes';
+import { DEFAULT_FILTER_STATE, filterStateFromUrl, filterStateToUrl } from './lib/filterTypes';
+import { OPEN_USER_PARAM } from './lib/userLink';
 import { getViewById } from './lib/views';
 import { parseHiddenColumns, type ColumnId } from './lib/columns';
 import type { Density, FilterState, UserRow } from './types';
@@ -55,8 +58,18 @@ export default function UsersTab() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const [showServiceAccountCreate, setShowServiceAccountCreate] = useState(false);
   const [filterState, setFilterState] = useState<FilterState>(() =>
     filterStateFromUrl(searchParams, currency),
+  );
+  // An account a link asked to open. Not a filter: it leaves the address once
+  // the account is open or found missing (below), and a filter change rewrites
+  // the address without it.
+  const openUserId = searchParams.get(OPEN_USER_PARAM);
+  // An id a link named that the list for its filters did not show, with those
+  // filters as an address: the note about it lasts as long as they do.
+  const [missingOpenUser, setMissingOpenUser] = useState<{ id: string; filters: string } | null>(
+    null,
   );
   const [density, setDensity] = useState<Density>('comfortable');
 
@@ -79,13 +92,29 @@ export default function UsersTab() {
 
   const applyFilterState = useCallback(
     (next: FilterState) => {
-      setFilterState(next);
+      // A view saved before tiers existed has no role. Fill every missing key
+      // from the default so the address and the table agree.
+      const normalized: FilterState = {
+        ...DEFAULT_FILTER_STATE,
+        ...next,
+        role: next.role ?? null,
+      };
+      setFilterState(normalized);
       setPage(0);
-      const qs = filterStateToUrl(next, currency);
+      const qs = filterStateToUrl(normalized, currency);
       router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
     },
     [pathname, router, currency],
   );
+
+  // The link has done its work once the account is open: the same address
+  // without `open`, so a reload or a copy of it opens nothing.
+  const dropOpenUser = useCallback(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete(OPEN_USER_PARAM);
+    const qs = params.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  }, [searchParams, pathname, router]);
 
   // Persisted density
   useEffect(() => {
@@ -146,6 +175,27 @@ export default function UsersTab() {
 
   const users = usersQuery.data?.users ?? [];
   const total = usersQuery.data?.total ?? 0;
+
+  // A link to an account the list does not show, such as one deleted since
+  // the link was made: say so, then drop `open` as an opened link does. Only a
+  // settled list for the filters the address names counts. When an address
+  // with `open` reaches a tab already showing other filters, the list is the
+  // old one until the sync above catches up.
+  const filters = filterStateToUrl(filterState, currency);
+  const listMatchesAddress =
+    filters === filterStateToUrl(filterStateFromUrl(searchParams, currency), currency);
+  const listSettled = usersQuery.isSuccess && !usersQuery.isFetching && listMatchesAddress;
+  const openUserListed = openUserId !== null && users.some((u) => u.id === openUserId);
+  useEffect(() => {
+    if (!openUserId || !listSettled || openUserListed) return;
+    setMissingOpenUser({ id: openUserId, filters });
+    dropOpenUser();
+  }, [openUserId, listSettled, openUserListed, filters, dropOpenUser]);
+  // Any change of filters, from a control or a step back or forward, ends it.
+  useEffect(() => {
+    setMissingOpenUser((missing) => (missing && missing.filters !== filters ? null : missing));
+  }, [filters]);
+  const missingOpenUserId = missingOpenUser?.filters === filters ? missingOpenUser.id : null;
   const usageTotalsQuery = useBulkUsageTotals(
     users
       .filter((u) => u.usage_alltime_requests == null || u.usage_alltime_tokens == null)
@@ -318,11 +368,34 @@ export default function UsersTab() {
     <div className="mt-6 space-y-4">
       <SummaryCards onCardClick={onCardClick} activeView={filterState.view} />
 
+      <UserTagsPanel
+        activeTag={filterState.tag ?? null}
+        onShowMembers={(tag) => applyFilterState({ ...filterState, tag, view: null })}
+      />
+
+      {showServiceAccountCreate && (
+        <ServiceAccountCreate
+          onClose={() => setShowServiceAccountCreate(false)}
+          onCreated={() => {
+            void queryClient.invalidateQueries({ queryKey: USERS_LIST_QUERY_KEY });
+          }}
+        />
+      )}
+
       {/* Keep toolbar popovers visible even when the table has few or no rows.
           UserTable owns the horizontal scrolling; only its content is clipped. */}
       <div className="rounded-lg border border-gray-200 bg-white">
         <div className="space-y-3 rounded-t-lg border-b border-gray-200 bg-gray-50/50 p-3">
-          <SavedViews current={filterState} onApply={applyFilterState} />
+          <div className="flex items-center justify-between gap-2">
+            <SavedViews current={filterState} onApply={applyFilterState} />
+            <button
+              type="button"
+              onClick={() => setShowServiceAccountCreate(true)}
+              className="shrink-0 rounded-md bg-gray-900 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-gray-700"
+            >
+              New service account
+            </button>
+          </div>
           <FilterBar
             state={filterState}
             onChange={applyFilterState}
@@ -330,6 +403,7 @@ export default function UsersTab() {
             onDensityChange={setDensity}
             hiddenColumns={hiddenColumns}
             onHiddenColumnsChange={setHiddenColumns}
+            roleCounts={usersQuery.data?.role_counts}
           />
         </div>
 
@@ -358,6 +432,13 @@ export default function UsersTab() {
             </button>
           </div>
         )}
+        {missingOpenUserId && (
+          <div role="status" className="m-3 text-[13px] text-gray-500">
+            No account with the ID{' '}
+            <span className="font-mono text-gray-700">{missingOpenUserId}</span> is listed. It may
+            have been permanently deleted.
+          </div>
+        )}
         {!usersQuery.isLoading && (
           <>
             <UserTable
@@ -373,6 +454,8 @@ export default function UsersTab() {
               hiddenColumns={hiddenColumns}
               filterState={filterState}
               onSortChange={(sortBy) => applyFilterState({ ...filterState, sortBy })}
+              openUserId={openUserId}
+              onOpenedFromLink={dropOpenUser}
               {...handlers}
             />
             <div className="border-t border-gray-200 px-3">

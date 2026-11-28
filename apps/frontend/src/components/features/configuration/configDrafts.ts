@@ -14,7 +14,16 @@ import type { ConfigCategory, ConfigEntry, ConfigScalar, ConfigValueType } from 
  * `clear`, which stores the empty string.
  */
 export type ConfigDraft =
-  | { kind: 'value'; value: string | boolean }
+  | {
+      kind: 'value';
+      value: string | boolean;
+      /**
+       * Why the edit cannot be saved yet, from an editor that converts what is
+       * typed: a document's field that is not a value of its type. The draft
+       * counts as a change, and nothing is sent, until it is gone.
+       */
+      error?: string;
+    }
   | { kind: 'replace'; value: string }
   | { kind: 'clear' };
 
@@ -64,6 +73,7 @@ export function isDirty(entry: ConfigEntry, draft: ConfigDraft | undefined): boo
   // An empty replacement is an editor left open, not an edit: clearing a
   // secret is its own, explicit action.
   if (draft.kind === 'replace') return draft.value !== '';
+  if (draft.error) return true;
   return !sameValue(entry.type, draft.value, initialInput(entry));
 }
 
@@ -83,6 +93,7 @@ export function settleDraft(
 /** A message when a changed value cannot be sent as its type, else `null`. */
 export function draftError(entry: ConfigEntry, draft: ConfigDraft | undefined): string | null {
   if (!draft || draft.kind === 'clear' || !isDirty(entry, draft)) return null;
+  if (draft.kind === 'value' && draft.error) return draft.error;
   const raw = draft.value;
   if (typeof raw === 'boolean') return null;
   if (entry.type === 'int' && !INTEGER_PATTERN.test(raw.trim())) {
@@ -139,6 +150,75 @@ export function withoutKeys<T>(
   const next = { ...record };
   for (const key of keys) delete next[key];
   return next;
+}
+
+/**
+ * The choice `value` is, compared as the backend compares it: exactly for a
+ * case-sensitive setting, otherwise ignoring case (`info` is `INFO`).
+ * `undefined` when it is none of them.
+ */
+export function matchingChoice(entry: ConfigEntry, value: string): string | undefined {
+  const choices = entry.choices ?? [];
+  if (entry.case_sensitive) return choices.find((choice) => choice === value);
+  const folded = value.toLowerCase();
+  return choices.find((choice) => choice.toLowerCase() === folded);
+}
+
+/**
+ * Whether the entry applies with the values the editor shows now, unsaved
+ * edits included: its `applies_when` setting holds one of the listed values.
+ * A deciding setting with no value holds its default, as the backend reads it.
+ * An entry without a condition always applies, as does one whose deciding
+ * setting is not among `entries` (nothing on the page can change it).
+ */
+export function appliesNow(
+  entry: ConfigEntry,
+  entries: readonly ConfigEntry[],
+  drafts: ConfigDrafts,
+): boolean {
+  const condition = entry.applies_when;
+  if (!condition) return true;
+  const decider = entries.find((candidate) => candidate.key === condition.key);
+  if (!decider) return true;
+  const current =
+    String(currentInput(decider, drafts[decider.key])) || String(decider.default ?? '');
+  return condition.values.includes(matchingChoice(decider, current) ?? current);
+}
+
+/**
+ * The entries to show with the values the editor shows now: those that apply,
+ * and any whose stored value was refused, which still needs correcting or a
+ * reset whichever transport is selected.
+ */
+export function applicableEntries(
+  entries: readonly ConfigEntry[],
+  drafts: ConfigDrafts,
+): ConfigEntry[] {
+  return entries.filter((entry) => appliesNow(entry, entries, drafts) || entry.invalid != null);
+}
+
+/**
+ * `drafts` without the edits a save just made moot: once `EMAIL_PROVIDER` is
+ * saved as `cloudflare`, an unsaved SMTP edit belongs to a transport no longer
+ * in use, and would otherwise come back when SMTP is chosen again. Only the
+ * settings whose deciding setting is among `writtenKeys` are dropped.
+ */
+export function withoutMootDrafts(
+  drafts: ConfigDrafts,
+  entries: readonly ConfigEntry[],
+  writtenKeys: readonly string[],
+): ConfigDrafts {
+  const written = new Set(writtenKeys);
+  const moot = entries
+    .filter(
+      (entry) =>
+        entry.key in drafts &&
+        entry.applies_when != null &&
+        written.has(entry.applies_when.key) &&
+        !appliesNow(entry, entries, drafts),
+    )
+    .map((entry) => entry.key);
+  return moot.length > 0 ? withoutKeys(drafts, moot) : drafts;
 }
 
 export interface ConfigGroup {

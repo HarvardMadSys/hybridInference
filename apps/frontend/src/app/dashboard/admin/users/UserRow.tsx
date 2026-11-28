@@ -7,6 +7,7 @@ import { isAnomalous } from './lib/anomaly';
 import { bandStyle } from './lib/automation';
 import { ROLE_STYLE, STATUS_STYLE } from './ui';
 import { NoteIcon } from './UserDetailPanel';
+import { TagChip } from './TagChip';
 import type {
   UserAskQuestionFraction,
   UserAutomationScore,
@@ -170,6 +171,11 @@ export function UserRow({
                   <NoteIcon className="h-3.5 w-3.5" />
                 </span>
               )}
+              {user.is_service_account && (
+                <span className="shrink-0 rounded bg-violet-100 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-violet-700">
+                  Service
+                </span>
+              )}
             </div>
             {!compact && user.user_name && (
               <div className="truncate text-[12px] text-gray-500" title={user.user_name}>
@@ -197,6 +203,9 @@ export function UserRow({
               ⚠
             </span>
           )}
+          {(user.tags ?? []).map((tag) => (
+            <TagChip key={tag} name={tag} />
+          ))}
         </div>
         {/* Labelled buttons beside the pill on wide screens, under it when the
             column is narrow; compact rows keep one line with icon buttons. */}

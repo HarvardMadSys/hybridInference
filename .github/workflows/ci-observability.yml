@@ -13,8 +13,7 @@ jobs:
   summarize-push:
     name: Summarize CI Timing
     if: github.event.workflow_run.event == 'push'
-    # Keep this control-plane observer off the self-hosted pool whose queue it
-    # measures. It runs only after dev/main push CI completes.
+    # It runs only after dev/main push CI completes.
     runs-on: ubuntu-latest
     steps:
       - name: Check out trusted metrics code

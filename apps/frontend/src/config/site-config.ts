@@ -115,8 +115,6 @@ const runtimeBrandingSchema = z
       .object({
         logo_url: assetUrlSchema,
         favicon_url: assetUrlSchema,
-        // Optional: the backend omits it (`exclude_none`) for documents that
-        // never named a hero image.
       })
       .strict(),
     team: z.array(teamMemberSchema),
@@ -202,21 +200,7 @@ const versionedSiteConfigDocumentSchema = z
   // feature gates down over a key this console does not read.
   .passthrough();
 
-// The endpoint immediately preceding schema v1 exposed this exact subset.
-// Accept it during rolling upgrades and paired rollbacks so a neutral console
-// keeps the deployment identity and feature gates while the backend catches up.
-const legacySiteConfigDocumentSchema = z
-  .object({
-    distribution: distributionSchema,
-    site: siteSchema,
-    features: featuresSchema,
-  })
-  .strict();
-
-const siteConfigDocumentSchema = z.union([
-  versionedSiteConfigDocumentSchema,
-  legacySiteConfigDocumentSchema,
-]);
+const siteConfigDocumentSchema = versionedSiteConfigDocumentSchema;
 
 export interface RuntimeSiteConfig {
   accounting?: { currency: 'USD' | 'CNY'; usd_to_currency_rate?: string };
@@ -314,32 +298,6 @@ function resolveBranding(input: unknown, displayName: string, supportEmail: stri
   };
 }
 
-function resolveLegacyBranding(
-  displayName: string,
-  publicBaseUrl: string,
-  supportEmail: string,
-): Branding {
-  const normalizedBaseUrl = publicBaseUrl.replace(/\/+$/, '');
-  const safeBaseUrl = apiBaseSchema.safeParse(normalizedBaseUrl).success ? normalizedBaseUrl : '';
-  let siteHost = '';
-  if (safeBaseUrl) {
-    try {
-      siteHost = new URL(safeBaseUrl).host;
-    } catch {
-      // The schema already checks this, but keep the fallback local if URL
-      // parsing behavior differs between runtimes.
-    }
-  }
-
-  return {
-    ...buildTimeBranding,
-    ...(displayName ? { appName: displayName } : {}),
-    ...(safeBaseUrl ? { exampleApiBase: safeBaseUrl } : {}),
-    ...(siteHost ? { siteHost } : {}),
-    ...(supportEmail.trim() ? { contactEmail: supportEmail.trim() } : {}),
-  };
-}
-
 export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
   const parsed = siteConfigDocumentSchema.safeParse(input);
   if (!parsed.success) {
@@ -349,39 +307,18 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
   }
 
   const document = parsed.data;
-  let branding: Branding;
-  // A legacy document predates both states, and so does a v1 gateway without
-  // the setup flow: neither has anything to set up or report as missing.
-  let setupRequired = false;
-  let configurationIncomplete = false;
-  let phoneAuthPolicy: RuntimeSiteConfig['phoneAuthPolicy'];
-  let ssoEnabled = false;
-  if ('schema_version' in document) {
-    branding = resolveBranding(
-      document.branding,
-      document.distribution.display_name,
-      document.site.support_email,
-    );
-    setupRequired = document.setup?.required === true;
-    configurationIncomplete = document.configuration?.incomplete === true;
-    if (document.phone_auth_policy) {
-      phoneAuthPolicy = { defaultCountryCode: document.phone_auth_policy.default_country_code };
-    }
-    ssoEnabled = document.sso?.enabled === true;
-  } else {
-    branding = resolveLegacyBranding(
-      document.distribution.display_name,
-      document.site.public_base_url,
-      document.site.support_email,
-    );
-  }
+  const branding = resolveBranding(
+    document.branding,
+    document.distribution.display_name,
+    document.site.support_email,
+  );
+  const phoneAuthPolicy: RuntimeSiteConfig['phoneAuthPolicy'] = document.phone_auth_policy
+    ? { defaultCountryCode: document.phone_auth_policy.default_country_code }
+    : undefined;
 
   return {
     branding,
-    accounting:
-      'schema_version' in document
-        ? (document.accounting ?? { currency: 'USD' })
-        : { currency: 'USD' },
+    accounting: document.accounting ?? { currency: 'USD' },
     agentsUrl: '',
     distribution: {
       id: document.distribution.id,
@@ -397,10 +334,10 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
       // Opt-in only: publishing usage stats needs an explicit true.
       publicStats: document.features.public_stats === true,
     },
-    setup: { required: setupRequired },
-    configuration: { incomplete: configurationIncomplete },
+    setup: { required: document.setup?.required === true },
+    configuration: { incomplete: document.configuration?.incomplete === true },
     ...(phoneAuthPolicy ? { phoneAuthPolicy } : {}),
-    sso: { enabled: ssoEnabled },
+    sso: { enabled: document.sso?.enabled === true },
   };
 }
 

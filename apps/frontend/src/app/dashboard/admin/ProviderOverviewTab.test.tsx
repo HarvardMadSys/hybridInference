@@ -160,6 +160,43 @@ describe('ProviderOverviewTab', () => {
     expect(screen.getByRole('button', { name: 'Delete provider' })).toBeDisabled();
   });
 
+  it('opens deletion confirmation for a built-in provider with linked models', async () => {
+    const response = await vi.mocked(listProviderDefinitions)();
+    vi.mocked(listProviderDefinitions).mockResolvedValue({
+      ...response,
+      providers: [
+        {
+          ...ACME,
+          provider: 'kimi',
+          display_name: 'Kimi',
+          source: 'built_in',
+          models_count: 3,
+        },
+      ],
+    });
+    vi.mocked(deleteProviderDefinition).mockResolvedValue({
+      provider: 'kimi',
+      deleted_keys: 2,
+      removed_routes: 4,
+      removed_models: 1,
+    });
+    render(<ProviderOverviewTab onManageKeys={vi.fn()} />);
+
+    const deleteButton = await screen.findByRole('button', { name: 'Delete Kimi' });
+    expect(deleteButton).toBeEnabled();
+    fireEvent.click(deleteButton);
+
+    expect(screen.getByRole('dialog', { name: 'Delete provider “Kimi”?' })).toHaveTextContent(
+      'from the model catalog',
+    );
+    fireEvent.change(screen.getByLabelText('Type kimi to confirm'), {
+      target: { value: 'kimi' },
+    });
+    clickInDialog('Delete provider');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(vi.mocked(deleteProviderDefinition).mock.calls).toEqual([['kimi']]);
+  });
+
   describe('deleting', () => {
     beforeEach(() => {
       vi.mocked(listProviderDefinitions).mockResolvedValue({

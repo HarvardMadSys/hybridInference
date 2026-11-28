@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
-import { ADMIN_SETTINGS_PATH } from '@/components/features/configuration/paths';
+import { ADMIN_MODELS_PATH, ADMIN_SETTINGS_PATH } from '@/components/features/configuration/paths';
 import { isSetupPath } from '@/components/features/setup/SetupGate';
 import { useAuth } from '@/components/providers';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
@@ -22,7 +22,7 @@ import { useT } from '@/components/providers/useT';
  * and Admin → Settings, which list the missing settings themselves.
  *
  * The flag is the server-rendered site configuration's, so a save on the
- * Settings tab calls `router.refresh()` to update it.
+ * Settings tab or on Providers → Models calls `router.refresh()` to update it.
  */
 export function ConfigurationBanner(): JSX.Element | null {
   const { setup, configuration } = useSiteConfig();
@@ -31,15 +31,17 @@ export function ConfigurationBanner(): JSX.Element | null {
   // `?.`: tolerate a configuration object built before these keys existed.
   if (configuration?.incomplete !== true || setup?.required === true) return null;
   if (isSetupPath(pathname) || publicRouteFor(pathname) !== null) return null;
-  if (pathname === ADMIN_SETTINGS_PATH || pathname.startsWith(`${ADMIN_SETTINGS_PATH}/`)) {
-    return null;
-  }
+  if (isUnder(pathname, ADMIN_SETTINGS_PATH)) return null;
   // Only now is the session needed, so a complete deployment renders the
   // chrome without reading it.
-  return <MissingConfigurationNotice />;
+  return <MissingConfigurationNotice onModels={isUnder(pathname, ADMIN_MODELS_PATH)} />;
 }
 
-function MissingConfigurationNotice(): JSX.Element | null {
+function isUnder(pathname: string, path: string): boolean {
+  return pathname === path || pathname.startsWith(`${path}/`);
+}
+
+function MissingConfigurationNotice({ onModels }: { onModels: boolean }): JSX.Element | null {
   const { state } = useAuth();
   const consoleWidth = useConsoleWidth();
   const { bar } = useConsoleFrame();
@@ -62,15 +64,27 @@ function MissingConfigurationNotice(): JSX.Element | null {
           <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
             <span className="font-semibold">Ask admin to configure</span>
             {/* Filtered to the required settings that have no value, on every
-                sub-tab; clearing the filter lands on Models, where an empty
-                catalog -- the other way to be incomplete -- is fixed. */}
+                tab; clearing the filter lands on Site & Setup, where a site
+                document that does not validate is corrected. */}
             <Link
-              href={`${ADMIN_SETTINGS_PATH}?tab=models&missing=1`}
+              href={`${ADMIN_SETTINGS_PATH}?tab=setup&missing=1`}
               prefetch={false}
               className="font-medium underline underline-offset-2"
             >
               Open Settings
             </Link>
+            {/* The other way to be incomplete: no model at all. Providers →
+                Models holds the catalog, and points to Routing, where a model
+                is created. */}
+            {onModels ? null : (
+              <Link
+                href={ADMIN_MODELS_PATH}
+                prefetch={false}
+                className="font-medium underline underline-offset-2"
+              >
+                Open Models
+              </Link>
+            )}
           </p>
         ) : (
           <p>

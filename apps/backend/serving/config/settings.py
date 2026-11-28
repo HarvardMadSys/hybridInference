@@ -221,19 +221,24 @@ class Settings(BaseSettings):
     # on this path is the larger cost of the two. Set false to spend nothing.
     auth_failure_identify_caller: bool = True
 
-    # Cloudflare Turnstile (signup captcha)
-    turnstile_site_key: str = ""
+    # Cloudflare Turnstile (signup captcha). The console has its own site key.
     turnstile_secret_key: str = ""
 
-    # Email (optional). Provider names are validated against the extensions
-    # registered before app_config loads, not a distribution-specific enum.
+    # Email (optional). Provider names are validated against the built-in
+    # transports (smtp, cloudflare) and the extensions registered before
+    # app_config loads, not a distribution-specific enum. No mail service is
+    # assumed: a deployment names its own SMTP server or Cloudflare account.
     email_provider: str = "smtp"
-    smtp_host: str = "smtp.resend.com"
+    smtp_host: str = ""
     smtp_port: int = 587
-    smtp_user: str = "resend"
+    smtp_user: str = ""
     smtp_password: str = ""
+    # The sender of every built-in transport, SMTP and Cloudflare alike.
     smtp_from_email: str = "noreply@localhost"
     smtp_from_name: str = "HybridInference"
+    # Cloudflare Email Sending (EMAIL_PROVIDER=cloudflare).
+    cloudflare_account_id: str = ""
+    cloudflare_email_api_token: str = ""
 
     sms_auth_enabled: bool = False
     sms_provider: str = "none"
@@ -439,6 +444,18 @@ class Settings(BaseSettings):
         :func:`get_settings`).
         """
         _parse_networks(value, info.field_name or "network")
+        return value
+
+    @field_validator("cloudflare_account_id")
+    @classmethod
+    def _check_cloudflare_account_id(cls, value: str) -> str:
+        """Refuse anything but an account id: it is a segment of every Cloudflare API path.
+
+        Surrounding whitespace, as a pasted id often has, is dropped.
+        """
+        value = value.strip()
+        if value and not re.fullmatch(r"[0-9a-fA-F]{32}", value):
+            raise ValueError("must be the 32 hexadecimal digits Cloudflare shows as the Account ID")
         return value
 
     @field_validator("kubernetes_proxy_namespace", "kubernetes_proxy_service_name")

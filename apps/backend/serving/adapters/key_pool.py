@@ -47,9 +47,6 @@ reserved keys are preferred over shared ones (highest ``min_role`` first, then
 configuration order), so an entitled caller drains the capacity set aside for
 it before touching the pool every tier shares. ``role=None`` means an
 unrestricted internal caller (health probes, warmups) and sees every key.
-
-See docs/agents/specs/archive/2026-04-30-multi-key-rotation-design.md for the
-original (least-loaded) design this supersedes.
 """
 
 from __future__ import annotations

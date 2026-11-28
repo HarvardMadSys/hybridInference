@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import logging
 import re
-from pathlib import Path
 from typing import Any
 
-import yaml
 from pydantic import AliasChoices, BaseModel, Field
 
 from serving.config.app_config import config_value
@@ -432,13 +430,3 @@ class AlertConfig(BaseModel):
 def alert_config_from_data(raw: dict[str, Any]) -> AlertConfig:
     """Validate a parsed alert document using the existing setting-reference rules."""
     return AlertConfig.model_validate(_expand_env(raw))
-
-
-def load_alert_config(path: str | Path) -> AlertConfig:
-    """Load AlertConfig from YAML at ``path``; return defaults if missing."""
-    p = Path(path)
-    if not p.exists():
-        log.warning("alerts config not found at %s; using defaults", p)
-        return AlertConfig()
-    raw = yaml.safe_load(p.read_text()) or {}
-    return alert_config_from_data(raw)

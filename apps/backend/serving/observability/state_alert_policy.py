@@ -44,18 +44,6 @@ def reset_state_change_policy() -> None:
     apply_state_change_policy(StateChanges())
 
 
-def set_usage_limit_paging(enabled: bool) -> None:
-    """Set whether subscription usage-limit circuit trips page at all.
-
-    Narrower than :func:`apply_state_change_policy` and kept separate because it
-    is the one field with a caller that knows only this much: the bootstrap path
-    that runs even when ``ALERTS_ENABLED`` is off, since the breaker pages
-    ``alert_slack`` directly and is gated on the webhook env vars instead.
-    """
-    global _CIRCUIT_OPEN
-    _CIRCUIT_OPEN = _CIRCUIT_OPEN.model_copy(update={"page_on_usage_limit": bool(enabled)})
-
-
 def circuit_open_policy() -> CircuitOpenStateChange:
     """Return the effective ``state_changes.circuit_open`` configuration."""
     return _CIRCUIT_OPEN

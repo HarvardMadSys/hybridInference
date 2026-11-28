@@ -12,7 +12,6 @@ import asyncio
 import contextlib
 import datetime as dt
 import functools
-import os
 import random
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -26,7 +25,7 @@ from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
 from routing.routers import FixedRouter
 from serving import spend_ledger
-from serving.auto_mode import AutoMode, _auto_mode_from_document
+from serving.auto_mode import AutoMode, auto_mode_from_document
 from serving.batch.model_limits import BatchModelLimits
 from serving.config import app_config, live as live_config
 from serving.config.app_config_store import AppConfigStore, connect as connect_app_config
@@ -761,8 +760,34 @@ def _init_db_logger() -> DatabaseLogger | None:
         return None
 
 
+async def _shared_db_key_providers(pool: Any) -> frozenset[str] | None:
+    """Return the providers whose Keys-tab keys boot will inject, read ahead of the catalog.
+
+    Without a database there are no Keys-tab keys. ``None`` when the read
+    fails: the registry then keeps a route its cleared key setting left without
+    a key, for :func:`dynamic_keys.apply_db_keys_at_boot` to fill, rather than
+    drop a model on a transient error.
+    """
+    if pool is None:
+        return frozenset()
+    from serving.adapters.dynamic_keys import providers_with_shared_db_keys
+
+    try:
+        return await providers_with_shared_db_keys(PostgresOperationalStore(pool))
+    except Exception:
+        logger.warning(
+            "Could not read which providers have Keys-tab keys before registering the "
+            "model catalog; routes whose key setting was cleared are kept for the boot "
+            "key injection",
+            exc_info=True,
+        )
+        return None
+
+
 async def _init_router_and_models(
     router: FixedRouter,
+    *,
+    shared_db_key_providers: frozenset[str] | None = None,
 ) -> tuple[dict, list[ModelRegistrationInfo]]:
     """Register the models of the Admin/database catalog: all of them, or none.
 
@@ -776,6 +801,9 @@ async def _init_router_and_models(
     and the console asks an administrator to configure the deployment. Never
     a part of it: that would drop the models after the bad entry, and the
     RouteWise settings of those before it, without a word.
+
+    *shared_db_key_providers* is :func:`_shared_db_key_providers`, passed to
+    the registry so a route left with no key at all is not registered.
 
     Returns:
         Tuple of (embedding adapters dict, list of ModelRegistrationInfo).
@@ -794,11 +822,12 @@ async def _init_router_and_models(
             embedding_adapters=embedding_adapters,
             continue_on_missing_env=True,
             report=load_report,
+            shared_db_key_providers=shared_db_key_providers,
         )
     except Exception as exc:
         # Registration is all or nothing, so nothing of the catalog is served.
         logger.error(
-            "The model catalog (MODEL_CATALOG in Admin > Settings) was not registered: "
+            "The model catalog (MODEL_CATALOG in Admin > Providers > Models) was not registered: "
             f"{str(exc) or repr(exc)}. No model from it is served until an administrator "
             "corrects it; the console asks one to configure the deployment meanwhile."
         )
@@ -833,7 +862,7 @@ def _load_auto_mode(router: FixedRouter) -> AutoMode | None:
     try:
         stored_models = get_document("models")
         if stored_models is not None:
-            return _auto_mode_from_document(stored_models, router.routes)
+            return auto_mode_from_document(stored_models, router.routes)
         return None
     except Exception as exc:
         logger.warning(f"Auto mode is off: failed to load the auto section: {exc}")
@@ -993,12 +1022,6 @@ async def initialize() -> AppServices:
     setup_logging()
     load_backend_extensions()
 
-    if os.environ.get("EXPERIMENT_MODE"):
-        logger.warning(
-            "EXPERIMENT_MODE env var is set but no longer has any effect — "
-            "the flag was removed; fallback routing is now always on."
-        )
-
     # The database-backed configuration comes before everything that reads a
     # setting, and it re-applies LOG_LEVEL/LOG_FORMAT from what it loaded.
     await _load_app_config()
@@ -1108,6 +1131,13 @@ async def initialize() -> AppServices:
                             register_responses_retention_job(sched, db_logger.pool)
                             # The rows of ended console sessions, hourly.
                             session_retention.register_retention_job(sched, db_logger.pool)
+                            # The user tags' automatic rules (``unattended``),
+                            # every ten minutes.
+                            from serving.admin.user_tag_detector import (
+                                register_detector_job,
+                            )
+
+                            register_detector_job(sched, db_logger.pool)
 
                             # Failed-request alerter: one job, paused while
                             # neither SLACK_WEBHOOK_URL nor
@@ -1264,8 +1294,15 @@ async def initialize() -> AppServices:
         app_config.attach(AppConfigStore(db_logger.pool))
     _start_live_config(db_logger.pool if db_logger else None)
 
-    # Models into router
-    embedding_adapters, model_infos = await _init_router_and_models(router)
+    # Models into router. Which providers hold Keys-tab keys is read first: a
+    # catalog route whose key setting an administrator cleared serves on them,
+    # and one that would get none is not registered at all.
+    embedding_adapters, model_infos = await _init_router_and_models(
+        router,
+        shared_db_key_providers=await _shared_db_key_providers(
+            db_logger.pool if db_logger else None
+        ),
+    )
 
     # Routing manager (optional)
     routing_manager = _apply_routing_manager(router)

@@ -137,6 +137,7 @@ def test_template_values_escape_html_and_enforce_parameter_limit(configured, mon
 
 def test_smtp_deployments_preserve_existing_delivery(monkeypatch):
     monkeypatch.setattr(settings, "email_provider", "smtp")
+    monkeypatch.setattr(settings, "smtp_host", "smtp.example.org")
     monkeypatch.setattr(settings, "smtp_user", "test-user")
     monkeypatch.setattr(settings, "smtp_password", "test-password")
     smtp = MagicMock()

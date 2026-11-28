@@ -684,12 +684,21 @@ export function ProviderOverviewTab({ onManageKeys }: ProviderOverviewTabProps) 
       busyLabel: 'Deleting…',
       tone: 'danger',
       requireText: provider.provider,
-      body: (
-        <p>
-          This removes the custom provider definition {provider.provider} and its stored provider
-          keys ({formatCount(provider.keys_count, 'key')}). This cannot be undone.
-        </p>
-      ),
+      body:
+        provider.source === 'custom' ? (
+          <p>
+            This removes the custom provider definition {provider.provider} and its stored provider
+            keys ({formatCount(provider.keys_count, 'key')}). This cannot be undone.
+          </p>
+        ) : (
+          <p>
+            This removes the built-in provider {provider.provider} from the model catalog: its
+            routes are deleted, models left without a route are removed, and its stored provider
+            keys ({formatCount(provider.keys_count, 'key')}) are deleted. It stops serving
+            immediately, and its catalog routes are not registered again after the next restart.
+            This cannot be undone.
+          </p>
+        ),
       run: async () => {
         await deleteProviderDefinition(provider.provider);
         toast.success('Provider deleted');
@@ -791,27 +800,27 @@ export function ProviderOverviewTab({ onManageKeys }: ProviderOverviewTabProps) 
                             Manage keys
                           </button>
                           {custom && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => setEditTarget(provider)}
-                                aria-label={`Edit ${provider.display_name}`}
-                                className="rounded-md px-2.5 py-1.5 text-[12px] font-medium text-gray-700 hover:bg-gray-100"
-                              >
-                                Edit
-                              </button>
-                              <button
-                                type="button"
-                                disabled={hasLinkedModels}
-                                aria-describedby={hasLinkedModels ? deleteReasonId : undefined}
-                                onClick={() => requestDelete(provider)}
-                                aria-label={`Delete ${provider.display_name}`}
-                                className="rounded-md px-2.5 py-1.5 text-[12px] font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:text-gray-400 disabled:hover:bg-transparent"
-                              >
-                                Delete
-                              </button>
-                            </>
+                            <button
+                              type="button"
+                              onClick={() => setEditTarget(provider)}
+                              aria-label={`Edit ${provider.display_name}`}
+                              className="rounded-md px-2.5 py-1.5 text-[12px] font-medium text-gray-700 hover:bg-gray-100"
+                            >
+                              Edit
+                            </button>
                           )}
+                          <button
+                            type="button"
+                            disabled={custom && hasLinkedModels}
+                            aria-describedby={
+                              custom && hasLinkedModels ? deleteReasonId : undefined
+                            }
+                            onClick={() => requestDelete(provider)}
+                            aria-label={`Delete ${provider.display_name}`}
+                            className="rounded-md px-2.5 py-1.5 text-[12px] font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:text-gray-400 disabled:hover:bg-transparent"
+                          >
+                            Delete
+                          </button>
                         </div>
                         {custom && hasLinkedModels && (
                           <p id={deleteReasonId} className="mt-1 text-[11px] text-gray-500">

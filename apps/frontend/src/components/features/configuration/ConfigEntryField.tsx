@@ -3,6 +3,7 @@
 import { useId } from 'react';
 
 import { FIELD_INVALID, TEXT_FIELD } from '@/components/features/admin/adminStyles';
+import { Select, type SelectOption } from '@/components/ui/Select';
 import type { ConfigEntry } from '@/lib/api/config';
 
 import {
@@ -11,23 +12,16 @@ import {
   draftError,
   hasStoredValue,
   isLocked,
+  matchingChoice,
   settleDraft,
   type ConfigDraft,
 } from './configDrafts';
+import { DocumentEditor } from './DocumentEditor';
+import { ModelCatalogEditor } from './ModelCatalogEditor';
+import { NOT_A_LOGIN_FIELD } from './notALoginField';
 
-/**
- * Marks a field that holds a credential other than the administrator's own, so
- * password-manager extensions (1Password, LastPass, Bitwarden, Dashlane)
- * neither fill it nor offer to save what is typed into it. Browsers' built-in
- * managers go by `autocomplete` instead: give the field `"new-password"` (or
- * `"off"`) and its form `autoComplete="off"`.
- */
-export const NOT_A_LOGIN_FIELD = {
-  'data-1p-ignore': true,
-  'data-lpignore': 'true',
-  'data-bwignore': true,
-  'data-form-type': 'other',
-} as const;
+// Exported from here too, where the settings' other editors import it.
+export { NOT_A_LOGIN_FIELD };
 
 type BadgeTone = 'red' | 'amber' | 'blue' | 'gray';
 
@@ -145,6 +139,7 @@ export function ConfigEntryField({
 }) {
   const baseId = useId();
   const controlId = `${baseId}-control`;
+  const labelId = `${baseId}-label`;
   const descriptionId = `${baseId}-description`;
   const notesId = `${baseId}-notes`;
   const errorId = `${baseId}-error`;
@@ -161,6 +156,9 @@ export function ConfigEntryField({
   // applies in its place, and the row is still there to remove.
   const canReset = Boolean(onReset) && hasStoredValue(entry) && !entry.immutable && !locked;
   const offerMarkSecret = !resetPending && Boolean(onMarkSecret) && canMarkSecret(entry);
+  // A JSON document edited as fields, or as JSON (see the text editor below).
+  const documentEditor =
+    entry.document === true && entry.type === 'text' && !entry.secret && !locked && !resetPending;
 
   // An edit back to the starting value is no edit, so it leaves no draft.
   const setValue = (value: string | boolean) =>
@@ -200,6 +198,31 @@ export function ConfigEntryField({
         onChange={onChange}
       />
     );
+  } else if (entry.type !== 'bool' && (entry.choices?.length ?? 0) > 1) {
+    // A choice, such as the email transport: its accepted values, and nothing to
+    // mistype. The value is matched as the backend matches it, ignoring case
+    // unless the setting is case-sensitive: a stored `info` is LOG_LEVEL's INFO.
+    // A value that is none of them still shows, but cannot be chosen again.
+    const value = String(currentInput(entry, draft));
+    const choices = entry.choices ?? [];
+    const shown = matchingChoice(entry, value) ?? value;
+    const options: SelectOption[] = choices.map((choice) => ({ value: choice, label: choice }));
+    if (shown && !choices.includes(shown)) {
+      options.push({ value: shown, label: shown, disabled: true });
+    }
+    control = (
+      <Select
+        id={controlId}
+        value={shown}
+        onValueChange={(next) => setValue(next)}
+        options={options}
+        disabled={disabled}
+        aria-describedby={describedBy}
+        aria-invalid={error ? true : undefined}
+        searchable={false}
+        className="w-full sm:max-w-xs"
+      />
+    );
   } else if (entry.type === 'bool') {
     const on = currentInput(entry, draft) === true;
     control = (
@@ -228,21 +251,40 @@ export function ConfigEntryField({
       </div>
     );
   } else if (entry.type === 'text') {
-    control = (
+    const text = (
       <textarea
         id={controlId}
-        rows={4}
+        rows={entry.document ? 8 : 4}
         spellCheck={false}
         autoComplete="off"
         {...NOT_A_LOGIN_FIELD}
         value={String(currentInput(entry, draft))}
         placeholder={entry.default !== null ? String(entry.default) : undefined}
         disabled={disabled}
+        // A document's name labels whichever view is shown, so it names this one too.
+        aria-labelledby={entry.document ? labelId : undefined}
         aria-describedby={describedBy}
         aria-invalid={error ? true : undefined}
         onChange={(event) => setValue(event.target.value)}
         className={`${error ? INPUT_ERROR_CLASS : INPUT_CLASS} font-mono`}
       />
+    );
+    // A JSON document is edited one value at a time; the text is its JSON view.
+    // The model catalog has an editor of its own: models as cards, routes as rows.
+    const Editor = entry.key === 'MODEL_CATALOG' ? ModelCatalogEditor : DocumentEditor;
+    control = entry.document ? (
+      <Editor
+        entry={entry}
+        draft={draft}
+        onChange={onChange}
+        json={text}
+        labelId={labelId}
+        describedBy={describedBy}
+        serverError={serverError}
+        disabled={disabled}
+      />
+    ) : (
+      text
     );
   } else {
     const numeric = entry.type === 'int' || entry.type === 'float';
@@ -270,7 +312,8 @@ export function ConfigEntryField({
   }
 
   const compact = presentation === 'compact';
-  const split = layout === 'split';
+  // A document's fields want the row's whole width, under its name.
+  const split = layout === 'split' && !entry.document;
   const badges = configBadges(entry).filter(
     (badge) =>
       !compact ||
@@ -292,7 +335,10 @@ export function ConfigEntryField({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <label
-              htmlFor={controlId}
+              id={labelId}
+              // A document's fields have no one control to point at: they and
+              // its JSON view name themselves after this label instead.
+              htmlFor={documentEditor ? undefined : controlId}
               className={`break-all text-[13px] font-medium text-gray-900 ${compact ? '' : 'font-mono'}`}
             >
               {label}
@@ -363,7 +409,11 @@ export function ConfigEntryField({
               Used by <span className="font-mono">{usedBy.join(', ')}</span>
             </p>
           ) : null}
-          {!entry.secret && entry.default !== null && entry.source !== 'default' ? (
+          {/* An empty default is no value to go back to: "Default:" alone says nothing. */}
+          {!entry.secret &&
+          entry.default !== null &&
+          entry.default !== '' &&
+          entry.source !== 'default' ? (
             <p className="text-gray-400">
               Default: <span className="font-mono">{String(entry.default)}</span>
             </p>

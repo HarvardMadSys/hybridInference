@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -12,6 +13,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from routing.routers import FixedRouter
 from serving.adapters import ModelConfig, OpenAICompatAdapter, OpenRouterAdapter, dynamic_keys
 from serving.adapters.key_pool import KeyPool, KeyPoolRoleRestricted
 from serving.admin.provider_key_probe import (
@@ -20,9 +22,16 @@ from serving.admin.provider_key_probe import (
     probe_error_detail,
     probe_error_reason,
 )
+from serving.config import app_config
+from serving.config.app_config import ConfigUpdateError
+from serving.config.app_config_store import ConfigRow
 from serving.config.settings import ROLE_RANK
 from serving.servers.deps import AppServices
-from serving.servers.registry import _make_adapter
+from serving.servers.registry import (
+    ModelLoadReport,
+    _make_adapter,
+    register_from_models_document,
+)
 from serving.servers.routers import admin as admin_router
 from serving.storage.base import ProviderKeyRow
 
@@ -95,6 +104,8 @@ class _StubStore:
         self.raw: dict[str, list[tuple[str, str]]] = {}
         # (provider, key_hash) -> key_prefix
         self.disabled: dict[tuple[str, str], str] = {}
+        # Tombstones an administrator removed, not merely disabled.
+        self.removed: set[tuple[str, str]] = set()
         # (provider, key_hash) -> min_role, for env-sourced key reservations
         self.env_min_roles: dict[tuple[str, str], str] = {}
         self.env_min_role_prefixes: dict[tuple[str, str], str] = {}
@@ -222,13 +233,23 @@ class _StubStore:
         key_hash: str,
         key_prefix: str,
         disabled_by: str | None,
+        removed: bool = False,
     ) -> None:
         self.disabled[(provider, key_hash)] = key_prefix
+        if removed:
+            self.removed.add((provider, key_hash))
+        else:
+            self.removed.discard((provider, key_hash))
 
     async def list_disabled_provider_env_key_hashes(self, provider: str) -> set[str]:
         if provider in self.fail_disabled_for:
             raise RuntimeError(f"boom-disabled-{provider}")
         return {key_hash for (prov, key_hash) in self.disabled if prov == provider}
+
+    async def list_removed_provider_env_key_hashes(self, provider: str) -> set[str]:
+        if provider in self.fail_disabled_for:
+            raise RuntimeError(f"boom-disabled-{provider}")
+        return {key_hash for (prov, key_hash) in self.removed if prov == provider}
 
     async def list_disabled_provider_env_keys(self, provider: str) -> list[tuple[str, str]]:
         if provider in self.fail_disabled_for:
@@ -240,6 +261,7 @@ class _StubStore:
         ]
 
     async def enable_provider_env_key(self, provider: str, key_hash: str) -> bool:
+        self.removed.discard((provider, key_hash))
         return self.disabled.pop((provider, key_hash), None) is not None
 
     async def set_provider_env_key_min_role(
@@ -339,6 +361,7 @@ async def client(monkeypatch, store):
         "set_provider_key_min_role",
         "disable_provider_env_key",
         "list_disabled_provider_env_key_hashes",
+        "list_removed_provider_env_key_hashes",
         "list_disabled_provider_env_keys",
         "enable_provider_env_key",
         "set_provider_env_key_min_role",
@@ -978,6 +1001,280 @@ async def test_single_key_env_credential_is_listed_and_disableable(client):
     relist = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
     env_after = [k for k in relist.json()["keys"] if k["source"] == "env"]
     assert [k["status"] for k in env_after] == ["disabled"]
+
+
+async def _blank_saved_settings(values, new_secrets=None, *, updated_by, expected_version=None):
+    """Stand in for ``app_config.update``: an empty admin row, env left set."""
+    del new_secrets, expected_version
+    for name, value in values.items():
+        app_config._STATE.rows[name] = ConfigRow(
+            key=name,
+            value=value,
+            secret=True,
+            source="admin",
+            updated_by=updated_by,
+        )
+    # reset_state() ignores a process that never applied a load. Mark one so the
+    # blank rows do not hide the environment from the next test.
+    app_config._STATE.generation = 1
+    return []
+
+
+@pytest.mark.asyncio
+async def test_remove_env_key_clears_saved_settings_and_leaves_the_list(client, monkeypatch):
+    """Remove blanks every setting holding the secret and hides the key.
+
+    The process environment stays set. An empty admin row is what stops it
+    putting the key back, which is why the list reads the saved row rather
+    than the boot snapshot.
+    """
+    http, store = client
+    secret = "zai-env-remove-secret-aaaa"
+    monkeypatch.setenv("ZAI_API_KEY", secret)
+    monkeypatch.setenv("ZAI_API_KEY2", secret)
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="remove-model",
+            name="remove-model",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_keys=[secret],
+            provider_model_id="remove-model",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+    key_hash = dynamic_keys.env_key_hash(secret)
+    env_id = f"env:{key_hash[:32]}"
+    await store.set_provider_env_key_min_role(
+        provider="zai",
+        key_hash=key_hash,
+        key_prefix="zai-env-...aaaa",
+        min_role="pro",
+        updated_by="admin",
+    )
+    dynamic_keys.set_env_key_min_role("zai", key_hash, "pro")
+
+    monkeypatch.setattr(app_config, "update", _blank_saved_settings)
+
+    resp = await http.post(
+        "/admin/provider-keys/remove-env",
+        json={"provider": "zai", "env_key_id": env_id},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["cleared_settings"] == ["ZAI_API_KEY", "ZAI_API_KEY2"]
+    assert body["pools_updated"] == 1
+    assert secret not in resp.text
+    assert secret not in adapter._key_pool.snapshot_keys()
+    assert ("zai", key_hash) in store.removed
+    assert ("zai", key_hash) not in store.env_min_roles
+    assert app_config._STATE.rows["ZAI_API_KEY"].value == ""
+    assert app_config._STATE.rows["ZAI_API_KEY2"].value == ""
+    assert store.audit[-1]["action"] == "remove_provider_env_key"
+
+    listing = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+    assert listing.status_code == 200, listing.text
+    assert [item for item in listing.json()["keys"] if item["id"] == env_id] == []
+
+    enabled = await http.post(
+        "/admin/provider-keys/enable-env",
+        json={"provider": "zai", "env_key_id": env_id},
+        headers=AUTH,
+    )
+    assert enabled.status_code == 409
+    assert "removed" in enabled.json()["detail"]
+    assert secret not in adapter._key_pool.snapshot_keys()
+
+
+@pytest.mark.asyncio
+async def test_removed_env_key_stays_listed_while_configuration_still_holds_it(client, monkeypatch):
+    """A removed tombstone whose setting still has the secret can be enabled."""
+    http, store = client
+    secret = "zai-env-still-configured-bbbb"
+    monkeypatch.setenv("ZAI_API_KEY", secret)
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="still-model",
+            name="still-model",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_keys=[secret],
+            provider_model_id="still-model",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+    env_id = f"env:{dynamic_keys.env_key_hash(secret)[:32]}"
+
+    async def record_only(values, new_secrets=None, *, updated_by, expected_version=None):
+        record_only.called = values
+        return []
+
+    record_only.called = None
+    monkeypatch.setattr(app_config, "update", record_only)
+
+    removed = await http.post(
+        "/admin/provider-keys/remove-env",
+        json={"provider": "zai", "env_key_id": env_id},
+        headers=AUTH,
+    )
+    assert removed.status_code == 200, removed.text
+    assert removed.json()["cleared_settings"] == ["ZAI_API_KEY"]
+    assert record_only.called == {"ZAI_API_KEY": ""}
+    assert secret not in adapter._key_pool.snapshot_keys()
+
+    listing = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+    env_items = [item for item in listing.json()["keys"] if item["id"] == env_id]
+    assert [item["status"] for item in env_items] == ["disabled"]
+
+    enabled = await http.post(
+        "/admin/provider-keys/enable-env",
+        json={"provider": "zai", "env_key_id": env_id},
+        headers=AUTH,
+    )
+    assert enabled.status_code == 200, enabled.text
+    assert secret in adapter._key_pool.snapshot_keys()
+    assert store.removed == set()
+
+
+@pytest.mark.asyncio
+async def test_remove_env_key_does_not_blank_settings_it_does_not_hold(client, monkeypatch):
+    """An adapter-only key has no setting to clear, and still leaves the list."""
+    http, store = client
+    secret = "zai-adapter-only-remove-cccc"
+    called = False
+
+    async def unexpected_update(values, new_secrets=None, *, updated_by, expected_version=None):
+        nonlocal called
+        called = True
+        return []
+
+    monkeypatch.setattr(app_config, "update", unexpected_update)
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="adapter-only",
+            name="adapter-only",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_keys=[secret],
+            provider_model_id="adapter-only",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+    env_id = f"env:{dynamic_keys.env_key_hash(secret)[:32]}"
+
+    resp = await http.post(
+        "/admin/provider-keys/remove-env",
+        json={"provider": "zai", "env_key_id": env_id},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["cleared_settings"] == []
+    assert called is False
+    assert secret not in adapter._key_pool.snapshot_keys()
+    assert store.removed
+
+    listing = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+    assert [item for item in listing.json()["keys"] if item["source"] == "env"] == []
+
+    enabled = await http.post(
+        "/admin/provider-keys/enable-env",
+        json={"provider": "zai", "env_key_id": env_id},
+        headers=AUTH,
+    )
+    assert enabled.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_remove_env_key_refuses_a_credential_a_database_row_holds(client, monkeypatch):
+    http, store = client
+    shared = "shared-zai-remove-dddddddddddd"
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="shared-remove",
+            name="shared-remove",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_keys=[shared],
+            provider_model_id="shared-remove",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+    added = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": shared},
+        headers=AUTH,
+    )
+    assert added.status_code == 201, added.text
+
+    async def unexpected_update(values, new_secrets=None, *, updated_by, expected_version=None):
+        raise AssertionError("settings must stay when a database row holds the key")
+
+    monkeypatch.setattr(app_config, "update", unexpected_update)
+    env_id = f"env:{dynamic_keys.env_key_hash(shared)[:32]}"
+    resp = await http.post(
+        "/admin/provider-keys/remove-env",
+        json={"provider": "zai", "env_key_id": env_id},
+        headers=AUTH,
+    )
+    assert resp.status_code == 409, resp.text
+    assert "database key" in resp.json()["detail"]
+    assert store.removed == set()
+    assert shared in adapter._key_pool.snapshot_keys()
+
+
+@pytest.mark.asyncio
+async def test_remove_env_key_does_not_tombstone_when_the_setting_update_fails(client, monkeypatch):
+    http, store = client
+    secret = "zai-env-update-fails-eeeeeeee"
+    monkeypatch.setenv("ZAI_API_KEY", secret)
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="update-fails",
+            name="update-fails",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_keys=[secret],
+            provider_model_id="update-fails",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    async def refuse(values, new_secrets=None, *, updated_by, expected_version=None):
+        raise ConfigUpdateError(503, "Database not configured")
+
+    monkeypatch.setattr(app_config, "update", refuse)
+    env_id = f"env:{dynamic_keys.env_key_hash(secret)[:32]}"
+    resp = await http.post(
+        "/admin/provider-keys/remove-env",
+        json={"provider": "zai", "env_key_id": env_id},
+        headers=AUTH,
+    )
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["detail"] == "Database not configured"
+    assert store.removed == set()
+    assert store.disabled == {}
+    assert secret in adapter._key_pool.snapshot_keys()
+
+
+def test_configured_env_key_hashes_follow_the_saved_row(monkeypatch):
+    secret = "zai-configured-hash-secret-ffff"
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+    for index in range(1, 21):
+        monkeypatch.delenv(f"ZAI_API_KEY{index}", raising=False)
+    monkeypatch.setenv("ZAI_API_KEY", secret)
+    assert dynamic_keys.env_key_hash(secret) in dynamic_keys.configured_env_key_hashes("zai")
+
+    app_config._STATE.rows["ZAI_API_KEY"] = ConfigRow(
+        key="ZAI_API_KEY",
+        value="",
+        secret=True,
+        source="admin",
+    )
+    app_config._STATE.generation = 1
+    assert dynamic_keys.configured_env_key_hashes("zai") == set()
+    # The boot snapshot still serves the environment until restart.
+    assert secret in dynamic_keys.configured_env_keys_for_provider("zai")
 
 
 @pytest.mark.asyncio
@@ -2280,7 +2577,7 @@ async def test_boot_seeding_applies_stored_env_reservations(client):
     await dynamic_keys.apply_db_keys_at_boot(store)
 
     assert adapter._key_pool.snapshot_min_roles()[env_key] == "pro"
-    assert dynamic_keys.env_key_min_role("zai", key_hash) == "pro"
+    assert dynamic_keys.resolve_key_min_role("zai", env_key) == "pro"
     # The endpoint agrees with the pool.
     listing = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
     entry = next(k for k in listing.json()["keys"] if k["source"] == "env")
@@ -3122,3 +3419,288 @@ async def test_a_relaxation_applies_once_the_read_recovers(client):
     )
     assert retry.status_code == 200, retry.text
     assert pool.snapshot_min_roles()[api_key] == "free"
+
+
+def _restart_catalog(**route_keys) -> dict:
+    """A catalog whose zai route names its key the way MODEL_CATALOG usually does."""
+    return {
+        "models": [
+            {
+                "id": "glm-restart",
+                "name": "glm-restart",
+                "provider": "zai",
+                "base_url": "https://api.z.example/v1",
+                "route": [
+                    {
+                        "kind": "zai",
+                        "weight": 1.0,
+                        "base_url": "https://api.z.example/v1",
+                        **route_keys,
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def _simulate_restart() -> None:
+    """Boot on the saved rows, with no pool or tombstone left in memory."""
+    app_config._STATE.boot_rows = dict(app_config._STATE.rows)
+    app_config._STATE.effective = dict(app_config._STATE.rows)
+    app_config._STATE.generation += 1
+    dynamic_keys.reset()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "route_keys",
+    [{"api_key": "${ZAI_API_KEY}"}, {"api_keys": ["${ZAI_API_KEY}"]}],
+    ids=["api_key", "api_keys"],
+)
+async def test_removed_env_key_referenced_by_the_catalog_survives_a_restart(
+    client, monkeypatch, route_keys
+):
+    """Removing an env key the catalog names keeps the model on its other keys.
+
+    The environment still holds the secret, the removal stored an empty row, and
+    the provider has a Keys-tab key. After a restart the model must still be
+    served, by that key, and the removed secret must stay out of its pool.
+    """
+    http, store = client
+    secret = "zai-env-restart-removed-1111"
+    db_key = "zai-db-restart-survivor-2222"
+    monkeypatch.setenv("ZAI_API_KEY", secret)
+    monkeypatch.setattr(app_config, "update", _blank_saved_settings)
+    catalog = _restart_catalog(**route_keys)
+    monkeypatch.setenv("MODEL_CATALOG", json.dumps(catalog))
+
+    router = FixedRouter()
+    register_from_models_document(router, catalog, continue_on_missing_env=True)
+    await dynamic_keys.apply_db_keys_at_boot(store)
+    added = await http.post(
+        "/admin/provider-keys", json={"provider": "zai", "api_key": db_key}, headers=AUTH
+    )
+    assert added.status_code == 201, added.text
+
+    env_id = dynamic_keys.env_key_id(secret)
+    removed = await http.post(
+        "/admin/provider-keys/remove-env",
+        json={"provider": "zai", "env_key_id": env_id},
+        headers=AUTH,
+    )
+    assert removed.status_code == 200, removed.text
+    assert removed.json()["cleared_settings"] == ["ZAI_API_KEY"]
+
+    _simulate_restart()
+    report = ModelLoadReport()
+    router = FixedRouter()
+    register_from_models_document(
+        router,
+        catalog,
+        continue_on_missing_env=True,
+        report=report,
+        shared_db_key_providers=await dynamic_keys.providers_with_shared_db_keys(store),
+    )
+    await dynamic_keys.apply_db_keys_at_boot(store)
+
+    assert report.skipped_models == {}
+    assert "glm-restart" in router.routes
+    adapter = router.routes["glm-restart"].adapters[0][0]
+    assert adapter._key_pool is not None
+    assert adapter._key_pool.snapshot_keys() == [db_key]
+
+
+@pytest.mark.asyncio
+async def test_removed_env_key_falls_back_to_a_numbered_setting_after_a_restart(
+    client, monkeypatch
+):
+    """A numbered setting the route never listed is one of the provider's other keys."""
+    http, store = client
+    secret = "zai-env-restart-removed-3333"
+    extra = "zai-env-restart-numbered-4444"
+    monkeypatch.setenv("ZAI_API_KEY", secret)
+    monkeypatch.setenv("ZAI_API_KEY1", extra)
+    monkeypatch.setenv("MODEL_CATALOG", json.dumps(_restart_catalog(api_key="${ZAI_API_KEY}")))
+    monkeypatch.setattr(app_config, "update", _blank_saved_settings)
+    catalog = _restart_catalog(api_key="${ZAI_API_KEY}")
+
+    register_from_models_document(FixedRouter(), catalog, continue_on_missing_env=True)
+    removed = await http.post(
+        "/admin/provider-keys/remove-env",
+        json={"provider": "zai", "env_key_id": dynamic_keys.env_key_id(secret)},
+        headers=AUTH,
+    )
+    assert removed.status_code == 200, removed.text
+
+    _simulate_restart()
+    router = FixedRouter()
+    register_from_models_document(
+        router,
+        catalog,
+        continue_on_missing_env=True,
+        shared_db_key_providers=await dynamic_keys.providers_with_shared_db_keys(store),
+    )
+    await dynamic_keys.apply_db_keys_at_boot(store)
+
+    adapter = router.routes["glm-restart"].adapters[0][0]
+    assert adapter.config.api_key is None
+    assert adapter.config.api_keys == [extra]
+    assert secret not in adapter._key_pool.snapshot_keys()
+
+
+@pytest.mark.asyncio
+async def test_remove_env_key_refuses_when_a_catalog_route_would_have_no_key(client, monkeypatch):
+    """The provider's last key cannot be removed while the catalog depends on it.
+
+    After a restart the route would have nothing to serve on. Nothing is
+    cleared or tombstoned; disabling stays available.
+    """
+    http, store = client
+    secret = "zai-env-last-key-refused-5555"
+    monkeypatch.setenv("ZAI_API_KEY", secret)
+    monkeypatch.setenv("MODEL_CATALOG", json.dumps(_restart_catalog(api_key="${ZAI_API_KEY}")))
+
+    async def unexpected_update(values, new_secrets=None, *, updated_by, expected_version=None):
+        raise AssertionError("nothing may be cleared when removal is refused")
+
+    monkeypatch.setattr(app_config, "update", unexpected_update)
+    router = FixedRouter()
+    register_from_models_document(
+        router, _restart_catalog(api_key="${ZAI_API_KEY}"), continue_on_missing_env=True
+    )
+    adapter = router.routes["glm-restart"].adapters[0][0]
+
+    resp = await http.post(
+        "/admin/provider-keys/remove-env",
+        json={"provider": "zai", "env_key_id": dynamic_keys.env_key_id(secret)},
+        headers=AUTH,
+    )
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert "glm-restart" in detail
+    assert "ZAI_API_KEY" in detail
+    assert "Disable" in detail
+    assert secret not in resp.text
+    assert store.removed == set()
+    assert store.disabled == {}
+    assert adapter.config.api_key == secret
+
+    disabled = await http.post(
+        "/admin/provider-keys/disable-env",
+        json={"provider": "zai", "env_key_id": dynamic_keys.env_key_id(secret)},
+        headers=AUTH,
+    )
+    assert disabled.status_code == 200, disabled.text
+
+
+@pytest.mark.asyncio
+async def test_remove_env_key_ignores_an_optional_catalog_route(client, monkeypatch):
+    """An optional route is skipped at boot anyway, so it does not block removal."""
+    http, store = client
+    secret = "zai-env-optional-route-6666"
+    monkeypatch.setenv("ZAI_API_KEY", secret)
+    catalog = _restart_catalog(api_key="${ZAI_API_KEY}")
+    catalog["models"][0]["route"][0]["optional"] = True
+    monkeypatch.setenv("MODEL_CATALOG", json.dumps(catalog))
+    monkeypatch.setattr(app_config, "update", _blank_saved_settings)
+    register_from_models_document(FixedRouter(), catalog, continue_on_missing_env=True)
+
+    resp = await http.post(
+        "/admin/provider-keys/remove-env",
+        json={"provider": "zai", "env_key_id": dynamic_keys.env_key_id(secret)},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    assert ("zai", dynamic_keys.env_key_hash(secret)) in store.removed
+
+
+@pytest.mark.asyncio
+async def test_remove_env_key_refuses_when_the_route_draws_on_another_providers_keys(
+    client, monkeypatch
+):
+    """A route keyed by another provider has no zai keys to fall back to.
+
+    The registry skips it at restart however many keys zai still has, so the
+    removal is refused even though a Keys-tab key exists, naming the provider
+    the route actually draws on.
+    """
+    http, store = client
+    secret = "zai-env-cross-kind-7777"
+    monkeypatch.setenv("ZAI_API_KEY", secret)
+    catalog = _restart_catalog(api_key="${ZAI_API_KEY}")
+    catalog["models"][0]["route"][0]["kind"] = "openai_compat"
+    monkeypatch.setenv("MODEL_CATALOG", json.dumps(catalog))
+    await store.add_provider_key(
+        provider="zai", api_key="zai-db-key-elsewhere-8888", label=None, created_by="admin"
+    )
+
+    async def unexpected_update(values, new_secrets=None, *, updated_by, expected_version=None):
+        raise AssertionError("nothing may be cleared when removal is refused")
+
+    monkeypatch.setattr(app_config, "update", unexpected_update)
+    _env_adapter("zai", [secret])
+
+    resp = await http.post(
+        "/admin/provider-keys/remove-env",
+        json={"provider": "zai", "env_key_id": dynamic_keys.env_key_id(secret)},
+        headers=AUTH,
+    )
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert "glm-restart (its route uses openai_compat keys)" in detail
+    assert "ZAI_API_KEY" in detail
+    assert store.removed == set()
+
+
+@pytest.mark.asyncio
+async def test_remove_env_key_fails_closed_when_the_catalog_cannot_be_read(
+    client, monkeypatch, caplog
+):
+    """An unreadable catalog refuses the removal instead of skipping the check."""
+    http, store = client
+    secret = "zai-env-unreadable-catalog-9999"
+    monkeypatch.setenv("ZAI_API_KEY", secret)
+
+    def broken_catalog(kind, *, configured=False):
+        raise RuntimeError("catalog read failed")
+
+    async def unexpected_update(values, new_secrets=None, *, updated_by, expected_version=None):
+        raise AssertionError("nothing may be cleared when the check cannot run")
+
+    monkeypatch.setattr("serving.config.documents.get", broken_catalog)
+    monkeypatch.setattr(app_config, "update", unexpected_update)
+    _env_adapter("zai", [secret])
+
+    with caplog.at_level("WARNING"):
+        resp = await http.post(
+            "/admin/provider-keys/remove-env",
+            json={"provider": "zai", "env_key_id": dynamic_keys.env_key_id(secret)},
+            headers=AUTH,
+        )
+    assert resp.status_code == 503, resp.text
+    assert "model catalog" in resp.json()["detail"]
+    assert "catalog read failed" in caplog.text
+    assert store.removed == set()
+    assert store.disabled == {}
+
+
+@pytest.mark.asyncio
+async def test_providers_with_shared_db_keys_leave_out_disabled_and_route_bound_keys(store):
+    """Exactly the keys ``apply_db_keys_at_boot`` would inject into catalog routes."""
+    await store.add_provider_key(
+        provider="zai", api_key="zai-shared-boot-key-aaaa", label=None, created_by="a"
+    )
+    await store.add_provider_key(
+        provider="deepseek",
+        api_key="deepseek-bound-key-bbbb",
+        label=None,
+        created_by="a",
+        key_id="bound",
+    )
+    store.route_configs = [{"api_key_id": "bound"}]
+    kimi_id = await store.add_provider_key(
+        provider="kimi", api_key="kimi-disabled-key-cccc", label=None, created_by="a"
+    )
+    await store.set_provider_key_status(kimi_id, "disabled")
+
+    assert await dynamic_keys.providers_with_shared_db_keys(store) == frozenset({"zai"})

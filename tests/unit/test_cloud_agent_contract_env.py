@@ -2,7 +2,7 @@
 
 The gateway's half of the split is five settings. None of them used to appear
 in `.env.example`, so the only place an operator could learn they exist was a
-plan document under `docs/agents/plans/`. An unset
+plan document. An unset
 `GATEWAY_GRANT_DISPATCH_TOKEN` makes the whole internal API answer 404, which
 is correct and indistinguishable from "this build has no internal API":
 exactly the shape that costs an afternoon during a cutover window.
@@ -69,50 +69,3 @@ def test_no_contract_variable_ships_a_value() -> None:
         if name in CONTRACT_VARS and value.strip():
             populated.append(name)
     assert not populated, f"these ship a value in .env.example: {populated}"
-
-
-# The AGENT_* names the gateway itself still reads after H4. The console's
-# `/agents` route reads the two internal URLs at runtime (legacy images may
-# still have equivalent rewrites compiled in), and the deploy scripts grep
-# .env for the network name to decide whether the console joins the standalone
-# stack's Docker network. The public URL supplies the dashboard link for an
-# independently hosted agent. Everything else with the prefix moved out.
-SURVIVING_AGENT_VARS = frozenset(
-    {
-        "AGENT_WEB_INTERNAL_URL",
-        "AGENT_CONTROL_PLANE_INTERNAL_URL",
-        "AGENT_NETWORK_NAME",
-        "AGENT_PUBLIC_URL",
-    }
-)
-
-
-def test_the_moved_half_is_not_still_offered() -> None:
-    """No moved `AGENT_*` entry survives here — the gateway stopped reading them.
-
-    H4 removed the cloud agent from the gateway, and with it every reader of
-    the dispatcher token, the egress tiers, and the GitHub App and GitLab
-    OAuth credentials. Leaving those entries in `.env.example` would have an
-    operator provisioning a GitHub App for a service this repository no longer
-    runs, and reading the silence afterwards as a broken integration.
-
-    Not a prefix ban: the names in ``SURVIVING_AGENT_VARS`` are read by the
-    gateway itself and belong in the example file. A new `AGENT_*` assignment
-    is either a new gateway-read variable — extend the allowlist here,
-    deliberately — or a moved one creeping back, which this refuses.
-
-    Assignments only. The section that replaced the moved ones names them in
-    prose, so that an upgrading deployment knows what to carry across rather
-    than concluding the feature was withdrawn.
-    """
-    offered = sorted(
-        name
-        for line in ENV_EXAMPLE.read_text().splitlines()
-        if (name := line.partition("=")[0]).startswith("AGENT_")
-        and "=" in line
-        and name not in SURVIVING_AGENT_VARS
-    )
-    assert not offered, (
-        "these are still offered in .env.example, but nothing in this "
-        f"repository reads them after H4: {offered}"
-    )

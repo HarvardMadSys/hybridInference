@@ -28,7 +28,11 @@ from serving.accounting_api import (
 from serving.adapters.reasoning_effort import stored_effort_map, validate_effort_map
 from serving.config.settings import ROUTE_TYPE_ORDER
 from serving.schemas import CONTENT_BLOCK_MODALITY
-from serving.schemas_auth import SsoIdentity
+from serving.schemas_auth import SsoIdentity, normalize_login_name
+from serving.user_tags import (
+    MAX_WINDOW_HOURS as USER_TAG_MAX_WINDOW_HOURS,
+    TAG_NAME_PATTERN as USER_TAG_NAME_PATTERN,
+)
 
 
 class CreateAPIKeyRequest(MoneyInput):  # type: ignore[no-any-unimported]
@@ -71,6 +75,63 @@ class CreateAPIKeyRequest(MoneyInput):  # type: ignore[no-any-unimported]
 
     quota_daily_cost: Decimal | None = Field(default=None, ge=0, exclude=True)
     quota_monthly_cost: Decimal | None = Field(default=None, ge=0, exclude=True)
+
+
+class CreateServiceAccountRequest(MoneyInput):  # type: ignore[no-any-unimported]
+    """Request payload for creating a service account (admin only).
+
+    A service account is a user row with no email and an unknowable
+    password, used only through the API key this creation issues.
+    """
+
+    name: str = Field(
+        ..., min_length=1, max_length=255, description="Display name, e.g. 'Nightly eval bot'"
+    )
+    login_name: str | None = Field(
+        None,
+        max_length=64,
+        description="Unique login name (3-32 letters, digits, '.', '_' or '-', starting "
+        "with a letter or digit; stored lowercased); derived from the name when omitted",
+    )
+    role: Literal["free", "pro", "internal"] = Field(
+        "free", description="Account role; service accounts never hold the admin role"
+    )
+    quota_daily_cost_usd: Decimal = Field(
+        Decimal("1000.00"), ge=0, description="Daily cost quota in USD"
+    )
+    quota_monthly_cost_usd: Decimal | None = Field(
+        None, ge=0, description="Monthly cost quota in USD (optional)"
+    )
+    expires_at: datetime | None = Field(None, description="API key expiration timestamp (optional)")
+    notes: str | None = Field(None, description="Admin notes stored on the issued key")
+    password: str | None = Field(
+        None,
+        description="The signed-in administrator's password: creating an account "
+        "with a live credential always needs it (403 for the admin token)",
+    )
+
+    @field_validator("login_name")
+    @classmethod
+    def _check_login_name(cls, value: str | None) -> str | None:
+        """The same rule as every other login name; blank means "derive it"."""
+        if value is None or not value.strip():
+            return None
+        return normalize_login_name(value)
+
+
+class CreateServiceAccountResponse(MoneyResponse):  # type: ignore[no-any-unimported]
+    """Response payload for successful service-account creation."""
+
+    user_id: str
+    login_name: str
+    name: str
+    role: str
+    api_key: str = Field(..., description="Plaintext API key (shown only once)")
+    key_prefix: str = Field(..., description="First 12 characters for identification")
+    warning: str = Field(
+        default="⚠️ Save this API key now. It cannot be retrieved later.",
+        description="Security warning",
+    )
 
 
 class CreateAPIKeyResponse(MoneyResponse):  # type: ignore[no-any-unimported]
@@ -217,6 +278,8 @@ class UserListItem(MoneyResponse):
     reviewed_by: str | None = None
     # Free-text use case submitted at signup; helps admins review pending users.
     signup_reason: str | None = None
+    # Admin-created API-key-only account (no email, no browser sign-in).
+    is_service_account: bool = False
     # Free-text admin-only annotation about the user (any status).
     admin_note: str | None = None
     created_at: datetime
@@ -231,6 +294,8 @@ class UserListItem(MoneyResponse):
     # All-time request count and token total (back the requests/tokens sorts).
     usage_alltime_requests: int | None = 0
     usage_alltime_tokens: int | None = 0
+    # The user tags that apply to the account (serving.user_tags), by name.
+    tags: list[str] = Field(default_factory=list)
 
     usage_today: Decimal | None = None
     usage_month: Decimal | None = None
@@ -248,12 +313,22 @@ class StatusCounts(BaseModel):
     deleted: int = 0
 
 
+class RoleCounts(BaseModel):
+    """How many accounts are in each tier (always unfiltered)."""
+
+    free: int = 0
+    pro: int = 0
+    internal: int = 0
+    admin: int = 0
+
+
 class ListUsersResponse(BaseModel):
     """Response payload for listing users."""
 
     total: int
     users: list[UserListItem]
     status_counts: StatusCounts = Field(default_factory=StatusCounts)
+    role_counts: RoleCounts = Field(default_factory=RoleCounts)
 
 
 # ========================================
@@ -498,6 +573,29 @@ class RejectUserResponse(BaseModel):
     message: str
 
 
+class UserTagMembership(BaseModel):
+    """One of an account's user-tag memberships, for its detail view."""
+
+    tag: str
+    source: Literal["manual", "auto", "dismissed"]
+    assigned_at: datetime
+    assigned_by: str | None = None
+    system: bool = False
+
+
+class UserTagLimits(BaseModel):
+    """The limits the account's applied user tags hold it to, combined (strictest wins).
+
+    Amounts are in ``currency``; null where no tag sets the limit.
+    """
+
+    quota_daily_cost: Decimal | None = None
+    quota_monthly_cost: Decimal | None = None
+    max_concurrent_requests: int | None = None
+    allowed_models: list[str] | None = None
+    currency: str = "USD"
+
+
 class UserDetailResponse(MoneyResponse):
     """Detailed user info including usage analytics.
 
@@ -539,6 +637,10 @@ class UserDetailResponse(MoneyResponse):
     suspension_message: str | None = None
     # The single sign-on identities linked to the account.
     sso_identities: list[SsoIdentity] = Field(default_factory=list)
+    # The account's user-tag memberships (dismissed ones included) and the
+    # limits the applied ones set.
+    tag_memberships: list[UserTagMembership] = Field(default_factory=list)
+    tag_limits: UserTagLimits = Field(default_factory=UserTagLimits)
     # Mean conversation depth across this user's chat requests (all-time).
     # ``avg_turns`` is the average message count, ``avg_user_turns`` the average
     # user-message count; both None when the user has no chat-style requests.
@@ -2864,6 +2966,10 @@ class DeleteProviderDefinitionResponse(BaseModel):  # type: ignore[no-any-unimpo
 
     provider: str
     deleted_keys: int
+    # Catalog entries a built-in provider's deletion removed; always zero for
+    # a custom provider, whose deletion touches no catalog.
+    removed_routes: int = 0
+    removed_models: int = 0
 
 
 class ProviderApiKeyItem(BaseModel):  # type: ignore[no-any-unimported]
@@ -2991,6 +3097,28 @@ class EnableProviderEnvKeyResponse(BaseModel):  # type: ignore[no-any-unimported
     id: str
     provider: str
     pools_updated: int
+
+
+class RemoveProviderEnvKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request body for removing an env-sourced provider API key.
+
+    Same addressing as disable: the key has no row id of its own.
+    """
+
+    provider: str = Field(..., min_length=1, max_length=64)
+    env_key_id: str = Field(..., min_length=1, max_length=128)
+
+
+class RemoveProviderEnvKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for ``POST /admin/provider-keys/remove-env``."""
+
+    id: str
+    provider: str
+    pools_updated: int
+    cleared_settings: list[str] = Field(
+        default_factory=list,
+        description=("Setting names whose saved value was cleared. Never includes secret values."),
+    )
 
 
 class SetProviderApiKeyStatusResponse(BaseModel):  # type: ignore[no-any-unimported]
@@ -3260,3 +3388,166 @@ class UnlinkSsoIdentityResponse(BaseModel):
 
     user_id: str
     message: str
+
+
+# ========================================
+# User tags (serving.user_tags)
+# ========================================
+
+#: The most an amount may be: NUMERIC(20, 8) holds twelve integer digits.
+_USER_TAG_MAX_AMOUNT = Decimal("999999999999")
+
+#: The most model ids one allowlist holds.
+_USER_TAG_MAX_ALLOWED_MODELS = 1000
+
+#: The most accounts one request adds.
+_USER_TAG_MAX_MEMBERS_PER_ADD = 1000
+
+UserTagMemberSource = Literal["manual", "auto", "dismissed"]
+
+
+# ── schemas ──────────────────────────────────────────────────────────────────
+
+
+class UserTagItem(BaseModel):
+    """One tag: what it is, the limits it holds its members to, its rule, its members."""
+
+    name: str
+    description: str
+    system: bool = Field(description="Shipped with the gateway; cannot be deleted")
+    quota_daily_cost: Decimal | None = Field(
+        None, description="Daily cost quota for each member, in `currency`; null sets none"
+    )
+    quota_monthly_cost: Decimal | None = Field(
+        None, description="Monthly cost quota for each member, in `currency`; null sets none"
+    )
+    currency: Currency
+    max_concurrent_requests: int | None = Field(
+        None, description="Concurrent requests each member may have in flight; null sets none"
+    )
+    allowed_models: list[str] | None = Field(
+        None, description="The only models members may use; null allows every model"
+    )
+    auto_enabled: bool
+    auto_window_hours: int
+    auto_min_active_hours: int
+    amounts_need_review: bool = Field(
+        False,
+        description="An amount was saved in a currency the ledger has no rate for; "
+        "it is enforced as 0 until re-entered",
+    )
+    manual_members: int = 0
+    auto_members: int = 0
+    dismissed_members: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class ListUserTagsResponse(BaseModel):
+    """Every tag, built-in first."""
+
+    tags: list[UserTagItem]
+    currency: Currency
+
+
+class UserTagWriteFields(BaseModel):
+    """What an administrator may set on a tag. On an update, only what is sent changes."""
+
+    description: str | None = Field(None, max_length=500)
+    quota_daily_cost: Decimal | None = Field(None, ge=0, le=_USER_TAG_MAX_AMOUNT)
+    quota_monthly_cost: Decimal | None = Field(None, ge=0, le=_USER_TAG_MAX_AMOUNT)
+    currency: Currency | None = Field(
+        None, description="The currency the amounts were read in; required with an amount"
+    )
+    max_concurrent_requests: int | None = Field(None, ge=1, le=100_000)
+    allowed_models: list[str] | None = Field(
+        None, min_length=1, max_length=_USER_TAG_MAX_ALLOWED_MODELS
+    )
+    auto_enabled: bool | None = None
+    auto_window_hours: int | None = Field(None, ge=1, le=USER_TAG_MAX_WINDOW_HOURS)
+    auto_min_active_hours: int | None = Field(None, ge=1, le=USER_TAG_MAX_WINDOW_HOURS)
+
+
+class CreateUserTagRequest(UserTagWriteFields):
+    """A new tag. Unset limits set none; the rule is off unless enabled."""
+
+    name: str = Field(..., pattern=USER_TAG_NAME_PATTERN.pattern)
+
+
+class UpdateUserTagRequest(UserTagWriteFields):
+    """Changes to a tag. ``null`` clears a limit; the other fields cannot be null."""
+
+
+class UserTagMember(BaseModel):
+    """An account's membership of a tag."""
+
+    user_id: str
+    email: str | None = None
+    login_name: str | None = None
+    phone: str | None = None
+    user_name: str | None = None
+    status: str | None = None
+    source: UserTagMemberSource
+    assigned_at: datetime
+    assigned_by: str | None = Field(
+        None, description="The administrator's user id; null for the automatic rule"
+    )
+
+
+class ListUserTagMembersResponse(BaseModel):
+    """A page of a tag's memberships, applied ones first."""
+
+    total: int
+    members: list[UserTagMember]
+
+
+class AddUserTagMembersRequest(BaseModel):
+    """Accounts to give the tag to by hand."""
+
+    user_ids: list[str] = Field(..., min_length=1, max_length=_USER_TAG_MAX_MEMBERS_PER_ADD)
+
+
+class AddUserTagMembersResponse(BaseModel):
+    """What adding did: who gained the tag (or now holds it by hand), who already did."""
+
+    added: list[str]
+    unchanged: list[str]
+    unknown: list[str]
+
+
+class RemoveUserTagMemberResponse(BaseModel):
+    """What taking the tag away did."""
+
+    user_id: str
+    previous_source: UserTagMemberSource
+    dismissed: bool = Field(
+        description="Kept as dismissed, so the automatic rule counts only later requests"
+    )
+
+
+class UserTagMatch(BaseModel):
+    """An account an automatic rule matches now."""
+
+    user_id: str
+    email: str | None = None
+    login_name: str | None = None
+    phone: str | None = None
+    user_name: str | None = None
+    status: str | None = None
+    active_hours: int
+    member_source: UserTagMemberSource | None = None
+
+
+class UserTagPreviewResponse(BaseModel):
+    """The accounts a rule of these bounds matches now."""
+
+    window_hours: int
+    min_active_hours: int
+    matched: list[UserTagMatch]
+    truncated: bool = False
+
+
+class UserTagDetectResponse(BaseModel):
+    """What running a tag's rule now did."""
+
+    added: list[str]

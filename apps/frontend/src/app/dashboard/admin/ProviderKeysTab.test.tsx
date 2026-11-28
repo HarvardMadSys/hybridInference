@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ProviderKeysTab } from './ProviderKeysTab';
+import { LEAVE_MESSAGE } from './useLeaveGuard';
 
 vi.mock('@/lib/api/admin', () => ({
   addProviderKey: vi.fn(),
@@ -12,6 +13,7 @@ vi.mock('@/lib/api/admin', () => ({
   enableProviderEnvKey: vi.fn(),
   listProviderKeyProviders: vi.fn(),
   listProviderKeys: vi.fn(),
+  removeProviderEnvKey: vi.fn(),
   setProviderEnvKeyMinRole: vi.fn(),
   setProviderKeyMinRole: vi.fn(),
   setProviderKeyStatus: vi.fn(),
@@ -33,6 +35,7 @@ import {
   enableProviderEnvKey,
   listProviderKeyProviders,
   listProviderKeys,
+  removeProviderEnvKey,
   setProviderEnvKeyMinRole,
   setProviderKeyMinRole,
   setProviderKeyStatus,
@@ -159,6 +162,45 @@ describe('ProviderKeysTab tier reservation', () => {
     await openAddForm();
     expect(screen.getByLabelText('Provider')).toHaveAttribute('data-value', 'zai');
     expect(screen.getByRole('form', { name: 'Add a new key' })).toBeInTheDocument();
+  });
+
+  it('opens on the first provider when none is asked for', async () => {
+    vi.mocked(listProviderKeyProviders).mockResolvedValue({ providers: ['openrouter', 'zai'] });
+    const onProviderChange = vi.fn();
+    render(<ProviderKeysTab onProviderChange={onProviderChange} />);
+
+    await waitFor(() => expect(listProviderKeys).toHaveBeenCalledWith('openrouter'));
+    expect(screen.getByLabelText('Selected provider')).toHaveAttribute('data-value', 'openrouter');
+    expect(onProviderChange).toHaveBeenLastCalledWith('openrouter');
+  });
+
+  it('gives way to the first provider when the one only shown last is no longer listed', async () => {
+    vi.mocked(listProviderKeyProviders).mockResolvedValue({ providers: ['openrouter', 'zai'] });
+    const onProviderChange = vi.fn();
+    // Shown last, then deleted on Overview: not asked for, so not kept.
+    render(
+      <ProviderKeysTab
+        initialProvider="deleted-provider"
+        keepUnlistedProvider={false}
+        onProviderChange={onProviderChange}
+      />,
+    );
+
+    await waitFor(() => expect(listProviderKeys).toHaveBeenCalledWith('openrouter'));
+    expect(screen.getByLabelText('Selected provider')).toHaveAttribute('data-value', 'openrouter');
+    expect(screen.queryByText(/Key management is unavailable/)).not.toBeInTheDocument();
+    expect(onProviderChange).toHaveBeenLastCalledWith('openrouter');
+    await openAddForm();
+    expect(screen.getByLabelText('Provider')).toHaveAttribute('data-value', 'openrouter');
+  });
+
+  it('keeps the provider shown last while it is still listed', async () => {
+    vi.mocked(listProviderKeyProviders).mockResolvedValue({ providers: ['openrouter', 'zai'] });
+    render(<ProviderKeysTab initialProvider="zai" keepUnlistedProvider={false} />);
+
+    await waitFor(() => expect(listProviderKeys).toHaveBeenCalledWith('zai'));
+    expect(screen.getByLabelText('Selected provider')).toHaveAttribute('data-value', 'zai');
+    expect(listProviderKeys).not.toHaveBeenCalledWith('openrouter');
   });
 
   it('edits reservations in place, with no Edit step and no save bar until a change', async () => {
@@ -551,6 +593,32 @@ describe('ProviderKeysTab tier reservation', () => {
       ]);
       expect(setProviderKeyMinRole).not.toHaveBeenCalled();
     });
+
+    it('asks before leaving the page, for another Providers section or tab', async () => {
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+      window.history.replaceState(null, '', '/dashboard/admin/providers/keys');
+      // Another section's link, as the section control above the page renders it.
+      const models = document.body.appendChild(document.createElement('a'));
+      models.href = '/dashboard/admin/providers/models';
+      try {
+        render(<ProviderKeysTab initialProvider="zai" />);
+        await screen.findByLabelText(`Reserved tier for key ${dbKey.key_prefix}`);
+        fireEvent.click(models);
+        expect(confirm).not.toHaveBeenCalled();
+
+        chooseValue(screen.getByLabelText(`Reserved tier for key ${dbKey.key_prefix}`), 'internal');
+        expect(fireEvent.click(models)).toBe(false);
+        expect(confirm).toHaveBeenCalledWith(LEAVE_MESSAGE);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Discard changes to zai key tiers' }));
+        confirm.mockClear();
+        fireEvent.click(models);
+        expect(confirm).not.toHaveBeenCalled();
+      } finally {
+        models.remove();
+        confirm.mockRestore();
+      }
+    });
   });
 
   it('verifies a key directly, without a confirmation', async () => {
@@ -563,6 +631,43 @@ describe('ProviderKeysTab tier reservation', () => {
     await waitFor(() => expect(verifyProviderKey).toHaveBeenCalledWith('zai', NEW_SECRET));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(await screen.findByRole('button', { name: 'Verified' })).toBeInTheDocument();
+  });
+
+  it('removes an env key only after the named confirmation', async () => {
+    vi.mocked(removeProviderEnvKey).mockResolvedValue({
+      id: 'env:abc',
+      provider: 'zai',
+      pools_updated: 1,
+      cleared_settings: ['ZAI_API_KEY'],
+    });
+    render(<ProviderKeysTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: `Delete key ${envKey.key_prefix}` }));
+    const confirm = screen.getByRole('dialog', { name: `Delete key ${envKey.key_prefix}?` });
+    expect(confirm).toHaveTextContent('does not put it back');
+    clickInDialog('Cancel');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(removeProviderEnvKey).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: `Delete key ${envKey.key_prefix}` }));
+    clickInDialog('Delete');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(vi.mocked(removeProviderEnvKey).mock.calls).toEqual([['zai', 'env:abc']]);
+    expect(toast.success).toHaveBeenCalledWith(
+      'Key cleared from configuration. The environment variable does not put it back.',
+    );
+    expect(deleteProviderKey).not.toHaveBeenCalled();
+  });
+
+  it('keeps the env-key delete confirmation open when removal fails', async () => {
+    vi.mocked(removeProviderEnvKey).mockRejectedValueOnce(new Error('still configured'));
+    render(<ProviderKeysTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: `Delete key ${envKey.key_prefix}` }));
+    clickInDialog('Delete');
+
+    expect(await within(dialog()).findByRole('alert')).toHaveTextContent('still configured');
+    expect(removeProviderEnvKey).toHaveBeenCalledTimes(1);
   });
 
   it('deletes a DB key only after the named confirmation', async () => {
@@ -744,6 +849,7 @@ describe('ProviderKeysTab tier reservation', () => {
       within(row).getByLabelText(`Reserved tier for key ${envKey.key_prefix}`),
     ).toBeInTheDocument();
     expect(within(row).queryByRole('button', { name: /disable/i })).not.toBeInTheDocument();
+    expect(within(row).queryByRole('button', { name: /delete/i })).not.toBeInTheDocument();
     expect(within(row).getByText('reservation only')).toBeInTheDocument();
   });
 

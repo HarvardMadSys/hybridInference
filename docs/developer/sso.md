@@ -16,7 +16,7 @@ are not supported yet.
    `<FRONTEND_URL>/auth/sso/<id>/callback`, where `<id>` is the short name you
    will give the provider below. Note the client id and the client secret.
 2. **Describe the provider** in the `SSO_PROVIDERS` setting, under
-   **Admin → Settings → Models**, in the **Application** section:
+   **Admin → Settings → Application**:
 
    ```json
    {

@@ -1,4 +1,4 @@
-"""Application documents from the environment, the reasons Admin gives, and the audit log."""
+"""Application documents: where Admin lists them, the environment, the reasons and the audit log."""
 
 from __future__ import annotations
 
@@ -9,8 +9,9 @@ import pytest
 from serving.config import app_config
 from serving.config.app_config_registry import static_entries
 from serving.config.distribution import DistributionConfigError, get_active_distribution_config
-from serving.config.documents import get
+from serving.config.documents import DOCUMENT_KEYS, get
 from serving.config.settings import get_settings
+from serving.schemas_config import ConfigEntryItem
 from tests.fixtures.app_config_store import FakeAppConfigStore, row
 
 INLINE = "inline-provider-credential"
@@ -31,6 +32,48 @@ async def load(rows=(), *, bootstrap=False):
     await app_config.load(store, bootstrap=bootstrap)
     app_config.attach(store)
     return store
+
+
+# --- where Admin lists them ---------------------------------------------------
+
+
+async def test_the_model_catalog_has_a_category_of_its_own_and_still_asks_for_a_password():
+    """Admin → Models edits the catalog; Admin → Settings the other documents, as Application."""
+    await load()
+    described = app_config.describe(offered_only=True)
+    entries = {entry["key"]: entry for entry in described["entries"]}
+    labels = {category["id"]: category["label"] for category in described["categories"]}
+
+    assert labels["models"] == "Model catalog"
+    assert labels["application"] == "Application"
+    assert [key for key, entry in entries.items() if entry["category"] == "models"] == [
+        "MODEL_CATALOG"
+    ]
+    assert {key: entries[key]["category"] for key in DOCUMENT_KEYS.values()} == {
+        "MODEL_CATALOG": "models",
+        "ROUTING_POLICY": "application",
+        "ALERT_RULES": "application",
+        "SITE_CONFIGURATION": "application",
+        "SITE_BRANDING": "application",
+        "SSO_PROVIDERS": "application",
+    }
+    # Where requests go and who may sign in: saving any document asks for the password.
+    for key in DOCUMENT_KEYS.values():
+        assert entries[key]["security_relevant"] is True, key
+
+
+async def test_the_console_learns_which_settings_are_documents_to_edit_as_fields():
+    """Only the JSON objects: not a secret JSON list, not a PEM, not an ordinary setting."""
+    await load()
+    entries = app_config.describe()["entries"]
+
+    documents = sorted(entry["key"] for entry in entries if entry["document"])
+    assert documents == sorted(DOCUMENT_KEYS.values())
+    by_key = {entry["key"]: entry for entry in entries}
+    for key in ("ALERT_HISTORY_READ_CREDENTIALS", "IDENTITY_JWT_RETIRING_PUBLIC_KEYS", "SITE_NAME"):
+        assert by_key[key]["document"] is False, key
+    # The API keeps the field, so a console can rely on it.
+    assert ConfigEntryItem.model_validate(by_key["MODEL_CATALOG"]).document is True
 
 
 # --- the reason Admin gives ---------------------------------------------------

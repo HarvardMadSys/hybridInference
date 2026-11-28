@@ -21,20 +21,6 @@ def _triggers(workflow: dict) -> dict:
     return workflow.get("on") or workflow[True]
 
 
-@pytest.mark.parametrize(
-    "workflow_name",
-    [
-        "deploy.yml",
-        "deploy-rollback.yml",
-        "deploy-staging.yml",
-        "deploy-staging-digest.yml",
-        "rag-index.yml",
-    ],
-)
-def test_retired_workflows_are_absent(workflow_name: str) -> None:
-    assert not (WORKFLOWS / workflow_name).exists()
-
-
 def test_manual_candidate_cannot_be_mistaken_for_lock_input() -> None:
     steps = _workflow("build-candidates.yml")["jobs"]["build"]["steps"]
     tags = next(
@@ -44,20 +30,21 @@ def test_manual_candidate_cannot_be_mistaken_for_lock_input() -> None:
 
     assert "manual-${{ github.sha }}" in tags
     assert "dev-" not in tags
+    assert "sha-" not in tags
     assert "Diagnostic only: upstream.lock never consumes manual-* tags" in summary
-    assert "automatic dev CI multi-arch candidate" in summary
+    assert "multi-arch image CI publishes for a release" in summary
     assert "Deploy Staging by Digest" not in summary
 
 
 def test_no_trigger_is_path_filtered_so_every_sha_gets_a_run() -> None:
     """A path filter here withholds the run itself, not just the jobs.
 
-    Pushes carried a docs-only `paths-ignore` until #1283 made every green dev
-    SHA publish a backend candidate for the distribution repo's bump bot. A
-    filtered push creates no workflow run at all, so nothing downstream can
-    rescue it — not a job-level condition, and not the staging deploy that
-    hangs off this workflow's completion. Cheapness is the per-job change
-    classification's job, which is asserted separately.
+    Pushes carried a docs-only `paths-ignore` until #1283. A filtered push
+    creates no workflow run at all, so nothing downstream can rescue it: a
+    docs-only release would publish no images, and the distribution's bump
+    script, which requires a green run for the commit it pins, would refuse
+    it. Cheapness is the per-job change classification's job, which is
+    asserted separately.
     """
     triggers = _triggers(_workflow("ci.yml"))
 
@@ -96,14 +83,40 @@ def test_publish_gate_survives_skipped_ancestors(job_name: str) -> None:
 
     assert "ci-gate" in job["needs"]
     assert "!cancelled()" in job["if"]
-    assert "github.event_name == 'push'" in job["if"]
-    assert "github.ref == 'refs/heads/dev'" in job["if"]
     assert "needs.ci-gate.result == 'success'" in job["if"]
+
+
+@pytest.mark.parametrize(
+    "job_name",
+    [
+        "publish-backend-precheck",
+        "publish-backend-arm64",
+        "publish-backend-amd64",
+        "publish-backend",
+        "publish-console-precheck",
+        "publish-console-arm64",
+        "publish-console-amd64",
+        "publish-console",
+    ],
+)
+def test_images_are_published_only_for_releases(job_name: str) -> None:
+    """Only main's run publishes: a release is a move of main.
+
+    Dev pushes, pull requests and other branches build images to test them
+    and push nothing. A dispatch on main re-publishes main's commit when its
+    release run did not finish; a dispatch on any other ref publishes nothing.
+    """
+    condition = _workflow("ci.yml")["jobs"][job_name]["if"]
+
+    assert "github.ref == 'refs/heads/main'" in condition
+    assert "refs/heads/dev" not in condition
+    assert "(github.event_name == 'push' || github.event_name == 'workflow_dispatch')" in condition
+    assert "pull_request" not in condition
 
 
 @pytest.mark.parametrize("image", ["backend", "console"])
 def test_publish_stitch_requires_both_native_halves(image: str) -> None:
-    """The dev-<sha> tag is the completeness signal; only the stitch mints it.
+    """The sha-<sha> tag is the completeness signal; only the stitch mints it.
 
     The stitch must gate on BOTH arch results explicitly — with !cancelled()
     suppressing the implicit success(), nothing else stops it from tagging a
@@ -119,6 +132,51 @@ def test_publish_stitch_requires_both_native_halves(image: str) -> None:
     }
     assert f"needs.publish-{image}-arm64.result == 'success'" in job["if"]
     assert f"needs.publish-{image}-amd64.result == 'success'" in job["if"]
+
+
+def test_a_later_release_queues_behind_an_earlier_release_publish() -> None:
+    """A main run publishes a release's images, so nothing may cancel it.
+
+    A dispatch on main publishes only main's current tip, so a release whose
+    run a later main move cancelled could never get images. Other refs keep
+    cancelling superseded runs.
+    """
+    concurrency = _workflow("ci.yml")["concurrency"]
+
+    assert concurrency["cancel-in-progress"] == "${{ github.ref != 'refs/heads/main' }}"
+
+
+def test_restore_drill_orders_releases_by_tag_name() -> None:
+    """Release tags are lightweight; their creatordate is the commit's date.
+
+    The YYYYMMDD[.N] name is the release order, and a version sort puts .10
+    after .9.
+    """
+    steps = _workflow("ci.yml")["jobs"]["tutorial-e2e"]["steps"]
+    drill = next(step for step in steps if step.get("id") == "demo-previous-smoke")["run"]
+
+    assert "--sort=-v:refname" in drill
+    assert "creatordate" not in drill
+    assert "for prefix in sha dev" in drill
+
+
+@pytest.mark.parametrize("image", ["backend", "console"])
+def test_published_images_are_tagged_by_commit_not_branch(image: str) -> None:
+    """Release images carry sha-<sha>; the precheck looks up the same tag.
+
+    The dev-<sha> name belonged to per-dev-push candidates and survives only
+    on images published before releases became the sole trigger.
+    """
+    jobs = _workflow("ci.yml")["jobs"]
+    stitch = next(step for step in jobs[f"publish-{image}"]["steps"] if step.get("id") == "stitch")
+    lookup = next(
+        step for step in jobs[f"publish-{image}-precheck"]["steps"] if step.get("id") == "existing"
+    )
+
+    assert ':sha-${GITHUB_SHA}"' in stitch["run"]
+    assert ':sha-${short}"' in stitch["run"]
+    assert '\\"sha-${GITHUB_SHA}\\"' in lookup["run"]
+    assert "dev-" not in stitch["run"] + lookup["run"]
 
 
 @pytest.mark.parametrize("image", ["backend", "console"])
@@ -214,17 +272,22 @@ def test_publish_builds_are_native_never_emulated() -> None:
 
     qemu-user cannot run uv's static binary: the emulated amd64 half of a
     combined multi-platform build segfaulted `uv sync` instantly (observed
-    on dev@2e4edfa4, exit code 139). Scoped to ci.yml — the dispatch-only
-    Build Candidate Images tool takes an operator-chosen platform input and
-    is that operator's judgment call.
+    on dev@2e4edfa4, exit code 139). The dispatch-only Build Candidate Images
+    tool picks the hosted runner native to its platform input.
     """
-    jobs = _workflow("ci.yml")["jobs"]
-
-    for name, job in jobs.items():
+    for workflow, name, job, _ in _jobs():
         for step in job.get("steps") or []:
-            assert "setup-qemu-action" not in str(step.get("uses", "")), name
+            assert "setup-qemu-action" not in str(step.get("uses", "")), (workflow, name)
             platforms = str((step.get("with") or {}).get("platforms", ""))
-            assert "," not in platforms, f"{name}: emulated multi-platform build"
+            assert "," not in platforms, f"{workflow}:{name}: emulated multi-platform build"
+    jobs = _workflow("ci.yml")["jobs"]
+    for image in ("backend", "console"):
+        assert jobs[f"publish-{image}-arm64"]["runs-on"] == "ubuntu-24.04-arm"
+        assert jobs[f"publish-{image}-amd64"]["runs-on"] == "ubuntu-latest"
+    diagnostic = _workflow("build-candidates.yml")["jobs"]["build"]["runs-on"]
+    assert diagnostic == (
+        "${{ inputs.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}"
+    )
 
 
 def test_python_tests_signal_controls_only_the_pytest_job() -> None:
@@ -273,59 +336,6 @@ def test_site_ui_container_job_cannot_strand_containers() -> None:
     assert 'docker rm -f "${SITE_UI_RUN}-example"' in teardown["run"]
     assert '"${SITE_UI_RUN}-neutral:ci" "${SITE_UI_RUN}-example:ci"' in teardown["run"]
     assert steps[-1] is teardown
-
-
-def test_w5c_retired_services_and_ci_wiring_are_absent() -> None:
-    jobs = _workflow("ci.yml")["jobs"]
-    retired_paths = (
-        ROOT / "services/status-monitor-worker",
-        ROOT / "services/alert-control-plane-worker",
-        ROOT / "services/freeinference-harness",
-    )
-
-    assert all(not path.exists() for path in retired_paths)
-    assert "alert-control-plane-check" not in jobs
-    assert "alert-control-plane-check" not in jobs["ci-gate"]["needs"]
-    assert "status_monitor" not in jobs["changes"]["outputs"]
-    assert "alert_control_plane" not in jobs["changes"]["outputs"]
-
-
-def test_w5d_retired_ops_assets_are_absent() -> None:
-    """The distribution repository owns the db toolkit, proxies, and units.
-
-    Production cron and the staging proxy unit already execute the consuming
-    repository's copies, so these upstream copies must not come back. The
-    backend-coupled analysis remnant under ops/db/ stays deliberately.
-    """
-    retired_paths = (
-        ROOT / "ops/lib",
-        ROOT / "ops/h200_idle_proxy",
-        ROOT / "ops/spark_idle_proxy",
-        ROOT / "ops/local_deployment_proxy",
-        ROOT / "ops/db/backup.sh",
-        ROOT / "ops/db/restore.sh",
-        ROOT / "ops/db/export_logs.py",
-        ROOT / "ops/db/analysis/trace_viewer",
-        ROOT / "deploy/systemd/spark_idle_proxy.service",
-        ROOT / "deploy/systemd/spark_idle_tunnel@.service",
-        ROOT / "deploy/systemd/h200_idle_proxy.service",
-        ROOT / "deploy/systemd/h200_idle_proxy_b.service",
-        ROOT / "deploy/systemd/h200_idle_tunnel@.service",
-        ROOT / "deploy/systemd/h200_idle_tunnel_b@.service",
-        ROOT / "deploy/systemd/h200_ondemand_proxy.service",
-        ROOT / "deploy/systemd/h200_ondemand_tunnel@.service",
-        ROOT / "deploy/systemd/local_deployment_proxy.service",
-        ROOT / "deploy/systemd/local_deployment_tunnel@.service",
-    )
-
-    assert all(not path.exists() for path in retired_paths)
-    kept_remnant = (
-        ROOT / "ops/db/analysis/user_automation_score.py",
-        ROOT / "ops/db/analysis/user_prompt_sample.py",
-        ROOT / "ops/db/analysis/geo_hourly_export.py",
-        ROOT / "ops/db/backfill_num_user_turns.py",
-    )
-    assert all(path.exists() for path in kept_remnant)
 
 
 def test_backend_matrix_keeps_the_fast_stage_one_smoke() -> None:
@@ -396,12 +406,7 @@ def test_tutorial_e2e_builds_and_runs_the_exact_linear_transition() -> None:
     assert changes["outputs"]["tutorial_e2e"] == "${{ steps.validate.outputs.tutorial_e2e }}"
     assert "needs.changes.outputs.tutorial_e2e == 'true'" in job["if"]
     assert "github.event_name != 'pull_request'" not in job["if"]
-    # PR events (untrusted after the repo is public) run GitHub-hosted; every
-    # trusted event keeps the self-hosted image-verify pool.
-    assert job["runs-on"] == (
-        "${{ github.event_name == 'pull_request' && 'ubuntu-24.04-arm'"
-        ' || fromJSON(\'["self-hosted", "Linux", "ARM64", "image-verify-arm64"]\') }}'
-    )
+    assert job["runs-on"] == "ubuntu-24.04-arm"
 
     expected_names = {
         "EXAMPLE_BACKEND_CONTAINER_NAME",
@@ -569,8 +574,7 @@ def _workflow_files() -> list[Path]:
 def test_every_workflow_states_its_token_permissions(path: Path) -> None:
     """A workflow without a ``permissions`` block gets the repository default.
 
-    That default can be read-write on every scope, and these jobs run on
-    self-hosted runners a push reaches.
+    That default can be read-write on every scope.
     """
     workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
 
@@ -614,11 +618,11 @@ def _jobs() -> list[tuple[str, str, dict, dict]]:
 
 
 def test_every_registry_login_stays_in_a_docker_config_of_its_own() -> None:
-    """The runner account's ``~/.docker/config.json`` is shared by every job on its host.
+    """A ``packages: write`` login never lands in the runner account's ``~/.docker``.
 
-    Push CI on unreviewed branches runs on the same self-hosted hosts as the
-    publish jobs, so a ``packages: write`` login written there could be read
-    and reused by other code for as long as the publishing job ran.
+    Hosted runners are discarded with the job, so this is defence in depth: on
+    a persistent runner that file is shared by every job on the host, and the
+    login could be read and reused by other code while the publishing job ran.
     """
     isolate = 'echo "DOCKER_CONFIG=${docker_config}" >> "${GITHUB_ENV}"'
     remove = 'rm -f "${RUNNER_TEMP}/docker-config/config.json"'
@@ -649,8 +653,8 @@ def test_no_checkout_leaves_a_package_token_in_the_workspace() -> None:
     """actions/checkout writes its token into .git/config unless told not to.
 
     Where the token has a packages scope, that is a registry credential left in
-    a persistent runner's workspace for the length of the job; nothing in these
-    jobs fetches again after the checkout.
+    the workspace for the length of the job; nothing in these jobs fetches
+    again after the checkout.
     """
     checkouts = 0
     for workflow, name, job, defaults in _jobs():
@@ -689,48 +693,20 @@ def test_no_job_caches_a_venv_that_uv_venv_replaces() -> None:
     assert syncing >= 3
 
 
-# The self-hosted runners run under accounts that have no sudo, one account per
-# repository, side by side on the same machines. So a step that a self-hosted
-# runner can take must not call sudo, and must not use a fixed name in the
-# machines' shared /tmp, where a file another account left behind cannot be
-# replaced (fs.protected_regular).
-SUDO = re.compile(r"(?:^|[\s;&|(!`{])sudo(?=\s|$)")
-SHARED_TMP = re.compile(r"(?:^|[\s=:'\"(])/tmp/")
-HOSTED_ONLY = "runner.environment == 'github-hosted'"
+def test_no_workflow_names_a_self_hosted_runner() -> None:
+    """The self-hosted runners were retired after the 2026-11-22 incident.
 
-
-def _script(step: dict) -> str:
-    """A step's shell without its comment lines, which may name sudo freely."""
-    lines = str(step.get("run", "")).splitlines()
-    return "\n".join(line for line in lines if not line.lstrip().startswith("#"))
-
-
-def _self_hosted_jobs() -> list[tuple[str, str, dict]]:
-    """Jobs whose ``runs-on`` can name a self-hosted runner, for any event."""
-    return [
-        (workflow, name, job)
-        for workflow, name, job, _ in _jobs()
-        if "self-hosted" in str(job.get("runs-on", ""))
-    ]
-
-
-def test_no_step_a_self_hosted_runner_can_run_calls_sudo() -> None:
-    """Their accounts have no sudo, so such a step fails on every trusted event.
-
-    A step that only a hosted runner may take says so in its own condition, as
-    a conjunct the whole condition depends on.
+    A job that named one queued until GitHub cancelled it a day later, which
+    is how every dev push run since 2026-11-20 ended, publishing included.
     """
-    jobs = _self_hosted_jobs()
-    for workflow, name, job in jobs:
-        for step in job.get("steps") or []:
-            if not SUDO.search(_script(step)):
-                continue
-            condition = str(step.get("if", "")).removeprefix("${{").removesuffix("}}")
-            conjuncts = [part.strip() for part in condition.split("&&")]
-            assert HOSTED_ONLY in conjuncts, (workflow, name, step.get("name"))
-    # The CI jobs a push reaches, the publish jobs, the diagnostic build and
-    # the release: the check above looked where it matters.
-    assert len(jobs) >= 15
+    jobs = _jobs()
+    for workflow, name, job, _ in jobs:
+        runs_on = str(job.get("runs-on", ""))
+        assert "self-hosted" not in runs_on, (workflow, name, runs_on)
+        assert "ubuntu-" in runs_on, (workflow, name, runs_on)
+    assert not (ROOT / ".github" / "actionlint.yaml").exists()
+    # CI, the publish jobs, the diagnostic build and the release.
+    assert len(jobs) >= 20
 
 
 def test_gitleaks_installs_into_runner_temp_and_onto_the_path(tmp_path: Path) -> None:
@@ -782,15 +758,3 @@ sudo() { printf '%s\n' "sudo $*" >> "${CALLS}"; return 1; }
     recorded = calls.read_text().splitlines()
     assert [line for line in recorded if line.startswith("tar ")]
     assert not [line for line in recorded if line.startswith("sudo")]
-
-
-def test_no_self_hosted_step_uses_a_fixed_name_in_the_shared_tmp() -> None:
-    """Every runner account on a machine shares its sticky /tmp.
-
-    A file another account left at a fixed name there cannot be replaced, so the
-    step fails on whichever account comes second. RUNNER_TEMP belongs to one
-    runner process, and mktemp picks a fresh name.
-    """
-    for workflow, name, job in _self_hosted_jobs():
-        for step in job.get("steps") or []:
-            assert not SHARED_TMP.search(_script(step)), (workflow, name, step.get("name"))

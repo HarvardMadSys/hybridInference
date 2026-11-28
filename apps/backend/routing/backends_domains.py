@@ -4,11 +4,9 @@ This module is a transitional home for the current ``hybrid_composition``
 compatibility wiring, not the target abstraction for deployment ownership.
 The accepted [composable-routing design](../../../docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md)
 keeps local/cloud ownership independent from Leaf/Tree structure and does not
-require a ``CloudBackend`` inheritance layer. The
-[implementation plan](../../../docs/agents/plans/2026-09-13-hybrid-routing-implementation.zh.md)
-retains existing public wrappers for compatibility while the target execution
-boundary is wired. Avoid extending this wrapper layer without updating those
-records.
+require a ``CloudBackend`` inheritance layer. The existing public wrappers stay
+for compatibility while the target execution boundary is wired. Avoid extending
+this wrapper layer without updating that record.
 
 LocalBackend wraps an existing, already-scoped local router and adds no admission
 control, queue, reservation, token accounting or cancellation protocol: whatever

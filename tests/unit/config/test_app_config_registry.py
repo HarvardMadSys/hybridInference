@@ -6,6 +6,7 @@ import textwrap
 import typing
 
 import pytest
+import yaml
 
 from serving.config import app_config_registry as registry
 from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
@@ -206,7 +207,7 @@ def test_auth_secrets_are_required_unless_database_free_and_auth_off() -> None:
 
 
 def test_smtp_credentials_are_required_while_signup_needs_verification() -> None:
-    for key in ("SMTP_USER", "SMTP_PASSWORD"):
+    for key in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD"):
         entry = registry.static_entry(key)
         assert entry is not None
         assert entry.is_required(_context(email_verification_needed=True))
@@ -225,6 +226,7 @@ _DISTINCT_VALUES = {
     "sms_provider": "sample_sms",
     "sms_default_country_code": "86",
     "sms_allowed_prefixes": "+86",
+    "cloudflare_account_id": "0123456789abcdef0123456789abcdef",
 }
 # Values a field cannot take on its own, by the cross-field rules (field names).
 _PREREQUISITES = {
@@ -406,16 +408,12 @@ def test_build_entries_never_lists_environment_only_or_runtime_rows() -> None:
 # --- discovery ---------------------------------------------------------------
 
 
-def _write(tmp_path, name: str, text: str):
-    path = tmp_path / name
-    path.write_text(textwrap.dedent(text))
-    return path
+def _document(text: str):
+    return yaml.safe_load(textwrap.dedent(text))
 
 
-def test_discovery_marks_what_a_non_optional_route_needs(tmp_path) -> None:
-    models = _write(
-        tmp_path,
-        "models.yaml",
+def test_discovery_marks_what_a_non_optional_route_needs() -> None:
+    models = _document(
         """
         # A comment mentioning ${COMMENTED_OUT} counts for nothing.
         models:
@@ -445,52 +443,54 @@ def test_discovery_marks_what_a_non_optional_route_needs(tmp_path) -> None:
                   - literal-key
         """,
     )
-    found = registry.discover_references(models, None, None)
+    found = registry.discover_documents(models, None, None)
 
     assert "COMMENTED_OUT" not in found
-    # The first route inherits the model's base_url and api_key.
-    assert found["SHARED_BASE"].required
-    assert found["MODEL_KEY"].required
-    assert found["SHARED_BASE"].used_by == {"chat-a"}
-    # Referenced, but a blank value does not skip the model.
-    assert not found["UPSTREAM_MODEL"].required
-    # Only an optional route needs it.
-    assert not found["CANARY_KEY"].required
-    assert found["CANARY_KEY"].used_by == {"chat-a"}
-    # A key list fails only when every member is empty.
-    assert not found["POOL_KEY"].required
-    assert found["POOL_KEY"].key_groups == [("POOL_KEY", "POOL_KEY2")]
-    # A literal key keeps its route alive on its own.
-    assert not found["MIXED_KEY"].key_groups
+    # Every reference is recorded with the models that use it, whatever its field.
+    for key in ("SHARED_BASE", "MODEL_KEY", "UPSTREAM_MODEL", "CANARY_KEY"):
+        assert found[key].used_by == {"chat-a"}
+    for key in ("POOL_KEY", "POOL_KEY2"):
+        assert found[key].used_by == {"chat-b"}
+    assert found["MIXED_KEY"].used_by == {"chat-c"}
+    # Keys from a credential field are secret whatever their names.
+    assert found["MODEL_KEY"].credential
+    assert found["POOL_KEY"].credential
 
 
-def test_key_groups_are_required_together(tmp_path) -> None:
-    models = _write(
-        tmp_path,
-        "models.yaml",
+def test_model_registry_references_are_never_required() -> None:
+    """Provider keys and URLs may be missing: none makes the deployment incomplete.
+
+    The registry already skips a route (``optional: true``) or drops its model
+    when one is unset; a required setting on top would mark the deployment
+    incomplete for every provider it does not use.
+    """
+    models = _document(
         """
         models:
+          - id: chat-a
+            base_url: ${SHARED_BASE}
+            api_key: ${MODEL_KEY}
           - id: chat-b
             route:
               - kind: openrouter
-                base_url: https://openrouter.ai/api/v1
+                base_url: ${POOL_BASE}
                 api_keys:
                   - ${POOL_KEY}
                   - ${POOL_KEY2}
+              - kind: openai_compat
+                base_url: https://canary.example/v1
+                api_key: ${CANARY_KEY}
+                optional: true
         """,
     )
-    entries = registry.build_entries(registry.discover_references(models, None, None), {}, {})
-    first, second = entries["POOL_KEY"], entries["POOL_KEY2"]
-    assert first.is_required(_context({}))
-    assert second.is_required(_context({}))
-    assert not first.is_required(_context({"POOL_KEY2": "set"}))
-    assert not second.is_required(_context({"POOL_KEY2": "set"}))
+    entries = registry.build_entries(registry.discover_documents(models, None, None), {}, {})
+    nothing_set = _context({})
+    for key in ("SHARED_BASE", "MODEL_KEY", "POOL_BASE", "POOL_KEY", "POOL_KEY2", "CANARY_KEY"):
+        assert not entries[key].is_required(nothing_set), key
 
 
-def test_discovered_entries_take_secrecy_from_their_names(tmp_path) -> None:
-    models = _write(
-        tmp_path,
-        "models.yaml",
+def test_discovered_entries_take_secrecy_from_their_names() -> None:
+    models = _document(
         """
         models:
           - id: chat
@@ -498,7 +498,7 @@ def test_discovered_entries_take_secrecy_from_their_names(tmp_path) -> None:
             api_key: ${LOCAL_BOX_TOKEN}
         """,
     )
-    entries = registry.build_entries(registry.discover_references(models, None, None), {}, {})
+    entries = registry.build_entries(registry.discover_documents(models, None, None), {}, {})
     assert not entries["LOCAL_BOX_URL"].secret
     assert entries["LOCAL_BOX_TOKEN"].secret
     assert entries["LOCAL_BOX_URL"].origin == "discovered"
@@ -506,10 +506,8 @@ def test_discovered_entries_take_secrecy_from_their_names(tmp_path) -> None:
     assert entries["LOCAL_BOX_URL"].used_by == ("chat",)
 
 
-def test_discovery_merges_into_static_entries(tmp_path) -> None:
-    models = _write(
-        tmp_path,
-        "models.yaml",
+def test_discovery_merges_into_static_entries() -> None:
+    models = _document(
         """
         models:
           - id: chat
@@ -519,57 +517,48 @@ def test_discovery_merges_into_static_entries(tmp_path) -> None:
                 api_key: ${OPENROUTER_API_KEY}
         """,
     )
-    entries = registry.build_entries(registry.discover_references(models, None, None), {}, {})
+    entries = registry.build_entries(registry.discover_documents(models, None, None), {}, {})
     entry = entries["OPENROUTER_API_KEY"]
     assert entry.origin == "static"
     assert entry.used_by == ("chat",)
-    assert entry.is_required(_context())
+    assert entry.secret
+    # A reference adds no requirement to the static entry either.
+    assert not entry.is_required(_context())
 
 
-def test_routing_and_alert_references(tmp_path) -> None:
-    routing = _write(
-        tmp_path,
-        "routing.yaml",
+def test_routing_and_alert_references() -> None:
+    routing = _document(
         """
         local_deployment:
           - endpoint: ${LOCAL_DEPLOYMENT_URL:-http://localhost:8001}
             models: [model-a, model-b]
         """,
     )
-    alerts = _write(
-        tmp_path,
-        "alerts.yaml",
+    alerts = _document(
         """
         sinks:
           slack:
             webhook: ${ALERT_SINK_WEBHOOK}
         """,
     )
-    found = registry.discover_references(None, routing, alerts)
+    found = registry.discover_documents(None, routing, alerts)
     assert found["LOCAL_DEPLOYMENT_URL"].used_by == {"model-a", "model-b"}
-    assert not found["LOCAL_DEPLOYMENT_URL"].required
     assert found["ALERT_SINK_WEBHOOK"].category == "alerts"
     entries = registry.build_entries(found, {}, {})
+    assert not entries["LOCAL_DEPLOYMENT_URL"].is_required(_context())
     assert entries["ALERT_SINK_WEBHOOK"].secret
 
 
-def test_discovery_ignores_environment_only_references(tmp_path) -> None:
-    routing = _write(
-        tmp_path,
-        "routing.yaml",
+def test_discovery_ignores_environment_only_references() -> None:
+    routing = _document(
         """
         remote_deployment:
           - endpoint: http://${DB_HOST}:9000
             models: [m]
         """,
     )
-    entries = registry.build_entries(registry.discover_references(None, routing, None), {}, {})
+    entries = registry.build_entries(registry.discover_documents(None, routing, None), {}, {})
     assert "DB_HOST" not in entries
-
-
-def test_unreadable_files_contribute_nothing(tmp_path) -> None:
-    broken = _write(tmp_path, "models.yaml", "models: [unbalanced\n")
-    assert registry.discover_references(broken, tmp_path / "missing.yaml", None) == {}
 
 
 def test_every_default_satisfies_its_own_limits() -> None:
@@ -651,10 +640,8 @@ def test_a_custom_entry_follows_its_name_unless_flagged() -> None:
     assert registry.custom_entry("ACME_REGION", secret=True).secret
 
 
-def test_discovery_marks_references_from_credential_fields(tmp_path) -> None:
-    models = _write(
-        tmp_path,
-        "models.yaml",
+def test_discovery_marks_references_from_credential_fields() -> None:
+    models = _document(
         """
         models:
           - id: chat-a
@@ -678,9 +665,7 @@ def test_discovery_marks_references_from_credential_fields(tmp_path) -> None:
                   Authorization: Bearer ${ACME_FIVE}
         """,
     )
-    routing = _write(
-        tmp_path,
-        "routing.yaml",
+    routing = _document(
         """
         remote_deployment:
           - endpoint: ${ACME_ENDPOINT}
@@ -688,7 +673,7 @@ def test_discovery_marks_references_from_credential_fields(tmp_path) -> None:
             models: [chat-a]
         """,
     )
-    found = registry.discover_references(models, routing, None)
+    found = registry.discover_documents(models, routing, None)
 
     for key in ("ACME_ONE", "ACME_TWO", "ACME_THREE", "ACME_FOUR", "ACME_FIVE", "ACME_SIX"):
         assert found[key].credential, key
@@ -699,10 +684,8 @@ def test_discovery_marks_references_from_credential_fields(tmp_path) -> None:
     assert not entries["ACME_BASE"].secret
 
 
-def test_a_static_entry_referenced_as_a_credential_is_secret(tmp_path) -> None:
-    models = _write(
-        tmp_path,
-        "models.yaml",
+def test_a_static_entry_referenced_as_a_credential_is_secret() -> None:
+    models = _document(
         """
         models:
           - id: chat
@@ -710,17 +693,15 @@ def test_a_static_entry_referenced_as_a_credential_is_secret(tmp_path) -> None:
             api_key: ${SITE_NAME}
         """,
     )
-    entries = registry.build_entries(registry.discover_references(models, None, None), {}, {})
+    entries = registry.build_entries(registry.discover_documents(models, None, None), {}, {})
 
     assert entries["SITE_NAME"].secret
     assert entries["SITE_NAME"].origin == "static"
     assert not entries["SITE_PUBLIC_BASE_URL"].secret
 
 
-def test_a_rows_secret_flag_is_kept_by_every_entry(tmp_path) -> None:
-    models = _write(
-        tmp_path,
-        "models.yaml",
+def test_a_rows_secret_flag_is_kept_by_every_entry() -> None:
+    models = _document(
         """
         models:
           - id: chat
@@ -728,7 +709,7 @@ def test_a_rows_secret_flag_is_kept_by_every_entry(tmp_path) -> None:
             api_key: literal-key
         """,
     )
-    found = registry.discover_references(models, None, None)
+    found = registry.discover_documents(models, None, None)
 
     entries = registry.build_entries(
         found,
@@ -753,7 +734,8 @@ def test_core_has_no_distribution_delivery_settings(extension_registry) -> None:
     entries = {entry.key: entry for entry in registry.static_entries()}
     assert not any(key.startswith("TENCENT_") for key in entries)
     assert {"SMS_REGION", "SMS_SDK_APP_ID", "SMS_SIGN_NAME", "SMS_TEMPLATE_ID"}.isdisjoint(entries)
-    assert entries["EMAIL_PROVIDER"].choices == ("smtp",)
+    # SMTP and Cloudflare are built in; neither is a distribution's.
+    assert entries["EMAIL_PROVIDER"].choices == ("smtp", "cloudflare")
     assert entries["SMS_PROVIDER"].choices == ("none",)
     assert not any(name.startswith("tencent_") for name in Settings.model_fields)
 

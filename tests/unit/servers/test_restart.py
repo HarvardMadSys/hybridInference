@@ -50,10 +50,9 @@ def test_the_bundled_deployments_declare_their_supervisor() -> None:
     backend = compose[compose.index("  backend:") : compose.index("\n  frontend:")]
     assert "restart: unless-stopped" in backend
     assert 'SUPERVISOR_RESTARTS_BACKEND: "1"' in backend
-    for unit in ("hybrid_inference.service", "hybrid_inference.staging.service"):
-        text = (root / "deploy/systemd" / unit).read_text()
-        assert "Restart=on-failure" in text, unit
-        assert "Environment=SUPERVISOR_RESTARTS_BACKEND=1" in text, unit
+    unit = (root / "deploy/systemd/hybrid_inference.service").read_text()
+    assert "Restart=on-failure" in unit
+    assert "Environment=SUPERVISOR_RESTARTS_BACKEND=1" in unit
 
 
 def test_request_restart_signals_this_process_once() -> None:

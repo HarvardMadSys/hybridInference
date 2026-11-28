@@ -247,10 +247,9 @@ always kept). To run anything else against that database,
 
 The cloud agent lives in
 [hybridInference-cloud-agent](https://github.com/HarvardMadSys/hybridInference-cloud-agent).
-Production cut over on 2026-08-07 and the H4 removal PR deleted the agent code
+Production cut over on 2026-08-07 and the agent code has since been deleted
 from this repository. **All agent work — features, fixes, deploy — happens in
-that repository now**; the plan and manifest are in
-[docs/agents/plans/2026-08-03-cloud-agent-repo-split.md](docs/agents/plans/2026-08-03-cloud-agent-repo-split.md).
+that repository now.**
 
 What remains here is the gateway's side of the two service contracts:
 
@@ -317,19 +316,20 @@ dated design or implementation records. They do not duplicate full
 architecture specs, implementation plans, exhaustive file maps, or current
 call graphs.
 
-Keep the records distinct: specs capture a proposed or decided target at a
-point in time, plans describe a staged migration, and reviews preserve evidence
-of what was actually verified. None of these layers is replaced by a nested
-guide.
+Design records are kept only while they govern live work:
+[`docs/agents/specs/`](docs/agents/specs/) holds accepted designs that this
+guide, a subsystem guide or the developer guide points to, and
+[`docs/agents/plans/`](docs/agents/plans/) holds plans still being carried out.
+A record whose work has shipped, been abandoned or been superseded is deleted
+(git history keeps it); verification evidence belongs in the pull request. A
+nested guide replaces none of these records.
 
 Current implementation is not automatically target architecture. When a
-subsystem is under revision, its guide must say so and agents must consult the
-newest applicable records in [`docs/agents/specs/`](docs/agents/specs/),
-[`docs/agents/plans/`](docs/agents/plans/), and
-[`docs/reviews/`](docs/reviews/) before broad changes. When an accepted
-architecture changes, create a new dated design record or explicitly supersede
-the applicable prior record. Update a subsystem guide only when its ownership,
-invariants, edit rules, or verification contract changes.
+subsystem is under revision, its guide must say so and name the record that
+governs it; consult that record before broad changes. When an accepted
+architecture changes, update or replace its record in the same change. Update a
+subsystem guide only when its ownership, invariants, edit rules, or
+verification contract changes.
 
 ### Subsystem guidance index
 

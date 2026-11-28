@@ -7,8 +7,9 @@ name. Entries come from four places:
    variable the backend reads directly, except the environment-only names in
    :data:`ENVIRONMENT_ONLY` and the runtime settings, which live in
    ``site_settings`` and have their own admin tab.
-2. **Discovered** — every ``${VAR}`` reference in the active model registry,
-   routing file and alert rules (:func:`discover_references`).
+2. **Discovered** — every ``${VAR}`` reference in the stored model catalog,
+   routing policy, alert rules and single sign-on providers
+   (:func:`discover_documents`).
 3. **Numbered provider keys** — ``<KEY>1`` … ``<KEY>20`` beside each provider
    key the key pools scan, listed when the database or the environment has one.
 4. **Custom** — any other well-formed name an administrator adds for a
@@ -27,8 +28,6 @@ from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Literal
 
-import yaml
-
 from serving.config.revisions import GroupContract
 from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
 
@@ -42,7 +41,6 @@ from serving.config.settings import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
-    from pathlib import Path
 
 ValueType = Literal["str", "text", "int", "float", "bool", "list"]
 Origin = Literal["static", "discovered", "numbered", "custom"]
@@ -50,7 +48,11 @@ Origin = Literal["static", "discovered", "numbered", "custom"]
 
 @dataclass(frozen=True)
 class Category:
-    """A group of entries on the admin Settings tab."""
+    """A group of entries in the admin console.
+
+    Each is a section of the Settings tab, except the model catalog, which the
+    Providers tab's Models section shows with the per-model overrides.
+    """
 
     id: str
     label: str
@@ -71,9 +73,14 @@ def _sms_provider_registered() -> bool:
 
 CATEGORIES: tuple[Category, ...] = (
     Category(
+        "models",
+        "Model catalog",
+        "Model metadata, aliases, router parameters and base routes.",
+    ),
+    Category(
         "application",
         "Application",
-        "Models, routing policy, alert rules and public site configuration.",
+        "Routing policy, alert rules, public site configuration and single sign-on.",
     ),
     Category("general", "General", "Public addresses, site identity and logging."),
     Category(
@@ -153,6 +160,19 @@ Requirement = bool | Callable[[RequirementContext], bool]
 
 
 @dataclass(frozen=True)
+class AppliesWhen:
+    """The setting does something only while the setting *key* holds one of *values*.
+
+    The console shows it beside that choice and hides it while another is
+    selected: the SMTP settings while Cloudflare carries the mail, for example.
+    Whether the setting is required is its own ``required`` rule.
+    """
+
+    key: str
+    values: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ConfigEntry:
     """One setting the database-backed configuration manages."""
 
@@ -194,6 +214,8 @@ class ConfigEntry:
     #: The key whose value applies while this one is empty.
     fallback_key: str | None = None
     validator: Callable[[str], None] | None = None
+    #: Applies only while another setting has one of some values (:class:`AppliesWhen`).
+    applies_when: AppliesWhen | None = None
 
     def is_required(self, context: RequirementContext) -> bool:
         """Evaluate ``required`` against the effective configuration."""
@@ -228,12 +250,26 @@ def _auth_secret_required(context: RequirementContext) -> bool:
 
 
 def _smtp_required(context: RequirementContext) -> bool:
-    # Without mail, a new account can never verify its address.
+    # Without mail, a new account can never verify its address. No value means
+    # the default, smtp, as the console also reads it when showing _WITH_SMTP.
     return (
         context.value("EMAIL_PROVIDER") in ("", "smtp")
         and context.email_verification_needed
         and not context.email_enabled
     )
+
+
+def _cloudflare_email_required(context: RequirementContext) -> bool:
+    return (
+        context.value("EMAIL_PROVIDER") == "cloudflare"
+        and context.email_verification_needed
+        and not context.email_enabled
+    )
+
+
+#: The settings that apply while each built-in transport carries the mail.
+_WITH_SMTP = AppliesWhen("EMAIL_PROVIDER", ("smtp",))
+_WITH_CLOUDFLARE = AppliesWhen("EMAIL_PROVIDER", ("cloudflare",))
 
 
 def _env_string(value: Any) -> str | None:
@@ -283,7 +319,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     *(
         ConfigEntry(
             key,
-            "application",
+            category,
             description,
             type="text",
             setup=True,
@@ -291,29 +327,34 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
             restart_required=restart,
             validator=_document_validator(key),
         )
-        for key, description, restart in (
+        for key, category, description, restart in (
             (
                 "MODEL_CATALOG",
+                "models",
                 "Model catalog as JSON. Add models and routes here or in Admin Routing. Credentials reference separate secret settings as ${NAME}.",
                 True,
             ),
             (
                 "ROUTING_POLICY",
+                "application",
                 "Optional routing policy as JSON. Omit to use the default Fixed router.",
                 True,
             ),
             (
                 "ALERT_RULES",
+                "application",
                 "Alert thresholds and rule switches as JSON. Omit to use built-in thresholds.",
                 True,
             ),
             (
                 "SITE_CONFIGURATION",
+                "application",
                 "Public site identity and feature policy as JSON. No file paths are accepted.",
                 False,
             ),
             (
                 "SITE_BRANDING",
+                "application",
                 "Public branding as JSON. Only validated public branding fields are accepted.",
                 False,
             ),
@@ -743,8 +784,10 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     _setting(
         "email_provider",
         "email",
-        "Outgoing email transport; SMTP preserves existing behavior.",
+        "Outgoing email transport: smtp, or cloudflare for Cloudflare Email Sending. Only "
+        "the selected transport's settings apply; a loaded extension can offer others.",
         "str",
+        # static_entries() lists every built-in and registered transport here.
         choices=("smtp",),
         case_sensitive=True,
         setup=True,
@@ -752,9 +795,12 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     _setting(
         "smtp_host",
         "email",
-        "SMTP server host. The server's TLS certificate must be valid for this name.",
+        "SMTP server host. Required while public signup requires email verification. "
+        "The server's TLS certificate must be valid for this name.",
         "str",
         setup=True,
+        required=_smtp_required,
+        applies_when=_WITH_SMTP,
     ),
     _setting(
         "smtp_port",
@@ -764,6 +810,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         setup=True,
         minimum=1,
         maximum=65_535,
+        applies_when=_WITH_SMTP,
     ),
     _setting(
         "smtp_user",
@@ -772,6 +819,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "str",
         setup=True,
         required=_smtp_required,
+        applies_when=_WITH_SMTP,
     ),
     _setting(
         "smtp_password",
@@ -781,9 +829,44 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         secret=True,
         setup=True,
         required=_smtp_required,
+        applies_when=_WITH_SMTP,
     ),
-    _setting("smtp_from_email", "email", "Sender address of outgoing mail.", "str", setup=True),
-    _setting("smtp_from_name", "email", "Sender name of outgoing mail.", "str", setup=True),
+    _setting(
+        "cloudflare_account_id",
+        "email",
+        "Cloudflare account id (32 hexadecimal digits) whose Email Sending carries the mail. "
+        "Required while public signup requires email verification.",
+        "str",
+        setup=True,
+        required=_cloudflare_email_required,
+        applies_when=_WITH_CLOUDFLARE,
+    ),
+    _setting(
+        "cloudflare_email_api_token",
+        "email",
+        "Cloudflare API token with the Email Sending: Edit permission on that account. "
+        "Required while public signup requires email verification.",
+        "str",
+        secret=True,
+        setup=True,
+        required=_cloudflare_email_required,
+        applies_when=_WITH_CLOUDFLARE,
+    ),
+    _setting(
+        "smtp_from_email",
+        "email",
+        "Sender address of outgoing mail, over SMTP or Cloudflare. With Cloudflare, its "
+        "domain must be onboarded for Email Sending.",
+        "str",
+        setup=True,
+    ),
+    _setting(
+        "smtp_from_name",
+        "email",
+        "Sender name of outgoing mail, over SMTP or Cloudflare.",
+        "str",
+        setup=True,
+    ),
     # --- providers ---------------------------------------------------------
     _setting(
         "provider_route_types",
@@ -1730,8 +1813,8 @@ ENVIRONMENT_ONLY: Mapping[str, str] = {
 #: nor written here, and every boot that finds one warns about it once. An
 #: administrator may still delete the row.
 RETIRED_SETTINGS: Mapping[str, str] = {
-    "MODELS_CONFIG_PATH": "application documents are configured in Admin Settings",
-    "MODELS_CONFIG": "application documents are configured in Admin Settings",
+    "MODELS_CONFIG_PATH": "the model catalog is configured in Admin Providers > Models",
+    "MODELS_CONFIG": "the model catalog is configured in Admin Providers > Models",
     "ROUTING_CONFIG_PATH": "application documents are configured in Admin Settings",
     "ROUTING_CONFIG": "application documents are configured in Admin Settings",
     "ALERTS_CONFIG_PATH": "application documents are configured in Admin Settings",
@@ -1742,8 +1825,6 @@ RETIRED_SETTINGS: Mapping[str, str] = {
 
 #: ``Settings`` fields deliberately left out of the registry, and why.
 UNREGISTERED_SETTINGS_FIELDS: Mapping[str, str] = {
-    "turnstile_site_key": "The console renders the captcha with its own site key; the "
-    "backend never reads this one.",
     "trusted_proxies_parsed": "Derived from TRUSTED_PROXIES.",
     "trusted_direct_client_parsed": "Derived from TRUSTED_DIRECT_CLIENT_NETWORKS.",
     "trusted_cloudflare_parsed": "Derived from TRUSTED_CLOUDFLARE_NETWORKS.",
@@ -1832,8 +1913,6 @@ MAX_NUMBERED_KEY = 20
 
 #: A name inside a ``${VAR}`` or ``${VAR:-default}`` reference.
 _REFERENCE_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}")
-#: A whole-value ``${VAR}``, the only form the model registry expands.
-_WHOLE_REFERENCE_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 #: Words that mark a name as a credential's (:func:`is_secret_name`), matched
 #: anywhere in the upper-cased name. The console's add-variable form mirrors
 #: this list; keep the two in step.
@@ -2042,11 +2121,6 @@ class DiscoveredReference:
     key: str
     category: str
     used_by: set[str]
-    #: A non-optional model route fails without it.
-    required: bool = False
-    #: ``api_keys`` lists the variable belongs to; such a list fails only when
-    #: every member is empty, so its members are required together.
-    key_groups: list[tuple[str, ...]] | None = None
     #: Referenced from a field that carries a credential (``api_key``,
     #: ``api_keys``, any field whose name looks like a credential's), so it is
     #: secret whatever its own name.
@@ -2090,30 +2164,6 @@ def _credential_references(value: Any) -> set[str]:
     return names
 
 
-def _whole_reference(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    match = _WHOLE_REFERENCE_RE.fullmatch(value.strip())
-    return match.group(1) if match else None
-
-
-def _load_yaml(path: Path | None) -> Any:
-    if path is None or not path.is_file():
-        return None
-    try:
-        return yaml.safe_load(path.read_text())
-    except (OSError, yaml.YAMLError):
-        return None
-
-
-def _load_yaml_text(text: str) -> Any:
-    """Parse a stored document. An unreadable document contributes no references."""
-    try:
-        return yaml.safe_load(text)
-    except yaml.YAMLError:
-        return None
-
-
 def _discovered_description(reference: DiscoveredReference) -> str:
     if reference.category == "providers":
         return "Referenced by the model registry."
@@ -2136,13 +2186,17 @@ def _note(
 
 
 def _discover_models(data: Any, found: dict[str, DiscoveredReference]) -> None:
-    """Record the model registry's references and which of them routes need.
+    """Record the model registry's references and the models that use them.
 
-    A route needs exactly what makes the registry skip its model when empty — a
-    whole-value ``${VAR}`` in ``base_url``, ``api_key`` or ``embeddings_path``
-    (the model's own ``base_url``/``api_key`` when the route has none), and at
-    least one member of ``api_keys``. Routes marked ``optional: true`` are skipped
-    rather than failing their model, so they need nothing.
+    None of them is required. A provider key or URL may be left unset on
+    purpose -- a provider the deployment has no account with, a key not entered
+    yet -- and the registry already handles that when it loads: a route marked
+    ``optional: true`` is skipped on its own, any other route drops its model,
+    and both are logged. Counting the variable as a missing setting too would
+    mark the whole deployment incomplete for every provider it does not use,
+    and the only way out, ``optional: true``, changes routing rather than
+    reporting: a model then runs on its remaining routes, which can hand a
+    canary or a fallback all of the model's traffic.
     """
     models = data.get("models") if isinstance(data, dict) else None
     if not isinstance(models, list):
@@ -2153,31 +2207,6 @@ def _discover_models(data: Any, found: dict[str, DiscoveredReference]) -> None:
         model_id = str(model.get("id") or "")
         for key in _references(model):
             _note(found, key, "providers", [model_id])
-        routes = model.get("route") or [
-            {"base_url": model.get("base_url"), "api_key": model.get("api_key")}
-        ]
-        if not isinstance(routes, list):
-            continue
-        for route in routes:
-            if not isinstance(route, dict) or route.get("optional"):
-                continue
-            needed = [
-                _whole_reference(route.get("base_url") or model.get("base_url")),
-                _whole_reference(route.get("embeddings_path")),
-            ]
-            api_keys = route.get("api_keys")
-            if isinstance(api_keys, list):
-                group = tuple(key for key in (_whole_reference(item) for item in api_keys) if key)
-                # A literal key in the list keeps the route alive on its own.
-                if group and len(group) == len(api_keys):
-                    for key in group:
-                        reference = _note(found, key, "providers", [model_id])
-                        reference.key_groups = [*(reference.key_groups or []), group]
-            else:
-                needed.append(_whole_reference(route.get("api_key") or model.get("api_key")))
-            for key in needed:
-                if key:
-                    _note(found, key, "providers", [model_id]).required = True
 
 
 def _discover_routing(data: Any, found: dict[str, DiscoveredReference]) -> None:
@@ -2224,78 +2253,6 @@ def discover_documents(
     return found
 
 
-def discover_references(
-    models_path: Path | None,
-    routing_path: Path | None,
-    alerts_path: Path | None,
-    *,
-    models_text: str | None = None,
-    routing_text: str | None = None,
-    alerts_text: str | None = None,
-) -> dict[str, DiscoveredReference]:
-    """Find every ``${VAR}`` reference in the three configuration files.
-
-    Files are parsed rather than searched, so a ``${VAR}`` in a comment counts
-    for nothing. A missing or unreadable file contributes no references. A
-    reference from a field that carries a credential is marked as one
-    (:attr:`DiscoveredReference.credential`).
-
-    A stored catalog document replaces its file. Passing the text, including an
-    empty string, does not fall back to the path. Alerts have no stored
-    document and always come from the file.
-
-    Args:
-        models_path: Model registry file, used when ``models_text`` is None.
-        routing_path: Routing file, used when ``routing_text`` is None.
-        alerts_path: Alerts file.
-        models_text: Stored model registry, when the database has that row.
-        routing_text: Stored routing document, when the database has that row.
-        alerts_text: Explicit stored alert document; used instead of a file when provided.
-    """
-    found: dict[str, DiscoveredReference] = {}
-    models = _load_yaml_text(models_text) if models_text is not None else _load_yaml(models_path)
-    routing = (
-        _load_yaml_text(routing_text) if routing_text is not None else _load_yaml(routing_path)
-    )
-    alerts = _load_yaml_text(alerts_text) if alerts_text is not None else _load_yaml(alerts_path)
-    _discover_models(models, found)
-    _discover_routing(routing, found)
-    _discover_alerts(alerts, found)
-    for data in (models, routing, alerts):
-        for key in _credential_references(data):
-            if key in found:
-                found[key].credential = True
-    return found
-
-
-def _group_required(groups: list[tuple[str, ...]]) -> Callable[[RequirementContext], bool]:
-    def required(context: RequirementContext) -> bool:
-        return any(not any(context.value(key).strip() for key in group) for group in groups)
-
-    return required
-
-
-def _merge_requirements(first: Requirement, second: Requirement) -> Requirement:
-    if first is True or second is True:
-        return True
-    if first is False:
-        return second
-    if second is False:
-        return first
-
-    def either(context: RequirementContext) -> bool:
-        return bool(first(context) or second(context))  # type: ignore[operator]
-
-    return either
-
-
-def _discovered_requirement(reference: DiscoveredReference) -> Requirement:
-    requirement: Requirement = reference.required
-    if reference.key_groups:
-        requirement = _merge_requirements(requirement, _group_required(reference.key_groups))
-    return requirement
-
-
 def build_entries(
     discovered: Mapping[str, DiscoveredReference],
     stored: Mapping[str, bool],
@@ -2309,7 +2266,7 @@ def build_entries(
     or the name would make it.
 
     Args:
-        discovered: References found by :func:`discover_references`.
+        discovered: References found by :func:`discover_documents`.
         stored: Keys that have a database row, mapped to the row's secret flag.
         environ: The process environment, for numbered provider keys.
         reset: Keys an administrator reset, mapped to the reset row's secret
@@ -2323,28 +2280,26 @@ def build_entries(
     for key, reference in discovered.items():
         if is_environment_only(key) or is_runtime_setting_name(key) or is_retired(key):
             continue
-        requirement = _discovered_requirement(reference)
+        # A reference adds no requirement; see _discover_models.
         used_by = tuple(sorted(reference.used_by))
         existing = entries.get(key)
         if existing is not None:
             entries[key] = replace(
                 existing,
                 secret=existing.secret or reference.credential,
-                required=_merge_requirements(existing.required, requirement),
                 restart_required=True,
                 used_by=used_by,
             )
             continue
         numbered = numbered_key_entry(key)
         if numbered is not None:
-            entries[key] = replace(numbered, required=requirement, used_by=used_by)
+            entries[key] = replace(numbered, used_by=used_by)
             continue
         entries[key] = ConfigEntry(
             key,
             reference.category,
             _discovered_description(reference),
             secret=reference.credential or is_secret_name(key),
-            required=requirement,
             restart_required=True,
             origin="discovered",
             used_by=used_by,

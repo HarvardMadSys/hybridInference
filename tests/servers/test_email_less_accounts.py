@@ -100,6 +100,8 @@ def op_store(users: dict[str, dict[str, Any]]) -> MagicMock:
     store.get_two_factor = AsyncMock(return_value=None)
     store.get_active_key_by_account = AsyncMock(return_value=None)
     store.list_user_identities = AsyncMock(return_value=[])
+    store.get_tags_for_users = AsyncMock(return_value={})
+    store.get_user_tag_memberships = AsyncMock(return_value=[])
     store.approve_user = AsyncMock()
     store.revoke_key = AsyncMock()
     store.log_admin_action = AsyncMock()

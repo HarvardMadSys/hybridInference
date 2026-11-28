@@ -12,11 +12,18 @@ ConfigScalar = bool | int | float | str
 
 
 class ConfigCategory(BaseModel):
-    """A group of settings on the admin Settings tab."""
+    """A group of settings in the admin console: a Settings section, or the model catalog."""
 
     id: str
     label: str
     description: str
+
+
+class ConfigAppliesWhen(BaseModel):
+    """The setting applies only while another setting holds one of some values."""
+
+    key: str = Field(..., description="The setting whose value decides")
+    values: list[str] = Field(..., description="The values under which this setting applies")
 
 
 class ConfigEntryItem(BaseModel):
@@ -53,6 +60,21 @@ class ConfigEntryItem(BaseModel):
         "no value can be stored now",
     )
     setup: bool = Field(..., description="Shown on the first-run configuration step")
+    choices: list[str] = Field(
+        default_factory=list,
+        description="The accepted values, when the setting is a choice; empty otherwise",
+    )
+    case_sensitive: bool = Field(
+        False,
+        description="Choices are compared exactly; otherwise ignoring case, and a value is "
+        "kept as stored (LOG_LEVEL=info is INFO)",
+    )
+    applies_when: ConfigAppliesWhen | None = Field(
+        None,
+        description="Set when the setting does something only while another setting holds "
+        "one of some values, such as the SMTP settings while EMAIL_PROVIDER is smtp; the "
+        "console hides it while another value is selected",
+    )
     one_time: bool = Field(
         ...,
         description="Usually set once, when the gateway is deployed: the console lists it "
@@ -73,6 +95,11 @@ class ConfigEntryItem(BaseModel):
         False,
         description="Changing or resetting it needs the signed-in administrator's password, "
         "and the admin token cannot; a configuration restore lists it for confirmation",
+    )
+    document: bool = Field(
+        False,
+        description="An application document: a JSON object, which the console edits as one "
+        "field per value. Its value still travels as the document's JSON text",
     )
     updated_at: datetime | None = None
     updated_by: str | None = None

@@ -8,9 +8,8 @@ router picks the endpoint, and the caller's access to it is checked as usual.
 
 This package only decides. It reads no request and performs no I/O; the serving
 layer extracts :class:`RequestFeatures`, builds the catalog, stores session
-state and rewrites the request. Design:
-``docs/agents/specs/2026-10-13-auto-mode-model-selection-design.zh.md``; plan:
-``docs/agents/plans/2026-10-13-auto-mode-implementation.zh.md``.
+state and rewrites the request. Behaviour: ``docs/developer/routing.md``
+(Auto models).
 """
 
 from routing.model_selection.config import (

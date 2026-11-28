@@ -19,11 +19,22 @@ async def boot(store):
 
 
 def test_loading_offers_tencent_providers_and_lists_their_settings():
-    assert delivery.email_provider_names() == ("smtp", "tencent_ses")
+    assert delivery.email_provider_names() == ("smtp", "cloudflare", "tencent_ses")
     assert delivery.sms_provider_names() == ("none", "tencent")
     keys = {entry.key for entry in registry.static_entries()}
     assert {entry.key for entry in config.ENTRIES} <= keys
-    assert registry.static_entry("EMAIL_PROVIDER").choices == ("smtp", "tencent_ses")
+    assert registry.static_entry("EMAIL_PROVIDER").choices == ("smtp", "cloudflare", "tencent_ses")
+
+
+def test_ses_settings_apply_only_while_ses_carries_the_mail():
+    scoped = {
+        entry.key
+        for entry in config.ENTRIES
+        if entry.applies_when == registry.AppliesWhen("EMAIL_PROVIDER", ("tencent_ses",))
+    }
+    assert scoped == {entry.key for entry in config.ENTRIES if entry.key.startswith("TENCENT_SES_")}
+    # The CAM credentials also carry SMS, which no email choice turns off.
+    assert registry.static_entry("TENCENT_CLOUD_SECRET_ID").applies_when is None
 
 
 @pytest.mark.asyncio

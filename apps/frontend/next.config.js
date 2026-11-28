@@ -1,18 +1,6 @@
 /** @type {import('next').NextConfig} */
 const BACKEND_INTERNAL_URL = process.env.BACKEND_INTERNAL_URL || 'http://backend:8080';
 
-// Compatibility bridge for images built before `/agents` became a runtime
-// route handler. A branded legacy build may still compile these rewrites in;
-// a neutral build leaves both values empty and requests reach
-// `src/app/agents/[[...path]]/route.ts`, which reads its targets at runtime.
-//
-// Two variables and not one because they are two services — the browser app
-// and its control-plane API — and on a real deployment they are two ports, or
-// two machines. See the cloud agent repository's ENVIRONMENT.md.
-const AGENT_WEB_INTERNAL_URL = process.env.AGENT_WEB_INTERNAL_URL || '';
-const AGENT_CONTROL_PLANE_INTERNAL_URL = process.env.AGENT_CONTROL_PLANE_INTERNAL_URL || '';
-const LEGACY_AGENT_REWRITES = Boolean(AGENT_WEB_INTERNAL_URL && AGENT_CONTROL_PLANE_INTERNAL_URL);
-
 // Which public-site UI this build compiles in, and the generated files that
 // answer it. Resolved here, at config load, because that is the one moment all
 // three toolchains can be pointed at the same decision: Webpack through the
@@ -109,21 +97,10 @@ const nextConfig = {
   // rewrites below, which forward GETs. So the limit only has to cover what a
   // page might be sent by mistake; a body past it reaches nothing that reads
   // it. next.config.proxy.test.ts holds the table to that.
-  //
-  // The exception is an image built with the legacy `/agents` rewrites
-  // compiled in (above): they forward the agent's API bodies, so such a build
-  // keeps the old limit.
   experimental: {
     proxyTimeout: 60 * 60 * 1000,
-    middlewareClientMaxBodySize: LEGACY_AGENT_REWRITES ? 32 * 1024 * 1024 : 16 * 1024,
+    middlewareClientMaxBodySize: 16 * 1024,
   },
-  // Headers for every response this server sends of its own or relays from the
-  // gateway: no MIME sniffing, no framing, and no full URL -- a reset token,
-  // say -- in the Referer sent to another origin. Pages also get a
-  // Content-Security-Policy, per response, from src/middleware.ts.
-  //
-  // Not under /pgadmin or /agents: those are other applications' pages, which
-  // set their own. pgAdmin, for one, frames its own panels.
   // A gateway path that ends in a slash goes to the same path without it, as
   // every path did before `skipTrailingSlashRedirect`. The console's pages get
   // theirs from src/middleware.ts, which the gateway's paths do not pass
@@ -139,6 +116,13 @@ const nextConfig = {
       },
     ];
   },
+  // Headers for every response this server sends of its own or relays from the
+  // gateway: no MIME sniffing, no framing, and no full URL -- a reset token,
+  // say -- in the Referer sent to another origin. Pages also get a
+  // Content-Security-Policy, per response, from src/middleware.ts.
+  //
+  // Not under /pgadmin or /agents: those are other applications' pages, which
+  // set their own. pgAdmin, for one, frames its own panels.
   async headers() {
     return [
       {
@@ -165,39 +149,7 @@ const nextConfig = {
     ];
   },
   async rewrites() {
-    // **`beforeFiles`, and it has to be.** A rewrite returned in a flat array
-    // is `afterFiles`, which Next checks *after* filesystem routes. This app's
-    // own `/agents` pages were removed at H4, but beforeFiles keeps the proxy
-    // authoritative even if a page ever reappears under that prefix.
-    //
-    // With the build variables unset no rewrite is emitted. The runtime route
-    // then answers 404 unless both server-only target variables are present.
-    // The pre-H4 fallback (this app's own agent pages) is gone.
-    //
-    // Job history did not move to the standalone service (decision DR5): it
-    // has its own database, so `/agents` history there started empty.
-    const agentRewrites = LEGACY_AGENT_REWRITES
-      ? [
-          // The API first: `/agents/api/*` is a prefix of `/agents/*`, and
-          // the more specific rule has to be matched first or every API call
-          // is served the web app's HTML.
-          //
-          // The prefix is stripped here — the control plane serves
-          // `/v1/agent/...` at its root and knows nothing about `/agents`.
-          {
-            source: '/agents/api/:path*',
-            destination: `${AGENT_CONTROL_PLANE_INTERNAL_URL}/:path*`,
-          },
-          // The prefix is *kept* here: that app is built with
-          // `basePath=/agents`, so it generates its own links and asset URLs
-          // already carrying it and expects to receive them.
-          { source: '/agents/:path*', destination: `${AGENT_WEB_INTERNAL_URL}/agents/:path*` },
-          { source: '/agents', destination: `${AGENT_WEB_INTERNAL_URL}/agents` },
-        ]
-      : [];
-
     return {
-      beforeFiles: agentRewrites,
       // Only the gateway's public GET documents are rewrites. Every gateway
       // path that takes a request body -- `/v1`, `/anthropic`, `/auth`, `/user`,
       // `/admin` and the published `/internal` paths, each named on its own --

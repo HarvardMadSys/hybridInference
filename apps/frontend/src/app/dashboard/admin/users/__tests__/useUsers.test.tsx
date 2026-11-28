@@ -42,6 +42,12 @@ function render(state: FilterState) {
 }
 
 describe('useUsers', () => {
+  it('sends the selected account tier', async () => {
+    render({ ...DEFAULT_FILTER_STATE, role: 'admin' });
+    await waitFor(() => expect(listUsers).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(listUsers).mock.calls[0][0]).toMatchObject({ role: 'admin' });
+  });
+
   it('names no currency without a spend threshold', async () => {
     // The gateway refuses a request in another currency than its ledger's, so a
     // list without thresholds must not depend on the one the page was loaded under.

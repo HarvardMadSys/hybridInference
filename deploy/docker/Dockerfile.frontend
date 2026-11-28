@@ -19,14 +19,6 @@ ARG NEXT_PUBLIC_API_BASE=http://localhost:8080
 # Next loads .env files during `next build`, but this explicit process env has
 # higher precedence and pins the server-side rewrite target deterministically.
 ARG BACKEND_INTERNAL_URL=http://backend:8080
-
-# Compatibility bridge for legacy branded images: when both values are passed
-# as build args, Next compiles the old beforeFiles rewrites into its routes
-# manifest. Neutral images leave them empty and the Node route handler reads
-# the same server-only names at container runtime instead.
-ARG AGENT_WEB_INTERNAL_URL=
-ARG AGENT_CONTROL_PLANE_INTERNAL_URL=
-ARG NEXT_PUBLIC_DEPLOY_TARGET=production
 ARG NEXT_PUBLIC_BUILD_SHA=
 ARG NEXT_PUBLIC_BUILD_TIMESTAMP=
 ARG NEXT_PUBLIC_TURNSTILE_SITE_KEY=
@@ -53,9 +45,6 @@ ARG NEXT_PUBLIC_TEAM_JSON=
 ARG NEXT_PUBLIC_SPONSORS_JSON=
 ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE
 ENV BACKEND_INTERNAL_URL=$BACKEND_INTERNAL_URL
-ENV AGENT_WEB_INTERNAL_URL=$AGENT_WEB_INTERNAL_URL
-ENV AGENT_CONTROL_PLANE_INTERNAL_URL=$AGENT_CONTROL_PLANE_INTERNAL_URL
-ENV NEXT_PUBLIC_DEPLOY_TARGET=$NEXT_PUBLIC_DEPLOY_TARGET
 ENV NEXT_PUBLIC_BUILD_SHA=$NEXT_PUBLIC_BUILD_SHA
 ENV NEXT_PUBLIC_BUILD_TIMESTAMP=$NEXT_PUBLIC_BUILD_TIMESTAMP
 ENV NEXT_PUBLIC_TURNSTILE_SITE_KEY=$NEXT_PUBLIC_TURNSTILE_SITE_KEY

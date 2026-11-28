@@ -1,29 +1,29 @@
 /**
- * How Admin → Settings is organised: its sub-tabs and what each one holds.
+ * How Admin → Settings is organised: four task tabs, each holding everything
+ * for one job — the runtime switches, the database-backed configuration and
+ * the sections with an API of their own — so an administrator never visits
+ * two tabs for one change.
  *
- * Common comes first, and opens by default: the settings changed most often,
- * the runtime switches and limits the Settings tab held before the
- * configuration moved in. The sub-tabs of a topic follow, each with that
- * topic's settings together whatever stores them: the database-backed
- * configuration (one section per category) and the sections with an API of
- * their own. Setup, near the end, holds what is usually set once, when the
- * gateway is deployed; and within any category the configuration lists such
- * settings after the others (`ConfigEntry.one_time`).
+ *   Access & Limits    who may sign up or sign in, and how much each role
+ *                      may run and spend
+ *   Providers & Routing  provider credentials, routing and how a request is
+ *                      sent to a model
+ *   Operations         alerts, batch work, logging and analytics — watching
+ *                      and running the gateway day to day
+ *   Site & Setup       what is usually set once at deploy time, the JSON
+ *                      documents, and backup & restore at the bottom
  *
- * Anything the backend adds later still has a place: a runtime setting no
- * group takes is listed at the end of Common, and a configuration category no
- * sub-tab names at the end of Setup.
+ * The model catalog is the exception: it is on Admin → Providers → Models,
+ * and not on this page.
  */
 
-export type SettingsTabKey =
-  | 'common'
-  | 'access'
-  | 'providers'
-  | 'models'
-  | 'batch'
-  | 'alerts'
-  | 'setup'
-  | 'backup';
+export type SettingsTabKey = 'access' | 'providers' | 'operations' | 'setup';
+
+/** The configuration category of the model catalog, which Admin → Providers → Models edits. */
+export const MODEL_CATALOG_CATEGORY = 'models';
+
+/** Configuration categories another admin tab edits: Settings neither lists, searches nor counts them. */
+export const CATEGORIES_ELSEWHERE: ReadonlySet<string> = new Set([MODEL_CATALOG_CATEGORY]);
 
 /** A group of runtime settings, edited together with one Save. */
 export type RuntimeGroupKey =
@@ -39,9 +39,8 @@ export type RuntimeGroupKey =
 export type SettingsPanelKey =
   | 'usage-insights'
   | 'signup-policy'
-  | 'model-visibility'
-  | 'model-concurrency'
   | 'batch-concurrency'
+  | 'routewise'
   | 'alert-snooze'
   | 'alert-mutes'
   | 'add-variable'
@@ -49,7 +48,7 @@ export type SettingsPanelKey =
 
 export type SettingsBlock =
   | { kind: 'config'; category: string }
-  /** The configuration categories no sub-tab names. */
+  /** The configuration categories no tab names. */
   | { kind: 'unnamed-categories' }
   | { kind: 'runtime'; group: RuntimeGroupKey }
   | { kind: 'panel'; panel: SettingsPanelKey };
@@ -57,7 +56,7 @@ export type SettingsBlock =
 export interface SettingsTabDefinition {
   key: SettingsTabKey;
   label: string;
-  /** What the sub-tab holds, above its sections, where its name alone does not say. */
+  /** What the tab holds, above its sections, where its name alone does not say. */
   description?: string;
   /** The tab's sections, top to bottom. */
   blocks: readonly SettingsBlock[];
@@ -69,77 +68,77 @@ const panel = (key: SettingsPanelKey): SettingsBlock => ({ kind: 'panel', panel:
 
 export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
   {
-    key: 'common',
-    label: 'Common',
+    key: 'access',
+    label: 'Access & Limits',
     description:
-      'The settings changed most often. The other sub-tabs hold the rest by topic, and Setup what is usually set once.',
+      'Who may sign up or sign in, and how much each role may run at once and spend per day. Changes take effect immediately.',
     blocks: [
       runtime('access'),
       runtime('concurrency'),
       runtime('quotas'),
+      panel('signup-policy'),
+      config('signup'),
+      config('security'),
+      config('phone'),
+    ],
+  },
+  {
+    key: 'providers',
+    label: 'Providers & Routing',
+    description:
+      'Provider credentials, routing (including RouteWise parameters), and how a request is sent to a model. The model catalog itself is under Providers → Models.',
+    // Added variables are listed under Providers, so the form that adds one follows it.
+    blocks: [
+      config('providers'),
+      panel('add-variable'),
+      config('routing'),
+      panel('routewise'),
       runtime('requests'),
+    ],
+  },
+  {
+    key: 'operations',
+    label: 'Operations',
+    description: 'Alerts, batch work, and what the gateway records and shows about requests.',
+    // Muting is what an incident calls for; the channel and thresholds are set beforehand.
+    blocks: [
+      panel('alert-snooze'),
+      panel('alert-mutes'),
+      config('alerts'),
+      config('batch'),
+      panel('batch-concurrency'),
       runtime('logging'),
       runtime('analytics'),
       runtime('other'),
     ],
   },
   {
-    key: 'access',
-    label: 'Access',
-    blocks: [panel('signup-policy'), config('signup'), config('security'), config('phone')],
-  },
-  {
-    key: 'providers',
-    label: 'Providers & Routing',
-    // Added variables are listed under Providers, so the form that adds one follows it.
-    blocks: [config('providers'), panel('add-variable'), config('routing')],
-  },
-  {
-    key: 'models',
-    label: 'Models',
-    blocks: [config('application'), panel('model-visibility'), panel('model-concurrency')],
-  },
-  {
-    key: 'batch',
-    label: 'Batch',
-    blocks: [config('batch'), panel('batch-concurrency')],
-  },
-  {
-    key: 'alerts',
-    label: 'Alerts',
-    // Muting is what an incident calls for; the channel and thresholds are set beforehand.
-    blocks: [panel('alert-snooze'), panel('alert-mutes'), config('alerts')],
-  },
-  {
     key: 'setup',
-    label: 'Setup',
+    label: 'Site & Setup',
     description:
-      'Settings usually set once, when the gateway is deployed: its addresses, name and logging, outgoing mail, the network in front of it, privacy and integrations.',
+      'Usually set once, when the gateway is deployed: its name and addresses, outgoing mail, the network in front of it, privacy, integrations and the JSON documents. Backup & restore is at the bottom.',
     blocks: [
       config('general'),
       config('email'),
       config('network'),
       config('privacy'),
       config('integrations'),
+      config('application'),
       panel('usage-insights'),
       { kind: 'unnamed-categories' },
+      panel('backup'),
     ],
-  },
-  {
-    key: 'backup',
-    label: 'Backup',
-    blocks: [panel('backup')],
   },
 ];
 
-export const DEFAULT_SETTINGS_TAB: SettingsTabKey = 'common';
+export const DEFAULT_SETTINGS_TAB: SettingsTabKey = 'access';
 
-/** The sub-tab a `?tab=` value names, or the default for anything else. */
+/** The tab a `?tab=` value names, or the default for anything else. */
 export function settingsTabKey(value: string | undefined | null): SettingsTabKey {
   return SETTINGS_TABS.find((tab) => tab.key === value)?.key ?? DEFAULT_SETTINGS_TAB;
 }
 
-/** The configuration categories a sub-tab names, in its order. */
+/** The configuration categories a tab names, in its order. */
 const NAMED_CATEGORIES: ReadonlyMap<string, SettingsTabKey> = new Map(
   SETTINGS_TABS.flatMap((tab) =>
     tab.blocks.flatMap((block) =>
@@ -148,19 +147,28 @@ const NAMED_CATEGORIES: ReadonlyMap<string, SettingsTabKey> = new Map(
   ),
 );
 
-/** The sub-tab that lists the configuration categories no sub-tab names. */
+/** The tab that lists the configuration categories no tab names. */
 const UNNAMED_CATEGORIES_TAB: SettingsTabKey =
   SETTINGS_TABS.find((tab) => tab.blocks.some((block) => block.kind === 'unnamed-categories'))
     ?.key ?? DEFAULT_SETTINGS_TAB;
 
-/** Whether a sub-tab names the category; one that none names is listed on Setup. */
+/** Whether a tab names the category; one that none names is listed on Site & Setup. */
 export function isNamedCategory(category: string): boolean {
   return NAMED_CATEGORIES.has(category);
 }
 
-/** The sub-tab a configuration category is listed on. */
+/** The tab a configuration category is listed on. */
 export function tabOfCategory(category: string): SettingsTabKey {
   return NAMED_CATEGORIES.get(category) ?? UNNAMED_CATEGORIES_TAB;
+}
+
+/** The tab a runtime group is listed on. */
+export function tabOfRuntimeGroup(group: RuntimeGroupKey): SettingsTabKey {
+  return (
+    SETTINGS_TABS.find((tab) =>
+      tab.blocks.some((block) => block.kind === 'runtime' && block.group === group),
+    )?.key ?? DEFAULT_SETTINGS_TAB
+  );
 }
 
 export const RUNTIME_GROUPS: Readonly<

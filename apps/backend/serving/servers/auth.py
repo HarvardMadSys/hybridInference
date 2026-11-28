@@ -48,6 +48,15 @@ from serving.servers.deps import (
 from serving.spend_ledger import SPEND_CHECK_KEY, SpendCheck, ledger_for
 from serving.storage.base import OperationalStore
 from serving.storage.pools import DatabaseBusyError
+from serving.user_tags import (
+    TAG_ALLOWED_MODELS_KEY,
+    TAG_MAX_CONCURRENT_KEY,
+    TAG_QUOTA_DAILY_KEY,
+    TAG_QUOTA_MONTHLY_KEY,
+    USER_TAGS_KEY,
+    apply_tag_quotas,
+    tag_context,
+)
 from serving.utils import context as req_ctx
 from serving.utils.auth_failure_blocklist import is_ip_blocked, record_auth_failure
 from serving.utils.logging import get_logger
@@ -744,6 +753,11 @@ def _user_context(
     than the key's owner (``X-On-Behalf-Of``), whose spend no key of theirs made.
     The key's model allowlist, when it has one, applies on the same condition
     (``key_allowed_models``, see :func:`serving.model_access.model_access_denial`).
+
+    The account's user tags ride along (:func:`serving.user_tags.tag_context`):
+    the concurrency cap and model allowlist they set apply to the attributed
+    account whichever key it is reached through. Their quotas are already the
+    identity's (:func:`serving.user_tags.tighten_identity`).
     """
     user_role = identity.get("role") or "free"
     context = {
@@ -776,6 +790,7 @@ def _user_context(
         "project_spent_month_usd": identity.get("project_spent_month_usd"),
         "quota_monthly_cost_usd": identity.get("quota_monthly_cost_usd"),
         "account_spent_month_usd": identity.get("account_spent_month_usd"),
+        **tag_context(identity),
     }
     if get_accounting_policy().native:
         # The same limits and spends in the ledger currency, exact (a limit
@@ -1095,6 +1110,11 @@ async def _resolve_effective_identity(
         "quota_monthly_cost_amount": monthly_amount,
         "preferences": target.get("preferences"),
         "max_concurrent_requests": target.get("max_concurrent_requests"),
+        # The end user's tags: their concurrency cap and model allowlist.
+        **{
+            key: target.get(key)
+            for key in (USER_TAGS_KEY, TAG_MAX_CONCURRENT_KEY, TAG_ALLOWED_MODELS_KEY)
+        },
     }
 
 
@@ -1105,7 +1125,9 @@ async def _account_quotas(op_store: Any, user: dict[str, Any]) -> tuple[Any, Any
     answers, :meth:`get_quota_context_for_user`). An account with no live key
     has none stored, so it gets what its first key would: its role's default
     daily quota and no monthly quota -- not the far larger default that a key
-    row with no quota stands for.
+    row with no quota stands for. Either way its user tags' quotas hold it
+    (:func:`serving.user_tags.apply_tag_quotas`): the lookup folds them in, and
+    the role default is held to the ones *user*'s row carries.
     """
     rows = await op_store.get_quota_context_for_user(user["id"])
     if rows:
@@ -1126,7 +1148,22 @@ async def _account_quotas(op_store: Any, user: dict[str, Any]) -> tuple[Any, Any
         runtime_settings = None
     role = user.get("role") or "free"
     daily = await get_default_daily_quota_for_role(role, runtime_settings)
-    return daily, None, get_accounting_policy().from_usd(daily), None
+    held = apply_tag_quotas(
+        {
+            "quota_daily_cost_usd": daily,
+            "quota_daily_cost_amount": get_accounting_policy().from_usd(daily),
+            "quota_monthly_cost_usd": None,
+            "quota_monthly_cost_amount": None,
+            TAG_QUOTA_DAILY_KEY: user.get(TAG_QUOTA_DAILY_KEY),
+            TAG_QUOTA_MONTHLY_KEY: user.get(TAG_QUOTA_MONTHLY_KEY),
+        }
+    )
+    return (
+        held["quota_daily_cost_usd"],
+        held["quota_monthly_cost_usd"],
+        held["quota_daily_cost_amount"],
+        held["quota_monthly_cost_amount"],
+    )
 
 
 # The only routes an agent-job token may reach. An allowlist rather than a
@@ -1749,6 +1786,8 @@ async def optional_verify_api_key(
             if row.get("allowed_models") is not None
             else {}
         ),
+        # So do the account's user tags' (serving.user_tags).
+        **tag_context(row),
     }
 
 

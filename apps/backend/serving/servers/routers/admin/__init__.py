@@ -3,7 +3,7 @@
 Aggregates domain-focused sub-routers (alerts, analytics,
 api_keys, auth_blocks, batch, broadcast, config, export, login_events, metrics, model_concurrency,
 model_queue, model_visibility, offload_routes, providers, settings, signup_domains, site_updates,
-stats, system, upstream_concurrency, usage_insights, users) into a single ``router``
+stats, system, upstream_concurrency, usage_insights, user_tags, users) into a single ``router``
 exported at this level. Callers use
 ``from serving.servers.routers import admin`` unchanged.
 """
@@ -42,6 +42,7 @@ from serving.servers.routers.admin import (
     upstream_concurrency,
     usage_insights,
     user_projects,
+    user_tags,
     users,
 )
 
@@ -87,5 +88,6 @@ router.include_router(upstream_concurrency.router)
 router.include_router(usage_insights.router)
 router.include_router(users.router)
 router.include_router(user_projects.router)
+router.include_router(user_tags.router)
 
 __all__ = ["_decode_throughput_tps", "router"]

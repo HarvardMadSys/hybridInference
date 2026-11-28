@@ -235,17 +235,15 @@ apps/
     serving/      # FastAPI gateway, adapters, auth, storage, observability
     routing/      # Routing strategies, routers, health, circuit breaker
   frontend/       # Next.js web UI
-benchmark/        # Benchmark utilities
 config/
-  examples/       # Importable JSON examples; no implicit runtime
-                  # fallback a checkout with no overlay resolves to. A
-                  # application configuration lives in Admin and PostgreSQL.
+  examples/       # JSON examples the tutorials seed into settings; application
+                  # configuration lives in Admin and PostgreSQL
 distributions/    # Per-distribution overlays: identity, content, config
                   # (including example/, the public runnable router example)
 tests/            # Unit, API, integration, and external tests
 ops/              # CI helpers, admin tools and sweeps, local dev scripts, backend-coupled DB analysis
 deploy/           # Docker, systemd and Kubernetes manifests
-docs/             # Developer docs, agent specs/plans, reviews
+docs/             # Developer docs and current design records
 ```
 
 ## Documentation
