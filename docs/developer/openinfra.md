@@ -51,7 +51,8 @@ browser ──/openinfra──▶ console page ──GET /public-openinfra, /pub
 3. **Optional settings**, all Integrations settings and all applied within
    seconds:
    - `OPENINFRA_ENGINE_ORDER`: engine names, comma-separated, in the order the
-     page shows their tabs. Engines not listed follow, alphabetically.
+     page shows their tabs. Engines not listed follow, the one that served the
+     most tokens in the last day first.
    - `OPENINFRA_RETIRED_ENGINES`: engine ids, comma-separated, left out of the
      page, the served totals, the history and exports. What they reported stays
      stored, so removing an id brings it back. Retire an engine by its id

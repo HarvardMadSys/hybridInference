@@ -3,7 +3,8 @@
 - ``OPENINFRA_INGEST_TOKEN``: the bearer token reporters present. Empty turns
   ingestion off: ``POST /internal/openinfra/ingest`` answers 404.
 - ``OPENINFRA_ENGINE_ORDER``: engine names, comma-separated, in the order the
-  page shows their tabs. Engines not listed follow, alphabetically.
+  page shows their tabs. Engines not listed follow, the one that served the
+  most tokens in the last day first.
 - ``OPENINFRA_RETIRED_ENGINES``: engine ids kept out of the live views, the
   served totals, the history and exports. What they reported stays stored, so
   removing an id brings it back. Retire an id explicitly rather than inferring
@@ -59,7 +60,7 @@ def _names(key: str) -> tuple[str, ...]:
 
 
 def engine_order() -> tuple[str, ...]:
-    """Engine names in tab order, as configured; empty means alphabetical."""
+    """Engine names in tab order, as configured; empty means busiest first."""
     return _names(ENGINE_ORDER)
 
 

@@ -125,8 +125,9 @@ msgstr "**可选设置**，都属于 Integrations 设置，都会在几秒内生
 #: ../developer/openinfra.md:53
 msgid ""
 "`OPENINFRA_ENGINE_ORDER`: engine names, comma-separated, in the order the"
-" page shows their tabs. Engines not listed follow, alphabetically."
-msgstr "`OPENINFRA_ENGINE_ORDER`：引擎名称，以逗号分隔，即页面显示其标签页的顺序。未列出的引擎按字母顺序排在后面。"
+" page shows their tabs. Engines not listed follow, the one that served the"
+" most tokens in the last day first."
+msgstr "`OPENINFRA_ENGINE_ORDER`：引擎名称，以逗号分隔，即页面显示其标签页的顺序。未列出的引擎排在后面，过去一天处理 token 最多的排在最前。"
 
 #: ../developer/openinfra.md:55
 msgid ""
