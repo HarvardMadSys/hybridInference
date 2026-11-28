@@ -39,9 +39,6 @@ dependencies = [
     "jsonschema>=4.18",
 ]
 
-[tool.setuptools]
-include-package-data = true
-
 [tool.setuptools.packages.find]
 where = ["apps/backend"]
 include = [
@@ -111,18 +108,12 @@ ignore = [
   "E402",  # module import not at top of file (for now)
   "B008",  # FastAPI Depends pattern is OK
 ]
-fixable = ["ALL"]
-unfixable = []
 
 [tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
 line-ending = "lf"
-skip-magic-trailing-comma = false
 
 [tool.ruff.lint.isort]
 combine-as-imports = true
-force-single-line = false
 
 [tool.pydocstyle]
 convention = "google"
