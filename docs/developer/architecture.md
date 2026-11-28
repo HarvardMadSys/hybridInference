@@ -1,42 +1,36 @@
 # Architecture
 
-HybridInference is a FastAPI gateway that speaks the OpenAI/OpenRouter HTTP API
-and dispatches each request to one of several interchangeable upstreams: a local
-inference server (vLLM, SGLang, Ollama, or anything else OpenAI-compatible) or a
-hosted API. The point of the gateway is that a *model id* the client asks for is
-decoupled from the *endpoint* that actually serves it, so the same client call
-can be load-balanced, failed over, priced, and logged across a mix of machines
-you own and machines you rent.
+HybridInference is a FastAPI gateway that speaks the OpenAI and OpenRouter HTTP
+APIs. It sends each request to a local inference server (vLLM, SGLang, Ollama
+or anything else OpenAI-compatible) or to a hosted API. The client names a
+*model id*; the gateway decides which *endpoint* serves it. That split lets
+one client call be load-balanced, failed over, priced and logged across
+machines you own and machines you rent.
 
-The backend is one Python package tree under `apps/backend/`, split in two:
+The backend lives under `apps/backend/` and imports as two top-level packages
+(`pyproject.toml` sets `apps/backend` as the import root):
 
 | Directory | Responsibility |
 | --- | --- |
 | `apps/backend/serving/` | HTTP surface, authentication and quota, request schemas, provider adapters, storage, observability |
 | `apps/backend/routing/` | Route table, router strategies, endpoint health, circuit breaker, fallback |
 
-Both are importable as top-level packages (`serving.*`, `routing.*`); the import
-root is `apps/backend`, declared in `pyproject.toml`.
-
 ## Design principles
 
-Five ideas explain most of the code:
-
-1. **One model id, many endpoints.** Clients name a model; the gateway owns
-   which machine serves it. Everything else follows from that.
-2. **Failure is routed around, not retried into.** A non-idempotent generation
-   is never re-sent with the same key; resilience comes from rotating keys, the
-   fallback chain and the circuit breaker.
-3. **A caller learns nothing it is not entitled to.** Access failures collapse
-   to a uniform `404`, and upstream errors are scrubbed before they reach a
-   client.
-4. **Configuration is a deployment's, not the project's.** The repository ships
-   runnable examples; a real deployment configures its registry, routing policy
-   and branding in Admin and PostgreSQL. See [Configuration](#configuration).
-5. **Extension points are declarative.** New provider: a `kind` and, if the API
-   is not OpenAI-compatible, an adapter. New routing behaviour: a module in
-   `apps/backend/routing/strategies/` that self-registers. Neither requires touching the request
-   handler.
+1. **One model id, many endpoints.** Clients name a model; the gateway picks
+   the machine.
+2. **Route around failure instead of retrying into it.** A non-idempotent
+   generation is never re-sent with the same key. Resilience comes from key
+   rotation, the fallback chain and the circuit breaker.
+3. **A caller learns nothing it is not entitled to.** Every access failure is
+   the same `404`, and upstream errors are scrubbed before they reach a client.
+4. **Configuration belongs to the deployment.** A deployment configures its
+   model registry, routing policy and branding in Admin, which stores them in
+   PostgreSQL. See [Configuration](#configuration).
+5. **Extension points are declarative.** A new provider needs a `kind` and, if
+   its API is not OpenAI-compatible, an adapter. A new routing strategy is a
+   module in `apps/backend/routing/strategies/` that registers itself. Neither
+   touches the request handler.
 
 ## The four layers
 
@@ -77,253 +71,169 @@ Five ideas explain most of the code:
 
   Alongside every layer, both under apps/backend/serving/:
     storage/        Postgres operational store + request log (api_logs)
-    observability/  structured logs, alert rules, Slack alerting
+    observability/  structured logs, alert rules, Slack or WeCom alerts
 ```
 
-For how a public deployment gets traffic *to* the gateway — reverse proxy, CDN,
-and the console's own path rewrites — see
-[The public path table](public-path-table.md). Nothing in this page depends on
-that topology; the gateway is an ordinary HTTP server.
+How public traffic reaches the gateway (proxy, CDN, the console's rewrites) is
+in [The public path table](public-path-table.md).
 
 ## Request lifecycle
 
-The chat-completions path in
-`apps/backend/serving/servers/routers/completions.py` is the canonical one; the
-other inference surfaces reuse its parts.
+`apps/backend/serving/servers/routers/completions.py` (chat completions) is the
+reference path; the other inference surfaces reuse its parts.
 
 ### 1. Middleware
 
-`create_app()` in `apps/backend/serving/servers/app.py` registers nine
-middlewares. Starlette runs the last-registered outermost, so the effective
-order from the outside in is:
+`create_app()` in `apps/backend/serving/servers/app.py` registers ten
+middlewares. From the outside in:
 
-1. `NoSniffMiddleware` — adds `X-Content-Type-Options: nosniff` to every
-   response that lacks it, touching only the response start.
-2. `RequestIdMiddleware` — mints or adopts a request id used by every log line.
-3. `FallbackErrorMiddleware` — last-resort error shaping.
-4. `KubernetesProxyTrustMiddleware` — discovers which proxies may report the
-   client address, when Kubernetes proxy discovery is configured.
-5. `RequestLogMiddleware` — one structured log record per HTTP request.
-6. `TimeoutMiddleware` — `REQUEST_TIMEOUT_SECONDS` (default 120s) for ordinary
-   requests, `STREAM_REQUEST_TIMEOUT_SECONDS` (default 3600s, `<=0` disables the
-   cap) once a response has been marked as streaming.
-7. `CORSMiddleware`.
-8. `TrailingSlashRedirectMiddleware` — answers a path under `/v1` or
-   `/anthropic` that ends in a slash with a `308` to the bare path without it,
-   as the console does; see
-   [The public path table](public-path-table.md#the-trailing-slash-interaction).
-9. `RequestBodyLimitMiddleware` — answers `413` to a request body larger than
-   `REQUEST_MAX_BODY_MB` (default 32 MiB): before reading anything when
-   `Content-Length` declares more, otherwise as soon as the bytes received pass
-   the limit. Batch input uploads keep their own limit, `BATCH_MAX_BODY_MB`.
-   Behind the console, every gateway path that takes a request body streams
-   through a route handler and is bounded only here, so raising
-   `REQUEST_MAX_BODY_MB` takes effect behind the console too.
+1. `NoSniffMiddleware`: adds `X-Content-Type-Options: nosniff`.
+2. `HandoffMiddleware`: counts requests for a release handoff and refuses new
+   ones with `503` once the process is sealed; see
+   [Handing traffic to a new gateway process](deployment.md#handing-traffic-to-a-new-gateway-process).
+3. `RequestIdMiddleware`: the request id on every log line.
+4. `FallbackErrorMiddleware`: shapes errors nothing else handled.
+5. `KubernetesProxyTrustMiddleware`: discovers which proxies may report the
+   client address, when Kubernetes discovery is configured.
+6. `RequestLogMiddleware`: one structured log record per request.
+7. `TimeoutMiddleware`: `REQUEST_TIMEOUT_SECONDS` (default 120) for ordinary
+   requests, `STREAM_REQUEST_TIMEOUT_SECONDS` (default 3600; `0` or less
+   removes the cap) once the response is streaming.
+8. `SettingsCORSMiddleware`: CORS, reading `CORS_ALLOWED_ORIGINS` per request.
+9. `TrailingSlashRedirectMiddleware`: `308` from a `/v1/…/` or
+   `/anthropic/…/` path to the same path without the slash; see
+   [The trailing-slash interaction](public-path-table.md#the-trailing-slash-interaction).
+10. `RequestBodyLimitMiddleware`: `413` for a body over `REQUEST_MAX_BODY_MB`
+    (default 32 MiB), checked against `Content-Length` and again as bytes
+    arrive. Batch uploads use `BATCH_MAX_BODY_MB` instead. Control routes get
+    256 KiB (`/auth/`, `/user/`, `/internal/`, `/v1/identity/`,
+    `/v1/batch_webhook`) or 1 MiB (`/admin/`), because FastAPI decodes a body
+    before authentication runs. The few routes that need a large body read it
+    only after authentication.
 
-Accepted connections have one more clock, and it is not a middleware.
-Uvicorn arms its keep-alive timer only while it is waiting for the next
-request, and cancels that timer on the first byte. A client that then stops,
-including one that never finishes the headers, holds the socket until the
-process restarts. `HTTP_IDLE_TIMEOUT_SECONDS` (default 600, `<=0` disables
-it) closes that connection after that many seconds with no bytes in either
-direction. Response bytes reset it, so a stream that keeps sending is limited
-by the streaming clocks below rather than by this one. It is longer than
-`REQUEST_TIMEOUT_SECONDS` and the inter-chunk stream idle, so a slow prefill
-still receives the gateway's 504 instead of a dropped connection.
+Never add a middleware that buffers response bodies: it breaks Server-Sent
+Events streaming.
 
-Control routes get a much smaller body limit: 256 KiB under `/auth/`, `/user/`,
-`/internal/` and `/v1/identity/` and on `/v1/batch_webhook`, 1 MiB under
-`/admin/`. FastAPI reads and decodes a route's declared body model before any
-dependency runs, authentication included, so an anonymous caller's body is
-decoded before the `401`. The routes that legitimately take a larger body (a
-configuration restore, the playground, the alert-history ingest) and
-`/v1/embeddings` read theirs only once the caller is authenticated, and keep
-`REQUEST_MAX_BODY_MB`.
-
-Middleware order matters: streaming responses are `StreamingResponse`
-objects that must not be buffered. Any new middleware that reads a response body
-before forwarding it will break Server-Sent Events. The body limit counts request
-bytes as they pass and holds none of them.
+`HTTP_IDLE_TIMEOUT_SECONDS` (default 600; `0` turns it off) closes an accepted
+connection that sends no bytes in either direction for that long, including a
+client that never finishes its headers. Uvicorn's keep-alive timer does not
+cover that case. The value stays above the request and stream timeouts, so a
+slow prefill still gets a `504`, not a dropped connection.
 
 ### 2. Authentication and quota
 
-`verify_api_key` in `apps/backend/serving/servers/auth.py` is a FastAPI
-dependency on every inference endpoint. It resolves, in order:
+`verify_api_key` (`apps/backend/serving/servers/auth.py`) runs on every
+inference endpoint and checks, in order:
 
-- **Agent grant tokens** — a separate credential namespace, checked first.
-  A grant may only be used on inference paths; anything else gets `403
-  insufficient_scope`.
-- **Auth disabled** — when `USER_AUTH_ENABLED` is falsy the caller is treated as
-  an anonymous admin. The setting is fail-closed: auth is on unless explicitly
-  turned off.
-- **API key** — keys are minted as `hyi-<url-safe token>` and stored only as an
-  HMAC-SHA256 digest keyed by `API_KEY_SECRET`. The key may arrive as
-  `Authorization: Bearer …` or `X-API-Key`.
+1. **Agent grant tokens**, a separate credential namespace. A grant works only
+   on inference paths; anything else gets `403 insufficient_scope`.
+2. **Auth disabled.** With `USER_AUTH_ENABLED` false, the caller is an
+   anonymous admin. Authentication is on unless explicitly turned off.
+3. **API key.** Keys look like `hyi-<token>` and are stored only as an
+   HMAC-SHA256 digest keyed by `API_KEY_SECRET`. Send one as
+   `Authorization: Bearer …` or `X-API-Key`.
 
-The same dependency enforces the caller's daily spend quota and returns `429`
-with a shared payload builder (`apps/backend/serving/quota.py`) whichever door
-the request came through. A separate `enforce_user_concurrency` dependency holds a
-per-user in-flight slot for the duration of the request. Which budget the slot
-comes from depends on the model (a concurrency-exempt model has its own), so the
-body is read before the slot is taken; a caller may have four bodies read that
-way at once, and a fifth request gets the same `429` before its body is read.
+It also enforces the key's budgets and the project's and account's quotas,
+answering `429` from one shared builder (`apps/backend/serving/quota.py`).
+`enforce_user_concurrency` then holds a per-user in-flight slot for the whole
+request. It reads the body first (a concurrency-exempt model draws on its own
+budget), and a caller may have at most four bodies being read at once.
 
-The spend the gate reads comes from the counter tables (`user_daily_cost`,
-`api_key_daily_cost`), and the spend ledger (`apps/backend/serving/spend_ledger.py`)
-adds what those tables do not show yet:
+The quota check reads the counter tables (`user_daily_cost`,
+`api_key_daily_cost`). The spend ledger (`apps/backend/serving/spend_ledger.py`)
+adds what they do not show yet:
 
-- **Requests in flight.** `enforce_user_concurrency` (and the batch worker, for
-  each item) checks the quotas and the key's budgets again and reserves the
-  request's estimated cost in one step, then releases the reservation when the
-  request ends, however it ends. A request is refused only when not even
-  `ESTIMATED_REQUEST_COST_USD` fits, as at the gate. An online request then
-  reserves what it may cost (its prompt and its `max_tokens` at its model's
-  prices, at most `MAX_RESERVED_REQUEST_COST_USD`), or what its limits have left
-  if that is less; a batch item reserves `ESTIMATED_REQUEST_COST_USD`. Requests
-  admitted at the same time therefore cannot all fit into the same remaining
-  budget.
-- **Costs not yet written.** A finished request's cost is recorded in the
-  ledger and written to the counters by one writer per store: costs recorded
-  while a write is in flight are coalesced per user, key and UTC day into the
-  next, which goes out as one statement, account and key counters together.
-  The ledger keeps counting a cost until its write is confirmed (and for a
-  while after, for a gate whose read began before it landed), so the delay
-  never lets a request past a limit. A failed write is retried; shutdown
-  writes what is left and logs anything it could not. An entry the counters
-  refuse for its own values, such as one that would overflow its counter, is
-  set aside rather than retried, so it cannot hold back other accounts' costs:
-  it stays counted in the process and is logged (`cost_counter_write_refused`)
-  and alerted, for an operator to reconcile. One request adds at most $1,000;
-  a larger cost is recorded as $1,000, logged (`cost_above_request_ceiling`)
-  and alerted.
+- **Requests in flight.** Admission reserves each request's estimated cost and
+  releases it when the request ends. A request is refused only when not even
+  `ESTIMATED_REQUEST_COST_USD` fits; an admitted one reserves up to
+  `MAX_RESERVED_REQUEST_COST_USD`, so concurrent requests cannot all spend the
+  same remaining budget.
+- **Costs not yet written.** One writer per store adds finished costs to the
+  counters in batches. The ledger keeps counting a cost until its write is
+  confirmed, so the delay never lets a request past a limit.
 
-The ledger is per process. With several worker processes each sees only its
-own requests in flight and costs not yet written, so the limits are protected
-within each process, not across them; production runs one worker.
+A cost the counters refuse (for example one that would overflow) is logged as
+`cost_counter_write_refused` and alerted for an operator to reconcile. One
+request adds at most $1,000; a larger cost is capped and logged as
+`cost_above_request_ceiling`.
 
-A response the client closes early, or that the gateway's request timeout cuts
-off, is billed for what the upstream already did, streamed or not: the usage it
-reported, or else an estimate of the prompt and of the output so far
-(`metadata.usage_estimated` marks the estimate). A non-streaming request is
-billed so only once it has left the gateway; one still waiting for an outbound
-slot was never seen upstream. A request the upstream fails is not billed.
+The ledger is per process, so limits hold within each worker but not across
+workers; production runs one. A shared spend mode, off unless an operator turns
+it on, keeps reservations in PostgreSQL for all processes; see
+[Shared accounting and draining](accounting.md#shared-accounting-and-draining).
 
-Read-only endpoints such as `/v1/models` use `optional_verify_api_key` instead:
-a missing or invalid key is anonymous rather than rejected, and the key only
-decides which models are visible.
+A response cut off by the client or the request timeout is billed for what the
+upstream already did: its reported usage, or an estimate marked
+`metadata.usage_estimated`. A request the upstream fails is not billed.
+
+Read-only endpoints such as `/v1/models` use `optional_verify_api_key`: a
+missing or invalid key is anonymous, and the key only decides what is listed.
 
 ### 3. Model gate
 
-Before any provider is contacted, the handler rejects the request with `404` if
-the model is not in the route table, is unpublished, requires a role the caller
-does not have, was disabled for that user, or is outside a grant's scope. All
-five conditions return the same "model not found" body on purpose, so a caller
-cannot enumerate models it is not entitled to by reading the difference between
-`403` and `404`.
+Before any provider is contacted, the handler answers `404` if the model is not
+in the route table, is unpublished, needs a role the caller lacks, was disabled
+for the user, or is outside the scope of the caller's key, project, user tags
+or inference grant. All cases return the same "model not found" body, so a
+caller cannot probe for models by comparing `403` with `404`. The check is
+`model_access_denial` in `apps/backend/serving/model_access.py`.
 
 ### 4. Router selection
 
-Each model resolves to a router instance through `ModelRouterRegistry`
-(`apps/backend/routing/model_router_registry.py`), which reads the model's
-`router:` / `router_params:` fields from the model registry and caches one
-router per model id. A model with no `router:` uses the `default_router` value
-from the routing config.
+`ModelRouterRegistry` (`apps/backend/routing/model_router_registry.py`) builds
+and caches one router per model from its `router` and `router_params`. A model
+without `router` uses `default_router` from the routing policy
+(`ROUTING_POLICY`).
 
-The router then picks one adapter for this request (`FixedRouter._select_adapter`):
-
-- routes whose provider is admin-disabled carry weight 0 and are skipped;
-- routes whose input modalities cannot accept the request's media are excluded;
-- routes whose circuit is open are not admitted — if that leaves nothing, the
-  request fails with `AllCircuitsOpenError`;
-- among the survivors, selection is weighted-random, biased away from endpoints
-  already saturated with prefill work;
-- a short-lived per-caller affinity (5 minutes) re-pins a conversation to the
-  endpoint that already holds its prefix cache, unless that endpoint has built
-  up a backlog.
-
-An admin may bypass selection entirely with an `X-Route-Pin` request header
-naming a provider label or `endpoint_id`. A pinned request never falls back —
-a silent switch would make the pin meaningless.
+The `fixed` router drops routes with weight `0` (an admin-disabled provider
+counts as `0`), routes that cannot take the request's media and routes with an
+open circuit, then draws one by weight, biased away from endpoints busy with
+prefill. A 5-minute per-caller affinity keeps a conversation on the endpoint
+that holds its prefix cache. An admin can pin a request with `X-Route-Pin:
+<provider-or-endpoint-id>`; pinned requests never fall back. See
+[How `FixedRouter` picks an endpoint](routing.md#how-fixedrouter-picks-an-endpoint).
 
 ### 5. Dispatch, fallback, and the circuit breaker
 
-The router then calls the chosen adapter, through a thin wrapper that holds
-exactly the adapter it chose, so an admin edit made in the meantime cannot
-redirect a request that is already on its way. See
-[Routing Internals](routing-internals.md).
+The router calls the adapter it chose through a thin wrapper, so an admin edit
+cannot redirect a request already on its way. On success the response carries
+an internal `_routing` block (provider, base URL, `endpoint_id`). On failure the
+router tries the model's remaining routes in order; every attempt is recorded
+in `failed_attempts` for the request log, and if all fail the client gets the
+*primary* error.
 
-On success the endpoint is recorded healthy and the response carries an
-internal `_routing` block (provider, base URL, `endpoint_id`).
-
-On failure the endpoint records a failure and — unless the caller pinned a
-provider — the router walks the model's remaining route legs in route order,
-skipping legs that are disabled, modality-incompatible, or circuit-open, and
-tries each in turn. Every attempt is appended to a `failed_attempts` list that
-travels with the eventual response or error, so the request log attributes the
-failure to real upstreams rather than to the router. If every leg fails, the
-*primary* error is re-raised.
-
-Circuit state lives per `endpoint_id` in
-`apps/backend/routing/endpoint_health.py`:
-
-| Knob | Env var | Default |
-| --- | --- | --- |
-| Consecutive failures that open a circuit | `CIRCUIT_FAILURE_THRESHOLD` | 3 |
-| Seconds an open circuit waits before a half-open probe | `CIRCUIT_COOLDOWN_SECONDS` | 30 |
-| Availability floor | `CIRCUIT_MIN_AVAILABILITY` | 0.7 |
-| EWMA smoothing for the availability estimate | `ROUTER_HEALTH_EWMA_ALPHA` | 0.1 |
-| Seconds a caller's repeat failures stay off a circuit that has served others since its counted failure | `CIRCUIT_CALLER_WINDOW_SECONDS` | 60 |
-
-Client errors do not trip the breaker: a 4xx other than 408, 429, 401, and 407
-is the caller's problem, and counting it would let one malformed request take an
-endpoint away from everybody. 408 and 429 signal upstream overload and do count;
-401 and 407 are unambiguous rejections of *the gateway's own* credential and
-count too, because no user can fix them.
-
-Nor can one caller open a circuit by itself while the endpoint keeps serving
-other callers: its failure there counts, and its further failures, until it is
-served again, are skipped for up to `CIRCUIT_CALLER_WINDOW_SECONDS` if the
-endpoint has served somebody else since. An outage serves nobody, so it still
-opens the circuit at once. See
+Each `endpoint_id` has a circuit breaker
+(`apps/backend/routing/endpoint_health.py`). Client errors other than 408, 429,
+401 and 407 never trip it: 408 and 429 mean overload, and 401 and 407 reject the
+gateway's own credential. Thresholds and the per-caller rule are in
 [Endpoint health and circuit breaking](routing.md#endpoint-health-and-circuit-breaking).
-
-Separately, the routing file can turn on a probe that polls the `/health`
-path of the local endpoints it lists. The probe only reports; it never changes
-routing. See [The routing file](configuration.md#the-routing-file).
 
 ### 6. Logging
 
-After the response is produced, `CompletionsLogger`
-(`apps/backend/serving/servers/routers/completions_logging.py`) schedules two fire-and-forget
-side effects: a row in `api_logs`, and a `RoutingObservation` handed back to the
-router. `FixedRouter` ignores observations; online-learning routers use them to
-update their cost model.
+`CompletionsLogger` (`apps/backend/serving/servers/routers/completions_logging.py`)
+writes the `api_logs` row in the background and hands a `RoutingObservation`
+back to the router. `FixedRouter` ignores it; learning routers update their
+cost model.
 
 ## The routing engine in detail
 
-Diagrams of the routers and how they execute a request are in
-[Routing Internals](routing-internals.md#router-types-and-execution-boundaries).
+Diagrams are in
+[Router types and execution boundaries](routing.md#router-types-and-execution-boundaries).
 
 ### Routers and strategies
 
-There are exactly three modules under `apps/backend/routing/strategies/`, and
-they are not all the same kind of thing:
-
-| Module | What it is |
+| Module in `apps/backend/routing/strategies/` | What it is |
 | --- | --- |
-| `fixed.py` | Registers the `fixed` strategy: weighted-random selection with automatic fallback, implemented by `FixedRouter` in `apps/backend/routing/routers.py` |
-| `routewise.py` | Registers the `routewise` strategy: a cost-aware router that learns from `RoutingObservation` feedback, implemented under `apps/backend/routing/routewise/` |
-| `weight.py` | Not a per-model router at all. `FixedRatioStrategy` splits a *weight budget* between the local and remote endpoint groups; it is used by `RoutingManager`, not by the router registry |
+| `fixed.py` | The `fixed` strategy: weighted-random selection with fallback, implemented by `FixedRouter` in `apps/backend/routing/routers.py` |
+| `routewise.py` | The `routewise` strategy: a cost-aware router that learns from `RoutingObservation` feedback, implemented under `apps/backend/routing/routewise/` |
+| `weight.py` | Not a per-model router. `FixedRatioStrategy` splits a weight budget between local and remote endpoint groups for `RoutingManager` |
 
-`fixed` and `routewise` are the only values `router:` accepts. Selecting an
-unregistered name fails configuration validation with a message listing the
-known strategies. Each strategy declares a Pydantic params model with
-`extra="forbid"`, so a typo in `router_params:` fails at boot instead of
-silently falling back to a default.
+`router` accepts `fixed` or `routewise`; any other name is refused when the
+catalog or routing policy is saved. Each strategy's params model sets
+`extra="forbid"`, so a typo in `router_params` is refused rather than ignored.
+To add one, see [Adding a routing strategy](routing.md#adding-a-routing-strategy).
 
 ### Two layers of "strategy"
-
-Two different things are called a strategy:
 
 ```text
 routing config          default_router: fixed
@@ -340,278 +250,182 @@ ModelRouterRegistry ──▶ build_router()           → chooses WHICH ROUTER 
    (model_router_registry.py)                      for one model's requests
 ```
 
-`RoutingManager` only rewrites weights when the effective strategy is `fixed`;
-it returns without touching anything otherwise. Per-route weights declared in
-the model registry already encode a local/remote split, so a deployment that
-does not list endpoint pools in its routing config simply keeps its declared
-weights. On a gateway with a database the rewritten weights are not used at
-all; see [The routing file](configuration.md#the-routing-file).
+`RoutingManager` rewrites weights from the routing policy's local/remote split
+once at startup, and only when `default_router` is `fixed`. A gateway with a
+database still runs it, but selects from the catalog weights plus Admin
+overrides, so the rewrite has no effect there; see
+[Routes excluded from selection](routing.md#routes-excluded-from-selection).
 
 ### Execution and composition
 
-Every router runs the endpoint it picked through a thin wrapper called a leaf.
-An experimental composition, `HybridRouter`, can also divide a model's routes
-into a local and a cloud pool and plan across the two; it is off unless a model
-opts in. [Routing Internals](routing-internals.md) describes both, with
-diagrams.
+Every router runs its chosen endpoint through a thin wrapper called a leaf. An
+experimental composition, `HybridRouter`, splits a model's routes into a local
+and a cloud pool; a model opts in with `router_params.hybrid_composition: true`.
+See [Hybrid composition](routing.md#hybrid-composition).
 
 ### `provider` versus `endpoint_id`
 
-Two identifiers look similar and mean different things.
-
 `provider` is a label on the route. It defaults to the adapter kind and can be
-overridden per route with `provider:` in the model registry. It is what
-`api_logs.provider` records, what per-provider dashboards group by, and what the
-admin disable switch targets. Two local vLLM boxes can carry different provider
-labels so their traffic stays in separate cohorts. A route may not borrow a
-label that belongs to an adapter kind, including kinds added by backend
-extensions.
+overridden per route. `api_logs.provider`, per-provider dashboards and the
+admin disable switch all use it. A route may not borrow a label that belongs to
+an adapter kind.
 
-`endpoint_id` is the unique key for *one endpoint of one model*, written
-`{model_id}:{location}`:
-
-- a host of `localhost`, `127.0.0.1`, `0.0.0.0` or `host.docker.internal`
-  yields `local-<port>`, or `local` when there is no port;
-- otherwise the location is derived from the kind or hostname, e.g.
-  `<model>:openrouter-api`.
-
-Latency profiles, availability tracking, and circuit-breaker state are all keyed
-on `endpoint_id`, which is why two route legs pointing at the same base URL with
-different pinned upstreams still get independent breakers.
-
-The suffix is not an ownership signal. A gateway-owned server on a LAN address
-is stamped from its hostname like any remote service, and an admin-supplied
-`route_id` becomes the `endpoint_id` verbatim. Do not infer "is this machine
-mine?" from the string.
+`endpoint_id` identifies one endpoint of one model: `{model_id}:{location}`.
+A host of `localhost`, `127.0.0.1`, `0.0.0.0` or `host.docker.internal` gives
+`local-<port>` (or `local`); anything else is named from the kind or hostname,
+for example `<model>:openrouter-api`. Latency profiles, availability and
+circuit state are keyed on it. Do not read ownership from the suffix: a
+gateway-owned server on a LAN address gets `<name>-api`, and an admin-supplied
+`route_id` is used as written.
 
 ## Adapters
 
-An **adapter** is the object that knows how to talk to one provider: it builds
-the URL and headers, holds the API key (or a rotating pool of keys), translates
-the request body and the response, normalizes usage accounting, and raises
-errors in a shape the router understands. Adapters live in
-`apps/backend/serving/adapters/` and are constructed from the model registry by
-`_make_adapter` in `apps/backend/serving/servers/registry.py`.
+An adapter talks to one provider: it builds the URL and headers, holds the API
+key or key pool, translates the request and response, normalizes usage and
+raises errors the router understands. `_make_adapter` in
+`apps/backend/serving/servers/registry.py` builds adapters from the model
+registry, first checking factories registered by
+[backend extensions](backend-extensions.md).
 
 | Module | Class | Covers |
 | --- | --- | --- |
 | `openai_compat.py` | `OpenAICompatAdapter` | Every OpenAI-compatible service, including local vLLM, SGLang, and Ollama. Local inference servers have no dedicated adapter |
-| `openrouter.py` | `OpenRouterAdapter` | OpenRouter; see [Routing through OpenRouter](openrouter.md) |
+| `openrouter.py` | `OpenRouterAdapter` | OpenRouter; see [OpenRouter routes](adding-models.md#openrouter-routes) |
 | `anthropic.py` | `AnthropicAdapter` | The Anthropic Messages API directly |
 | `claude.py` | `ClaudeAdapter` | Claude served through Google Vertex |
 | `gemini.py` | `GeminiAdapter` | The Gemini API |
 
-`_make_adapter` first checks the factory table populated by explicitly enabled
-[backend extensions](backend-extensions.md). Without a registered
-factory, it maps a route's `kind:` onto a built-in adapter and pre-seeds
-provider-specific configuration — a usage profile, a non-standard chat path, or
-whether it is safe to send `stream_options: {include_usage: true}`. An extension
-factory instead receives the configuration dictionary before those defaults.
-Adding a provider that is already OpenAI-compatible usually means selecting a
-profile, not writing a new class; see [Adding a New Model](adding-models.md).
-
-Key rotation is an adapter concern. When a route declares `api_keys:` (plural),
-`OpenAICompatAdapter` draws from a pool: a key that hits a key-specific or
-transient failure (429, 401/402/403, 408/425, 5xx, timeouts) hands the request
-to the next key. Rotation comes before muting — while another key is still
-untried the failing one keeps its place in the pool, and only a key the request
-runs out of alternatives on is muted, for 20 seconds. Request-scoped errors such
-as 400 and 422 fail on every key, so they propagate immediately instead of
-burning the pool. A completion POST is never retried against the *same* key —
-re-sending a non-idempotent generation would double-bill it. Resilience comes
-from the router's fallback chain, not from blind retries.
+A route with `api_keys:` (a list) gets a key pool. A key that fails with 429,
+401, 402, 403, 408, 425, a 5xx or a timeout hands the request to the next key;
+a key is muted for 20 seconds only when no untried key is left. Request errors
+such as 400 and 422 are not rotated, since they fail on every key. A completion
+is never re-sent to the same key, because that would bill it twice.
 
 ### Streaming timeouts
 
-An upstream that stops sending mid-generation while keeping the socket open is a
-fault the gateway has to notice on its own. Waiting for the connection to break
-means finding out only once something further out gives up — and by then every
-stream committed to that endpoint has already died together, while new ones kept
-being dispatched to it. Four clocks cover a streaming request, staggered so the
-innermost one reports first:
+The gateway has to notice an upstream that stops sending but keeps the socket
+open; otherwise every stream on that endpoint dies together when an outer
+proxy gives up. These clocks fire in order, innermost first:
 
-| Clock | Default | Covers |
+| Setting | Default | Covers |
 |---|---|---|
 | `STREAM_IDLE_TIMEOUT_SECONDS` | 180s | Gap between two data-bearing SSE frames, after the first |
 | `STREAM_MAX_IDLE_S` | 240s | Same gap on `/v1/messages`, counted in *forwarded* frames |
+| `STREAM_MAX_FIRST_FRAME_IDLE_S` | 300s | First frame on `/v1/messages`; never less than `STREAM_MAX_IDLE_S` |
 | `STREAM_FIRST_BYTE_TIMEOUT_SECONDS` | unset | Connect to first frame, i.e. prefill |
 | `STREAM_REQUEST_TIMEOUT_SECONDS` | 3600s | The whole streaming response |
 
-The first-byte and inter-chunk budgets are separate on purpose. A socket-level
-read timeout (`sock_read`) restarts on every read, so it cannot give a long
-prefill room without giving a stalled backend the same room. Prefill is
-legitimately slow — a 1M-token prompt can take more than two minutes to produce
-its first token on a self-hosted server — while the gap between chunks after
-that is a few milliseconds. So only the inter-chunk budget carries a default; a non-positive value
-disables either. `/v1/messages` keeps its own, looser ceiling because it counts
-frames the gateway forwards, and a buffered XML tool call can hold one back for
-a minute-plus without the upstream being idle at all.
-
-When the inter-chunk budget expires, `OpenAICompatAdapter` raises
-`UpstreamStreamIdleError` — distinct from the end-of-body
-`_INCOMPLETE_STREAM_ERROR`, which is what a deployment proxy's own read timeout
-looks like from here. It propagates as a `stream_exception`, so the endpoint
-loses availability and its circuit opens, rather than the partial answer being
-capped with a fabricated `[DONE]`.
+Prefill and inter-chunk time have separate budgets because a 1M-token prompt
+can take minutes to reach its first token while later chunks arrive
+milliseconds apart. `0` turns off either of the first-byte and inter-chunk
+clocks. `/v1/messages` is looser because a buffered XML tool call can hold back
+a forwarded frame for over a minute. An expired inter-chunk budget raises
+`UpstreamStreamIdleError`, which counts against the endpoint's circuit instead
+of ending the stream with a fake `[DONE]`.
 
 ## Configuration
 
 Application documents are validated JSON settings in `app_config`:
 `MODEL_CATALOG`, `ROUTING_POLICY`, `ALERT_RULES`, `SITE_CONFIGURATION`,
-`SITE_BRANDING` and `SSO_PROVIDERS`. Application YAML files and their path/mode selectors are not
-runtime inputs. A fresh gateway serves an empty model list and a neutral console
-that asks an administrator to configure it.
+`SITE_BRANDING` and `SSO_PROVIDERS`. No YAML file is read at runtime, and a
+fresh gateway serves no models until an administrator configures it.
+Credentials are secret settings that documents reference as `${NAME}`.
 
-The model catalog supplies the baseline; operational provider, key, route and
-weight state is applied on top. Ordinary Admin route edits synchronize between
-backend processes through committed, model-scoped change counters. Existing
-routing transition helpers retain execution and feedback ownership. Per-process
-acknowledgements distinguish saved configuration from applied configuration.
-Catalog/routing-policy/alert-rule changes remain explicitly restart-required.
-
-Credentials are separate secret settings referenced by documents. The existing
-settings store owns validation, audit, conditional writes and backup/restore.
-An explicit offline importer handles old external YAML; startup never imports
-those files. See [Configuration](configuration.md) and the
+Admin route edits apply across backend processes without a restart, and
+requests in flight keep the router and feedback they started with. Catalog,
+routing-policy and alert-rule changes need a restart. See
+[Configuration](configuration.md) and the
 {download}`accepted design <../agents/specs/2026-11-08-database-only-configuration.md>`.
 
 ## Storage
 
-Persistence is defined by two abstract base classes in
-`apps/backend/serving/storage/base.py`:
+`apps/backend/serving/storage/base.py` defines `OperationalStore` (accounts,
+API keys, roles, quotas, admin-managed providers and routes, runtime settings)
+and `LogStore` (the request log). Postgres implements both
+(`postgres_operational.py`, `postgres_log.py`); `CachedOperationalStore` caches
+the operational store because authentication reads it on every request.
 
-- **`OperationalStore`** — accounts, API keys, roles, quotas, admin-managed
-  providers and routes, runtime settings.
-- **`LogStore`** — the request log.
+The schema comes only from the migrations in `apps/backend/migrations/`. A
+deploy applies them before restarting the backend, and the backend refuses to
+start on a database they have not reached; see [Database](database.md). Useful
+`api_logs` columns: `request_id`, `model_id`, `provider`, `served_model_id` and
+`served_endpoint_id` (what actually answered), `ttft_ms`, `latency_ms`, token
+counts, `cost_usd` (what the caller is billed) and `upstream_cost_usd` (what
+the upstream reported).
 
-Postgres implements both (`postgres_operational.py`, `postgres_log.py`).
-`CachedOperationalStore` wraps the operational store with an in-process cache,
-because auth resolves against it on every single request.
-
-The schema, the request log table `api_logs` and its rollups included, comes
-from the versioned migrations in `apps/backend/migrations/`; the backend creates
-no tables of its own. Columns of `api_logs` worth knowing: `request_id`, `model_id`, `provider`,
-`served_model_id` / `served_endpoint_id` (which endpoint actually answered, as
-opposed to what the client asked for), `ttft_ms` and `latency_ms`, the token
-counts, `cost_usd` (what the caller is billed, from the model's own pricing) and
-`upstream_cost_usd` (what the upstream reported, when it reports one).
-
-A deploy applies the migrations before it restarts the backend, and the backend
-refuses to start on a database they have not reached. Each migration statement
-waits for a table lock only briefly: an `ALTER TABLE` that queued behind a long
-query would block every reader behind it. See [Database](database.md).
-
-The gateway starts without a database. `/health` then reports
-`database_connected: false`, and request logging and accounts are unavailable,
-but routing and completions still work — which is what makes the router
-tutorial's first stage runnable with no Postgres at all.
+With `DB_ENABLED=false` the gateway reads its documents from environment
+values and still routes requests, without request logging or accounts. Stage 1
+of the [Quickstart](router-tutorial.md) runs this way.
 
 ## Observability
 
-The gateway reports through these; it has no Prometheus exporter:
+There is no Prometheus exporter. The gateway reports through:
 
-- **Structured logs.** `RequestLogMiddleware` emits one record per HTTP request;
-  `apps/backend/serving/utils/logging.py` shapes them and suppresses noise from health-probe
-  paths unless `LOG_LEVEL=DEBUG`.
-- **The request log.** `api_logs` is the durable record and the source for the
-  admin dashboards and usage reporting.
-- **Health endpoints.** `/health` is a liveness check that returns 200 with
-  `status: "degraded"` when a configured store is down but traffic can still be
-  served, and 503 only when every configured store is unreachable.
-  `/health/ready` is the strict variant: 503 unless everything configured is up.
-  Both tell an anonymous caller only `status`; the reason, instance, route count
-  and stores are shown to an administrator.
-  `/health/deep` adds per-endpoint availability and circuit state, and reports
-  `degraded` when any endpoint is. All three answer from one shared store probe
-  for two seconds, and concurrent callers wait for the probe in flight, so
-  polling them does not cost a database query per call.
-- **Alerting.** `alert_slack()` and `alert_on_transition()` in
-  `apps/backend/serving/observability/alerts.py` post through an `AlertSink` to
-  one Slack or WeCom webhook, selected in Admin Configuration. Channel changes
-  take effect after a restart. Thresholds come
-  from the `ALERT_RULES` database document; an empty document uses built-in
-  thresholds. The circuit breaker pages
-  on `circuit_open` transitions and on upstream-credential rejections, with
-  per-endpoint cooldowns so a persistent fault re-pages on a fixed cadence
-  instead of flooding.
-- **Alert history** (on with a database; `ALERT_HISTORY_ENABLED=false` turns
-  it off). The same alert path records what it did
-  — breaches, recoveries, suppression decisions, deliveries and their results —
-  into PostgreSQL through a bounded buffer and one writer per process
-  (`serving/observability/alert_history/`). It never changes what is sent. See
-  [Alert history](alert-history.md).
+- **Structured logs**, one record per request, formatted by
+  `apps/backend/serving/utils/logging.py`. Health-probe noise is hidden unless
+  `LOG_LEVEL=DEBUG`.
+- **The request log** (`api_logs`), the source for admin dashboards and usage.
+- **Health endpoints.** `/health` returns 200 (`status: "degraded"` when a
+  store is down) and 503 only when every store is unreachable. `/health/ready`
+  returns 503 unless everything is up. `/health/deep` adds per-endpoint
+  availability and circuit state. Anonymous callers see only `status`; all
+  three share one store probe for two seconds.
+- **Alerts.** `alert_slack()` and `alert_on_transition()` in
+  `apps/backend/serving/observability/alerts.py` post to one Slack or WeCom
+  webhook, set in **Admin → Settings → Operations**. Thresholds come from
+  `ALERT_RULES`. A channel change needs a restart unless the `alerts.runtime`
+  live group is active; see
+  [Settings that apply without a restart](configuration.md#settings-that-apply-without-a-restart).
+  The circuit breaker pages on `circuit_open` and on rejected upstream
+  credentials, with a cooldown per endpoint.
+- **Alert history**, on when there is a database (`ALERT_HISTORY_ENABLED=false`
+  turns it off), records every alert decision without changing what is sent;
+  see [Alert history](alert-history.md).
 
 ## HTTP surface
 
-Client-facing groups, all served by the same app:
-
 | Group | Paths | Auth |
 | --- | --- | --- |
-| OpenAI-compatible inference | `POST /v1/chat/completions`, `POST /v1/completions`, `POST /completion`, `POST /v1/embeddings`, `POST /v1/responses` | API key |
+| OpenAI-compatible inference | `POST /v1/chat/completions`, `POST /v1/completions`, `POST /completion`, `POST /v1/embeddings`, `POST /v1/responses`; `GET` and `DELETE /v1/responses/{id}` | API key |
 | Anthropic-compatible inference | `POST /v1/messages`, `POST /anthropic/v1/messages`, `…/count_tokens` | API key |
-| [Batch inference](batches.md) | `POST` and `GET /v1/batches`, `GET` and `DELETE /v1/batches/{id}`, `POST /v1/batches/{id}/cancel`, `GET /v1/batches/{id}/results`, `GET /v1/batches/{id}/output.jsonl` (JSONL export); chat, embeddings, Responses and Messages targets, as direct requests or a JSONL file | API key; creating a batch needs the `BATCH_MIN_ROLE` role, `internal` by default |
-| [Batch files](batches.md#batches-from-a-file) | `POST` and `GET /v1/files`, `GET` and `DELETE /v1/files/{id}`, `GET /v1/files/{id}/content` | API key; uploading a file needs `BATCH_MIN_ROLE` |
-| [Batch webhooks](batches.md#webhooks) | `GET`, `PUT` and `DELETE /v1/batch_webhook`, `GET /v1/batch_webhook/events` | API key; setting up or changing a webhook needs `BATCH_MIN_ROLE` |
-| Model catalog | `GET /v1/models`, `GET /models`, `GET /openrouter/models`, `GET /anthropic/v1/models` | Optional — a key only widens what is listed |
-| Balance probes | `GET /v1/usage`, `GET /v1/dashboard/billing/subscription`, `GET /v1/dashboard/billing/usage`, `GET /v1/dashboard/billing/credit_grants`, `GET /v1/sub2api/billing` | API key. A spent quota still answers; these routes do not admit work |
+| [Batch inference](batches.md) | `POST` and `GET /v1/batches`, `GET` and `DELETE /v1/batches/{id}`, `POST /v1/batches/{id}/cancel`, `POST /v1/batches/{id}/retry-failed`, `GET /v1/batches/{id}/results`, `GET /v1/batches/{id}/output.jsonl` | API key; creating a batch needs `BATCH_MIN_ROLE` (default `internal`) |
+| [Batch files](batches.md#batches-from-a-file) | `POST` and `GET /v1/files`, `GET` and `DELETE /v1/files/{id}`, `GET /v1/files/{id}/content` | API key; uploading needs `BATCH_MIN_ROLE` |
+| [Batch webhooks](batches.md#webhooks) | `GET`, `PUT` and `DELETE /v1/batch_webhook`, `GET /v1/batch_webhook/events` | API key; changing a webhook needs `BATCH_MIN_ROLE` |
+| Model catalog | `GET /v1/models`, `GET /models`, `GET /openrouter/models`, `GET /anthropic/v1/models` | Optional: a key only widens what is listed |
+| Balance probes | `GET /v1/usage`, `GET /v1/dashboard/billing/subscription`, `GET /v1/dashboard/billing/usage`, `GET /v1/dashboard/billing/credit_grants`, `GET /v1/sub2api/billing`, `GET /anthropic/user/balance` | API key; answers even when the quota is spent |
 | API key description | `GET /v1/key` | API key |
 | Health | `GET /health`, `/health/ready`, `/health/deep` | None; upstream addresses only for an admin |
 | Public routing disclosure | `GET /routing` | None; upstream addresses only for an admin |
 | Admin | `GET /admin/routing`, `GET /admin/stats` and the rest of `/admin/*` | Admin |
 | Accounts and console APIs | `/auth/*`, `/user/*`, `/site-config` | Mixed |
 
-`BATCH_ENABLED` controls all batch, file and webhook routes together; when it
-is off, even management and result routes answer `404`, and no queued request
-starts. With it on, all batch kinds are available. `BATCH_MIN_ROLE` controls
-creating batches, uploading files and setting up or changing a webhook. An
-owner whose role is lowered can still manage existing batches and files, read
-or delete their webhook, and receive its deliveries.
-
-`GET /routing` requires no authentication and returns each published route's
-provider label and traffic weight. Its upstream base URL, and the routing
-file's probe results, which are keyed by endpoint URL, are shown only to a
-caller that sends an administrator's JWT or `ADMIN_TOKEN` in the
-`Authorization: Bearer ...` header, and `/health/deep` leaves the base URL out
-of its `route_exclusions` on the same terms. `GET /admin/routing` requires
-those credentials and additionally includes unpublished routes.
-
-`/v1/models` shape-shifts by client: an Anthropic-family client calling it
-receives the Anthropic list response, while `/models` and `/openrouter/models`
-always return the OpenAI/OpenRouter shape.
-
-The balance probes answer the quota checks that new-api, one-api, sub2api and
-cc-switch run on a timer or on demand. Four of them report the money left under
-the tightest of the account's daily quota, its monthly quota when one is set,
-and the presented key's and project's budgets; `/v1/sub2api/billing` answers
-sub2api's rate-multiplier probe. A limit reads as spent once the request gate
-would refuse a request on it, so remaining is `0` exactly when a request would
-be refused, and a spent quota still answers HTTP 200. new-api disables a
-channel whose balance check reads `0` or less when the channel's automatic
-disabling is on, and enables it again only if its operator turned on automatic
-enabling. While user auth is disabled the same paths report an unlimited
-balance.
-
-`GET /v1/key` describes the calling key: its project, models, budgets and
-`concurrency.max_in_flight`, the effective in-flight cap the limiter enforces
-for it, or `null` when unlimited. When a project cap is the tighter one, that
-slot is shared across every key in the project, so a key can still receive
-`429` below `max_in_flight` while sibling keys hold the slot.
+- `BATCH_ENABLED` switches every batch, file and webhook route; when it is off
+  they answer `404` and no queued request starts.
+- `GET /routing` lists each published route's provider label and weight.
+  Upstream base URLs and probe results appear only with an administrator's JWT
+  or `ADMIN_TOKEN` as a bearer token; `GET /admin/routing` also lists
+  unpublished routes.
+- `/v1/models` answers an Anthropic-family client in the Anthropic shape;
+  `/models` and `/openrouter/models` always use the OpenAI shape.
+- The balance probes serve the quota checks of new-api, one-api, sub2api and
+  cc-switch. They report what is left under the tightest of the daily quota,
+  the monthly quota and the key's and project's budgets (`/anthropic/user/balance`:
+  the daily quota only). Remaining is `0` exactly when a request would be
+  refused, and the answer is still HTTP 200.
+- `GET /v1/key` shows the key's project, models, budgets and
+  `concurrency.max_in_flight` (`null` when unlimited). A project cap is shared
+  by all the project's keys, so a key can get `429` below its own limit.
 
 ## Deployment shape
 
-The repository ships Dockerfiles and Compose files under `deploy/docker/`:
-`Dockerfile.backend` (the gateway), `Dockerfile.frontend` (the Next.js console
-in `apps/frontend/`), and `docker-compose.yml`. Systemd units live in
-`deploy/systemd/`.
+`deploy/docker/` holds `Dockerfile.backend`, `Dockerfile.frontend` (the Next.js
+console in `apps/frontend/`) and `docker-compose.yml`; systemd units are in
+`deploy/systemd/`. The console and the API share one origin: console route
+handlers forward `/v1`, `/anthropic`, `/auth`, `/user`, `/admin` and the
+published `/internal` paths, and `apps/frontend/next.config.js` rewrites
+`/health`, `/site-config`, `/site-updates` and `/public-stats`. Together they
+are [the public path table](public-path-table.md). The frontend has its own
+quality gates, separate from the Python `make` targets.
 
-The console and the API share one origin: the console's route handlers forward
-`/v1`, `/anthropic`, `/auth`, `/user`, `/admin` and the published `/internal`
-paths to the backend, and the Next.js rewrites in `apps/frontend/next.config.js`
-forward `/health` and `/site-config`, so a browser session and an API key reach
-the same paths on the same host. Those handlers and rewrites — not a reverse
-proxy config — are [the public path table](public-path-table.md). The frontend
-has its own toolchain and quality gates, separate from the Python `make`
-targets.
-
-See [Deployment Guide](deployment.md) to run it, [Installation](installation.md) for a
-local checkout, and [Contributing](contributing.md) before sending a change.
+Next: [Deployment Guide](deployment.md), [Installation](installation.md),
+[Contributing](contributing.md).
