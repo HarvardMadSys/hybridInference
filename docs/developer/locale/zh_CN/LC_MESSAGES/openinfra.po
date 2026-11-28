@@ -344,6 +344,22 @@ msgid ""
 "\"vllm\"`."
 msgstr "**vLLM**。它没有 `/v1/loads`：抓取 `/metrics`，并设置 `\"engine\": \"vllm\"`。"
 
+#: ../developer/openinfra.md:126
+msgid ""
+"**Either engine, the same figures.** Token rates come from counters that "
+"move as each step runs: vLLM's own, and SGLang's `realtime_tokens_total` "
+"and (from 0.5.20) `prefill_effective_tokens_total`, since SGLang's per-"
+"request counters move only when a request ends. Latencies, request "
+"shapes, the cache hit rate and retractions (vLLM's preemptions) are each "
+"second's own; a second without any is blank, not the average since the "
+"engine started. The speculative accept length counts the bonus token on "
+"both."
+msgstr ""
+"**两种引擎，同样的指标**。token 速率来自随每个 step 推进的计数器：vLLM 自身的计数器，以及 SGLang 的 "
+"`realtime_tokens_total` 和（0.5.20 起）`prefill_effective_tokens_total`，因为 SGLang "
+"的按请求计数器只在请求结束时才增加。延迟、请求形态、缓存命中率和撤回（vLLM 称为抢占）都是每一秒自己的值；没有数据的一秒留空，而不是填入引擎启动以来的平均值。两种引擎的投机解码接受长度都计入"
+" bonus token。"
+
 #: ../developer/openinfra.md:111
 msgid ""
 "**DCGM (optional).** Tensor-core, DRAM, NVLink and PCIe charts need "

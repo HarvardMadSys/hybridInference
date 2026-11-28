@@ -553,7 +553,7 @@ export function buildCharts(hist: HistoryRows, f: InfraFormat): ChartSections {
       unit: t('openinfra.chart.retracts.unit', 'requests'),
       desc: t(
         'openinfra.chart.retracts.desc',
-        'Count of requests currently retracted because the KV cache ran out of space. A spike means cache pressure.',
+        'Requests retracted to the queue per second because the KV cache ran out of space (vLLM calls them preemptions). A spike means cache pressure.',
       ),
       series: lines(sgG, 'retracts', null, (r) => serverName(r)),
       opts: { format: (v) => f.n(v, 1) },

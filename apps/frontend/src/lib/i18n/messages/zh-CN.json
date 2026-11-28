@@ -2968,8 +2968,8 @@
     "text": "复原"
   },
   "openinfra.chart.retracts.desc": {
-    "source": "Count of requests currently retracted because the KV cache ran out of space. A spike means cache pressure.",
-    "text": "因 KV 缓存空间不足而被撤回的请求数。数值陡增说明缓存吃紧。"
+    "source": "Requests retracted to the queue per second because the KV cache ran out of space (vLLM calls them preemptions). A spike means cache pressure.",
+    "text": "每秒因 KV 缓存空间不足而被撤回队列的请求数（vLLM 称之为抢占）。数值陡增说明缓存吃紧。"
   },
   "openinfra.chart.retracts.title": {
     "source": "KV retracts",

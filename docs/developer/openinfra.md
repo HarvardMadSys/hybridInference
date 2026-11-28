@@ -123,6 +123,13 @@ Engine details:
   reporter does not send, is scraped through `/metrics`.
 - **vLLM.** It has no `/v1/loads`: scrape `/metrics` and set
   `"engine": "vllm"`.
+- **Either engine, the same figures.** Token rates come from counters that move
+  as each step runs: vLLM's own, and SGLang's `realtime_tokens_total` and
+  (from 0.5.20) `prefill_effective_tokens_total`, since SGLang's per-request
+  counters move only when a request ends. Latencies, request shapes, the cache
+  hit rate and retractions (vLLM's preemptions) are each second's own; a
+  second without any is blank, not the average since the engine started. The
+  speculative accept length counts the bonus token on both.
 - **DCGM (optional).** Tensor-core, DRAM, NVLink and PCIe charts need NVIDIA's
   dcgm-exporter. Install it with the field list and override in
   `ops/openinfra/dcgm/`; the reporter reads `http://127.0.0.1:9400/metrics`
