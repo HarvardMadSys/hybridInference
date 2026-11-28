@@ -1653,7 +1653,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "OPENINFRA_ENGINE_ORDER",
         "integrations",
         "Engine names, comma-separated, in the order the /openinfra page shows their tabs. "
-        "Engines not listed follow, alphabetically.",
+        "Engines not listed follow, the one that served the most tokens in the last day first.",
         type="list",
     ),
     ConfigEntry(
