@@ -1281,10 +1281,15 @@ async def update_user(
         payload_dict["disabled_models"] = disabled_models
         updated.append("disabled_models")
 
+    audit_details: dict[str, object] = {"updated_fields": updated, "values": payload_dict}
+    if new_role is not None:
+        # The role before this write, so a reader can tell a grant from a save
+        # that sent the role it already had (the admin-activity alerts do).
+        audit_details["previous_role"] = current_role
     await log_admin_action(
         op_store,
         action="update_user",
-        details=_serialize_for_audit({"updated_fields": updated, "values": payload_dict}),
+        details=_serialize_for_audit(audit_details),
         actor=actor,
         target=AuditTarget.user(user_id),
     )
