@@ -77,7 +77,12 @@ async def _save(
     await log_admin_action(
         op_store,
         action=action,
-        details={"id": entry.id, "name": entry.name},
+        details={
+            "id": entry.id,
+            "name": entry.name,
+            "url": entry.url,
+            "headers": sorted(entry.headers),
+        },
         actor=actor,
         target=AuditTarget("mcp_server", entry.id),
     )

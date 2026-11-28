@@ -2153,15 +2153,19 @@ def numbered_key_entry(key: str) -> ConfigEntry | None:
 def custom_entry(key: str, *, secret: bool = False) -> ConfigEntry:
     """Return the entry for an administrator-added variable.
 
-    It is secret when *secret* says so or when its name looks like a
-    credential's (:func:`is_secret_name`); a flag can add secrecy, never take
-    the name's away.
+    It is secret when *secret* says so, when it is an ``MCP_*`` store
+    credential, or when its name looks like a credential's
+    (:func:`is_secret_name`); a flag can add secrecy, never take the name's
+    away.
     """
+    mcp_store = key.upper().startswith("MCP_")
     return ConfigEntry(
         key,
-        "providers",
-        "Added by an administrator for a reference in the model registry.",
-        secret=secret or is_secret_name(key),
+        "application" if mcp_store else "providers",
+        "Added by an administrator for the Playground MCP server store."
+        if mcp_store
+        else "Added by an administrator for a reference in the model registry.",
+        secret=secret or mcp_store or is_secret_name(key),
         restart_required=True,
         origin="custom",
     )

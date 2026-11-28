@@ -138,6 +138,34 @@ async def test_refuses_a_header_that_is_not_an_mcp_secret() -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_audit_row_records_where_an_entry_points(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    async def _log(*_args: Any, **kwargs: Any) -> None:
+        seen.update(kwargs)
+
+    monkeypatch.setattr(mcp_servers, "log_admin_action", _log)
+    async with _client() as client:
+        response = await client.post(
+            "/admin/mcp-servers",
+            json={
+                "id": "wiki",
+                "name": "Wiki",
+                "url": "https://wiki.example/mcp",
+                "headers": {"Authorization": "${MCP_WIKI_TOKEN}"},
+            },
+        )
+
+    assert response.status_code == 201
+    assert seen["details"] == {
+        "id": "wiki",
+        "name": "Wiki",
+        "url": "https://wiki.example/mcp",
+        "headers": ["Authorization"],
+    }
+
+
+@pytest.mark.asyncio
 async def test_edits_are_conditional_on_the_document_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
