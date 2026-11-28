@@ -165,4 +165,46 @@ describe('RoutewiseSettingsSection', () => {
     expect(await screen.findByLabelText('Cost budget alpha value')).toBeInTheDocument();
     expect(listProviderRoutes).toHaveBeenCalledTimes(2);
   });
+  it('does not load until the sub-tab is first shown', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: [],
+      routes: [route({ model_id: 'model-a' })],
+    });
+
+    const view = render(<RoutewiseSettingsSection active={false} />);
+    expect(listProviderRoutes).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText('Selected model')).not.toBeInTheDocument();
+
+    view.rerender(<RoutewiseSettingsSection active />);
+    expect(await screen.findByLabelText('Cost budget alpha value')).toBeInTheDocument();
+    expect(listProviderRoutes).toHaveBeenCalledTimes(1);
+
+    // Shown again later: no reload.
+    view.rerender(<RoutewiseSettingsSection active={false} />);
+    view.rerender(<RoutewiseSettingsSection active />);
+    expect(listProviderRoutes).toHaveBeenCalledTimes(1);
+  });
+
+  it('labels probe endpoints with the provider display name', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: [
+        {
+          provider: 'featherless',
+          label: 'Featherless',
+          kind: 'featherless',
+          key_provider: 'featherless',
+          default_base_url: 'https://api.featherless.ai/v1',
+        },
+      ],
+      routes: [route({ model_id: 'model-a' })],
+    });
+
+    render(<RoutewiseSettingsSection />);
+    await screen.findByLabelText('Cost budget alpha value');
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Endpoint' }));
+    expect(
+      await screen.findByRole('option', { name: 'concurrency · Featherless' }),
+    ).toBeInTheDocument();
+  });
 });

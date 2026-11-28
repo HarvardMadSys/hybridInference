@@ -354,7 +354,7 @@ export function SettingsTab({
     />
   );
 
-  const panelSection = (panel: SettingsPanelKey) => {
+  const panelSection = (panel: SettingsPanelKey, tabActive = true) => {
     const onUnsavedChange = reportUnsaved(`panel-${panel}`);
     switch (panel) {
       case 'usage-insights':
@@ -372,7 +372,7 @@ export function SettingsTab({
       case 'batch-concurrency':
         return <BatchConcurrencySection onToast={flashToast} onUnsavedChange={onUnsavedChange} />;
       case 'routewise':
-        return <RoutewiseSettingsSection onUnsavedChange={onUnsavedChange} />;
+        return <RoutewiseSettingsSection onUnsavedChange={onUnsavedChange} active={tabActive} />;
       case 'alert-snooze':
         return <AlertSnoozeSection onToast={flashToast} />;
       case 'alert-mutes':
@@ -413,7 +413,9 @@ export function SettingsTab({
     // it any change still unsaved in it.
     return (
       <div key={blockKey(block)} hidden={filtering}>
-        {block.kind === 'runtime' ? runtimeSection(block.group) : panelSection(block.panel)}
+        {block.kind === 'runtime'
+          ? runtimeSection(block.group)
+          : panelSection(block.panel, !filtering && tab.key === currentTab)}
       </div>
     );
   };

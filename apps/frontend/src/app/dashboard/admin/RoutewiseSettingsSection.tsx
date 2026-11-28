@@ -9,10 +9,11 @@ import {
 } from '@/components/features/admin/AdminPrimitives';
 import { NOTICE_ACTION } from '@/components/features/admin/adminStyles';
 import { Select } from '@/components/ui/Select';
-import type { ProviderRoute } from '@/lib/api/admin';
+import type { OpenRouterProviderOption, ProviderRoute, ProviderRouteOption } from '@/lib/api/admin';
 import { listProviderRoutes } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 
+import { routeTargetLabel } from './routeTargetLabel';
 import { RoutewiseSettingsPanel } from './RoutewiseSettingsPanel';
 import { useReportUnsaved } from './useReportUnsaved';
 
@@ -22,6 +23,12 @@ const HELD_FOR_DRAFTS = 'Save or discard the unsaved changes first';
 interface RoutewiseSettingsSectionProps {
   /** Called with the number of unsaved changes whenever it changes. */
   onUnsavedChange?: (count: number) => void;
+  /**
+   * Whether this section's sub-tab is the one on screen. Settings keeps every
+   * sub-tab mounted, so without this the routes, settings and probe samples
+   * would load on every Settings visit, opened or not. Defaults to shown.
+   */
+  active?: boolean;
 }
 
 /** The routes of one model, grouped from the flat route list. */
@@ -35,9 +42,12 @@ function routesByModel(routes: ProviderRoute[]): Map<string, ProviderRoute[]> {
   return byModel;
 }
 
-/** A model is RouteWise when its routes carry the RouteWise routing policy. */
-function isRoutewiseModel(routes: ProviderRoute[]): boolean {
-  return routes.some((route) => route.strategy === 'routewise');
+/** The RouteWise models in `byModel`, sorted: a model is RouteWise when its routes carry that policy. */
+function routewiseModels(byModel: Map<string, ProviderRoute[]>): string[] {
+  return [...byModel.entries()]
+    .filter(([, routes]) => routes.some((route) => route.strategy === 'routewise'))
+    .map(([modelId]) => modelId)
+    .sort();
 }
 
 /**
@@ -45,14 +55,22 @@ function isRoutewiseModel(routes: ProviderRoute[]): boolean {
  * model, split out of Admin → Routing. Only models whose routing policy is
  * RouteWise are offered; the routes, their limits and the policy stay on
  * Routing, and the RouteWise decisions stay there with them.
+ *
+ * Nothing loads until the sub-tab is first shown.
  */
-export function RoutewiseSettingsSection({ onUnsavedChange }: RoutewiseSettingsSectionProps) {
+export function RoutewiseSettingsSection({
+  onUnsavedChange,
+  active = true,
+}: RoutewiseSettingsSectionProps) {
   const [routes, setRoutes] = useState<ProviderRoute[]>([]);
+  const [providerOptions, setProviderOptions] = useState<ProviderRouteOption[]>([]);
+  const [openRouterOptions, setOpenRouterOptions] = useState<OpenRouterProviderOption[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Whether the panel holds an unsaved draft or a write in flight.
   const [editing, setEditing] = useState(false);
+  const [started, setStarted] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -60,11 +78,9 @@ export function RoutewiseSettingsSection({ onUnsavedChange }: RoutewiseSettingsS
     try {
       const resp = await listProviderRoutes();
       setRoutes(resp.routes);
-      const byModel = routesByModel(resp.routes);
-      const models = [...byModel.entries()]
-        .filter(([, modelRoutes]) => isRoutewiseModel(modelRoutes))
-        .map(([modelId]) => modelId)
-        .sort();
+      setProviderOptions(resp.provider_options);
+      setOpenRouterOptions(resp.openrouter_provider_options ?? []);
+      const models = routewiseModels(routesByModel(resp.routes));
       setSelectedModel((current) =>
         current && models.includes(current) ? current : (models[0] ?? ''),
       );
@@ -75,25 +91,22 @@ export function RoutewiseSettingsSection({ onUnsavedChange }: RoutewiseSettingsS
     }
   }, []);
 
+  // Load once, the first time the sub-tab is shown.
   useEffect(() => {
+    if (!active || started) return;
+    setStarted(true);
     void load();
-  }, [load]);
+  }, [active, load, started]);
 
   useReportUnsaved(editing ? 1 : 0, onUnsavedChange);
 
   const byModel = useMemo(() => routesByModel(routes), [routes]);
-  const models = useMemo(
-    () =>
-      [...byModel.entries()]
-        .filter(([, modelRoutes]) => isRoutewiseModel(modelRoutes))
-        .map(([modelId]) => modelId)
-        .sort(),
-    [byModel],
-  );
+  const models = useMemo(() => routewiseModels(byModel), [byModel]);
   const selectedRoutes = useMemo(() => byModel.get(selectedModel) ?? [], [byModel, selectedModel]);
 
-  const onEditingChange = useCallback((active: boolean) => setEditing(active), []);
+  const onEditingChange = useCallback((activePanel: boolean) => setEditing(activePanel), []);
 
+  if (!started) return null;
   if (loading) return <AdminLoading size="sm" />;
 
   return (
@@ -146,7 +159,7 @@ export function RoutewiseSettingsSection({ onUnsavedChange }: RoutewiseSettingsS
             modelId={selectedModel}
             endpoints={selectedRoutes.map((route) => ({
               endpointId: route.endpoint_id,
-              label: `${route.route_type} · ${route.upstream_provider || route.provider}`,
+              label: `${route.route_type} · ${routeTargetLabel(route, providerOptions, openRouterOptions)}`,
             }))}
             onEditingChange={onEditingChange}
           />

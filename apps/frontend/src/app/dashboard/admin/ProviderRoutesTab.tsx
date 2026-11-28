@@ -70,6 +70,14 @@ import {
 } from './RouteCapabilityFields';
 import type { OffloadQueueInfo } from './OffloadRoutePanel';
 import { RoutewiseDecisionsPanel } from './RoutewiseDecisionsPanel';
+import {
+  openRouterProviderLabel,
+  providerLabel,
+  routeOpenRouterProvider,
+  routePrimaryProvider,
+  routePrimaryUpstreamProvider,
+  routeTargetLabel,
+} from './routeTargetLabel';
 import { Select } from '@/components/ui/Select';
 
 type RouteForm = {
@@ -439,13 +447,6 @@ function optionSupportsRouteType(option: ProviderRouteOption, routeType: Provide
   return option.route_types ? option.route_types.includes(routeType) : true;
 }
 
-function routePrimaryProvider(route: ProviderRoute) {
-  if (route.provider === route.upstream_provider && route.key_provider === 'openrouter') {
-    return 'openrouter';
-  }
-  return route.provider;
-}
-
 // Mirrors the gateway's endpoint comparison closely enough to tell whether an
 // edit still points at the route's current endpoint.
 function canonicalEndpointUrl(value: string) {
@@ -458,13 +459,6 @@ function canonicalEndpointUrl(value: string) {
   } catch {
     return trimmed.replace(/\/+$/, '');
   }
-}
-
-function routePrimaryUpstreamProvider(route: ProviderRoute) {
-  if (route.upstream_provider !== 'openrouter' && route.key_provider === 'openrouter') {
-    return 'openrouter';
-  }
-  return route.upstream_provider;
 }
 
 // A route edit's capability change: set new values, or return to the defaults.
@@ -511,45 +505,6 @@ const ROUTE_EDIT_FIELD_LABELS: Record<string, string> = {
 
 function shownRouteValue(value: unknown): string {
   return value === null || value === undefined || value === '' ? '(default)' : String(value);
-}
-
-function routeOpenRouterProvider(route: ProviderRoute) {
-  if (route.openrouter_provider) return route.openrouter_provider;
-  if (route.upstream_provider !== 'openrouter' && route.key_provider === 'openrouter') {
-    return route.upstream_provider;
-  }
-  return OPENROUTER_PROVIDER_AUTO;
-}
-
-function providerLabel(providerOptions: ProviderRouteOption[], provider: string) {
-  return optionFor(providerOptions, provider)?.label ?? provider;
-}
-
-function openRouterProviderLabel(options: OpenRouterProviderOption[], provider: string) {
-  return options.find((option) => option.provider === provider)?.label ?? provider;
-}
-
-function routeTargetLabel(
-  route: ProviderRoute,
-  providerOptions: ProviderRouteOption[],
-  openRouterOptions: OpenRouterProviderOption[],
-) {
-  const targetProvider = routePrimaryProvider(route);
-  const targetUpstreamProvider = routePrimaryUpstreamProvider(route);
-  const targetOpenRouterProvider = routeOpenRouterProvider(route);
-  if (targetUpstreamProvider === 'openrouter') {
-    if (targetOpenRouterProvider) {
-      return `OpenRouter · ${openRouterProviderLabel(openRouterOptions, targetOpenRouterProvider)}`;
-    }
-    return 'OpenRouter';
-  }
-  if (targetProvider !== targetUpstreamProvider) {
-    return `${providerLabel(providerOptions, targetProvider)} → ${providerLabel(
-      providerOptions,
-      targetUpstreamProvider,
-    )}`;
-  }
-  return providerLabel(providerOptions, targetProvider);
 }
 
 function ensureOpenRouterProviderOption(options: OpenRouterProviderOption[], provider: string) {
