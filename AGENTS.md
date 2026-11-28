@@ -251,9 +251,17 @@ Production cut over on 2026-08-07 and the agent code has since been deleted
 from this repository. **All agent work — features, fixes, deploy — happens in
 that repository now.**
 
-What remains here is the gateway's side of the two service contracts:
+What remains here is the gateway's side of the service contracts:
 
 - **Identity** — `servers/routers/identity.py` (`/v1/identity/*`).
+- **API key authorization** — the PKCE key flow any listed application may
+  use, not only the cloud agent: `servers/routers/key_authorization.py`
+  (`/v1/auth/keys`, `/v1/auth/keys/check`, `/v1/auth/keys/code`), its rules in
+  `serving/utils/key_authorization.py`, and the console's consent page
+  `/authorize/key` (`apps/frontend/src/app/authorize/key/`). The
+  `API_KEY_AUTHORIZATION_CALLBACKS` setting lists the callbacks; the key is an
+  ordinary key on the approving user's own account. See
+  [docs/developer/api-key-authorization.md](docs/developer/api-key-authorization.md).
 - **Inference grants** — `serving/grants.py` + `serving/grant_auth.py`,
   `servers/routers/agent_grants.py` (`/internal/agent-grants*`), the
   `/internal/*` lookups (`servers/routers/internal_lookups.py`,

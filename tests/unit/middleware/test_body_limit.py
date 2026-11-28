@@ -331,6 +331,8 @@ CONTROL_ROUTES = [
     "/user/profile",
     "/internal/agent-grants",
     "/v1/identity/code",
+    "/v1/auth/keys",
+    "/v1/auth/keys/code",
     "/v1/batch_webhook",
 ]
 
@@ -397,6 +399,9 @@ async def test_routes_that_read_after_authentication_keep_the_general_limit(path
         ("/v1/qdrant/collections/c/points", None),
         ("/v1/identity", None),
         ("/v1/identity/token", CONTROL_MAX_BODY_BYTES),
+        ("/v1/auth/keys", CONTROL_MAX_BODY_BYTES),
+        ("/v1/auth/keys/check", CONTROL_MAX_BODY_BYTES),
+        ("/v1/authorization", None),
         ("/userinfo", None),
         ("/user/batches", CONTROL_MAX_BODY_BYTES),
         ("/admin/config", ADMIN_MAX_BODY_BYTES),

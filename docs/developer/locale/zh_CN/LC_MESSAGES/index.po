@@ -277,3 +277,9 @@ msgstr "让某个机构的成员用机构自己的账号登录"
 
 msgid ":doc:`sso`"
 msgstr ":doc:`sso`"
+
+msgid "Let an application create an API key on a user's account"
+msgstr "让某个应用在用户的账号上创建 API key"
+
+msgid ":doc:`api-key-authorization`"
+msgstr ":doc:`api-key-authorization`"

@@ -437,3 +437,9 @@ msgstr "关联（link）"
 
 msgid "The record that an identity at an identity provider signs in to one account. An account can hold links to several identity providers."
 msgstr "一条记录，表示某个身份提供方上的身份登录到某个账号。一个账号可以关联多个身份提供方。"
+
+msgid "API key authorization"
+msgstr "API key 授权（API key authorization）"
+
+msgid "A user approving an application in the console, after which the application receives an API key on the user's own account. [API Key Authorization](api-key-authorization.md) explains how to allow an application."
+msgstr "用户在控制台中批准某个应用，随后该应用得到用户自己账号上的一个 API key。[API key 授权](api-key-authorization.md)说明如何允许一个应用。"

@@ -106,6 +106,11 @@ Link
 : The record that an identity at an identity provider signs in to one account.
   An account can hold links to several identity providers.
 
+API key authorization
+: A user approving an application in the console, after which the application
+  receives an API key on the user's own account. [API Key
+  Authorization](api-key-authorization.md) explains how to allow an application.
+
 ## Deployments
 
 Distribution

@@ -132,8 +132,8 @@ by the streaming clocks below rather than by this one. It is longer than
 still receives the gateway's 504 instead of a dropped connection.
 
 Control routes get a much smaller body limit: 256 KiB under `/auth/`, `/user/`,
-`/internal/` and `/v1/identity/` and on `/v1/batch_webhook`, 1 MiB under
-`/admin/`. FastAPI reads and decodes a route's declared body model before any
+`/internal/`, `/v1/identity/` and `/v1/auth/` and on `/v1/batch_webhook`, 1
+MiB under `/admin/`. FastAPI reads and decodes a route's declared body model before any
 dependency runs, authentication included, so an anonymous caller's body is
 decoded before the `401`. The routes that legitimately take a larger body (a
 configuration restore, the playground, the alert-history ingest) and
