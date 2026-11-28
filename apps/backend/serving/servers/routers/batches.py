@@ -101,6 +101,7 @@ from serving.servers.deps import (
 )
 from serving.servers.routers.files import (
     audit_other_owner,
+    audited_change,
     content_disposition,
     jsonl_download,
 )
@@ -189,6 +190,28 @@ def _lookup_scope(user_ctx: dict[str, Any]) -> str | None:
 
 def _not_found(batch_id: str) -> HTTPException:
     return HTTPException(404, f"Batch '{batch_id}' not found")
+
+
+async def _change_target(
+    store: Any, batch_id: str, scope: str | None
+) -> tuple[str, dict[str, Any]]:
+    """Whose batch a cancel or delete reaches, and the details its audit row names.
+
+    The caller's own, unless an administrator's scope reaches every owner's:
+    then the batch's owner, read with the filter the change itself uses, and
+    the status it found, which tells a cancel from a no-op on a batch that
+    has finished.
+
+    Raises:
+        HTTPException: 404 when an administrator names no batch.
+    """
+    details: dict[str, Any] = {"batch_id": batch_id}
+    if scope is not None:
+        return scope, details
+    found = await store.get_batch(batch_id)
+    if found is None:
+        raise _not_found(batch_id)
+    return found["user_id"], {**details, "status": found["status"]}
 
 
 def _epoch(value: Any) -> int | None:
@@ -719,21 +742,19 @@ async def cancel_batch(
 
     The batch is ``cancelling`` until its running requests are done, then
     ``cancelled``. A batch that already finished, or is sealing its results, is
-    returned unchanged.
+    returned unchanged. Another owner's batch is audited before it is
+    cancelled (:func:`~serving.servers.routers.files.audited_change`).
     """
     store, config = _surface(store)
-    row = await store.cancel_batch(batch_id, user_id=_lookup_scope(user_ctx))
-    if row is None:
-        raise _not_found(batch_id)
-    # The action the admin console's cancel records, by the same administrator.
-    await audit_other_owner(
-        request,
-        op_store,
-        user_ctx,
-        row["user_id"],
-        action="batch.jobs.cancel",
-        details={"batch_id": batch_id},
-    )
+    scope = _lookup_scope(user_ctx)
+    owner, details = await _change_target(store, batch_id, scope)
+    # The action the admin console's cancel records, written before the cancel.
+    async with audited_change(
+        request, op_store, user_ctx, owner, action="batch.jobs.cancel", details=details
+    ):
+        row = await store.cancel_batch(batch_id, user_id=scope)
+        if row is None:
+            raise _not_found(batch_id)
     return batch_object(row, config)
 
 
@@ -812,30 +833,27 @@ async def delete_batch(
     store=Depends(get_batch_store),
     op_store=Depends(get_operational_store),
 ) -> BatchDeleted:
-    """Delete a batch unless one of its requests still holds a live lease."""
+    """Delete a batch unless one of its requests still holds a live lease.
+
+    Another owner's batch is audited before it is deleted
+    (:func:`~serving.servers.routers.files.audited_change`).
+    """
     store, _config = _surface(store)
     scope = _lookup_scope(user_ctx)
-    # Whose batch it is, for the audit of an administrator deleting another's.
-    found = await store.get_batch(batch_id) if scope is None else None
-    try:
-        deleted = await store.delete_batch(batch_id, user_id=scope)
-    except BatchDeleteInProgress:
-        raise HTTPException(
-            409,
-            f"Batch '{batch_id}' has a running request; cancel the batch and wait for its "
-            "running requests to finish before deleting it",
-        ) from None
-    if not deleted:
-        raise _not_found(batch_id)
-    if found is not None:
-        await audit_other_owner(
-            request,
-            op_store,
-            user_ctx,
-            found["user_id"],
-            action="batch.jobs.delete",
-            details={"batch_id": batch_id},
-        )
+    owner, details = await _change_target(store, batch_id, scope)
+    async with audited_change(
+        request, op_store, user_ctx, owner, action="batch.jobs.delete", details=details
+    ):
+        try:
+            deleted = await store.delete_batch(batch_id, user_id=scope)
+        except BatchDeleteInProgress:
+            raise HTTPException(
+                409,
+                f"Batch '{batch_id}' has a running request; cancel the batch and wait for its "
+                "running requests to finish before deleting it",
+            ) from None
+        if not deleted:
+            raise _not_found(batch_id)
     return BatchDeleted(id=batch_id)
 
 

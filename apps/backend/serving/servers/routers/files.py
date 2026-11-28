@@ -28,6 +28,7 @@ chat, Messages or Responses request.
 from __future__ import annotations
 
 import hashlib
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -135,24 +136,81 @@ async def audit_other_owner(
     *,
     action: str,
     details: dict[str, Any],
+    success: bool = True,
 ) -> None:
     """Audit an administrator's access to another owner's batch or file, against that owner.
 
     Only the administrator scope (:func:`_lookup_scope`) reaches another
     owner's work, so a caller's own batches and files are never audited. A
     read is audited before anything is returned: one whose row cannot be
-    written is not answered. The key it came through is in the details.
+    written is not answered. A change is audited before it is made
+    (:func:`audited_change`). The key it came through is in the details.
+
+    Raises:
+        HTTPException: 500 without an operational store, which writes the
+            row. ``log_admin_action`` would skip it in silence, and the access
+            would go unaudited. (An administrator authenticates through that
+            store, so no deployment reaches this today; the guarantee does
+            not rest on that.)
     """
     caller = _owner(user_ctx)
     if owner == caller:
         return
+    if op_store is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
     await log_admin_action(
         op_store,
         action=action,
         actor=AuditActor.admin(caller, get_client_ip(request)),
         target=AuditTarget.user(owner),
         details={**details, "api_key_id": user_ctx.get("api_key_id")},
+        success=success,
     )
+
+
+@asynccontextmanager
+async def audited_change(
+    request: Request,
+    op_store: Any,
+    user_ctx: dict[str, Any],
+    owner: str,
+    *,
+    action: str,
+    details: dict[str, Any],
+) -> AsyncIterator[None]:
+    """Audit an administrator's change to another owner's batch or file before it is made.
+
+    A cancel or a delete cannot be taken back, so its row is written first,
+    as a read's is: one whose row cannot be written is not made (500), and
+    no change to another owner's work goes unrecorded. Written afterwards, a
+    failed write would leave the change made, the administrator told it
+    failed, and nothing on record. A change the block then refuses -- an
+    ``HTTPException``, such as the 409 of a batch still running or the 404 of
+    one deleted meanwhile -- adds a second row, ``success`` false with the
+    status code, so the log does not claim a change that was not made. A
+    caller's own work is neither audited nor held up.
+    """
+    await audit_other_owner(request, op_store, user_ctx, owner, action=action, details=details)
+    try:
+        yield
+    except HTTPException as exc:
+        try:
+            await audit_other_owner(
+                request,
+                op_store,
+                user_ctx,
+                owner,
+                action=action,
+                details={**details, "error": f"not made (HTTP {exc.status_code})"},
+                success=False,
+            )
+        except Exception:
+            # The refusal still stands; the first row records the attempt.
+            logger.exception(
+                "batch_admin_refusal_audit_failed",
+                extra={"event": "batch_admin_refusal_audit_failed", "action": action},
+            )
+        raise
 
 
 def _epoch(value: Any) -> int | None:
@@ -518,19 +576,27 @@ async def delete_file(
     file_store=Depends(get_batch_file_store),
     op_store=Depends(get_operational_store),
 ) -> JSONResponse:
-    """Delete a file. An output file is gone for good; its batch keeps naming it."""
+    """Delete a file. An output file is gone for good; its batch keeps naming it.
+
+    Another owner's file is audited before it is deleted (:func:`audited_change`).
+    """
     scope = _lookup_scope(user_ctx)
-    # Whose file it is, for the audit of an administrator deleting another's.
-    found = await file_store.get_file(file_id, include_deleted=True) if scope is None else None
-    if not await file_store.delete_file(file_id, user_id=scope):
-        raise _not_found(file_id)
-    if found is not None:
-        await audit_other_owner(
-            request,
-            op_store,
-            user_ctx,
-            found["user_id"],
-            action="batch.files.delete",
-            details={"file_id": file_id, "kind": found.get("kind")},
-        )
+    owner, kind = _owner(user_ctx), None
+    if scope is None:
+        # An administrator: whose file it is, read with the delete's own filter
+        # (an expired file is deleted too), so the row names its owner.
+        found = await file_store.get_file(file_id, include_deleted=True)
+        if found is None or found.get("deleted_at") is not None or found.get("status") != "ready":
+            raise _not_found(file_id)
+        owner, kind = found["user_id"], found.get("kind")
+    async with audited_change(
+        request,
+        op_store,
+        user_ctx,
+        owner,
+        action="batch.files.delete",
+        details={"file_id": file_id, "kind": kind},
+    ):
+        if not await file_store.delete_file(file_id, user_id=scope):
+            raise _not_found(file_id)
     return JSONResponse({"id": file_id, "object": "file", "deleted": True})

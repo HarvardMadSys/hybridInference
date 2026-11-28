@@ -10,8 +10,9 @@ their contract these routes use.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
@@ -20,7 +21,7 @@ from httpx import ASGITransport, AsyncClient
 
 from serving.batch import config as batch_config_module
 from serving.servers.auth import verify_batch_management_identity
-from serving.servers.deps import AppServices
+from serving.servers.deps import AppServices, get_operational_store
 from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import files
 
@@ -130,6 +131,9 @@ def app(monkeypatch, file_store) -> FastAPI:
         return {"authenticated": True, **USERS[key]}
 
     application.dependency_overrides[verify_batch_management_identity] = identity
+    # Where an administrator's access to another owner's file is audited.
+    audit_log = SimpleNamespace(log_admin_action=AsyncMock())
+    application.dependency_overrides[get_operational_store] = lambda: audit_log
     install_error_handlers(application)
     application.include_router(files.router)
     return application
@@ -191,6 +195,64 @@ async def test_reading_and_deleting_another_owners_file_is_audited(client, file_
     assert [row["action"] for row in audits] == ["batch.files.read", "batch.files.delete"]
     assert {(row["target"].type, row["target"].id) for row in audits} == {("user", "alice")}
     assert audits[1]["details"] == {"file_id": "file-alice", "kind": "upload", "api_key_id": 9}
+
+
+async def test_another_owners_file_is_not_deleted_when_the_audit_fails(
+    app, file_store, monkeypatch
+):
+    async def unwritable(_op_store: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("the audit log is unavailable")
+
+    monkeypatch.setattr(files, "log_admin_action", unwritable)
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        response = await ac.delete("/v1/files/file-output", headers=_auth("key-root"))
+
+    # Audited before it is deleted: an output file is gone for good, so one
+    # whose row cannot be written stays.
+    assert response.status_code == 500
+    assert "file-output" in file_store.files
+
+
+async def test_a_delete_that_finds_nothing_after_its_audit_is_recorded_as_not_made(
+    client, file_store, audits, monkeypatch
+):
+    async def gone_meanwhile(file_id: str, *, user_id: str | None) -> bool:
+        return False
+
+    monkeypatch.setattr(file_store, "delete_file", gone_meanwhile)
+    response = await client.delete("/v1/files/file-alice", headers=_auth("key-root"))
+
+    assert response.status_code == 404
+    assert [(row["action"], row["success"]) for row in audits] == [
+        ("batch.files.delete", True),
+        ("batch.files.delete", False),
+    ]
+    assert audits[1]["details"]["error"] == "not made (HTTP 404)"
+
+
+async def test_a_deleted_file_is_404_to_an_administrator_and_not_audited(
+    client, file_store, audits
+):
+    file_store.files["file-gone"] = _file("file-gone", "alice", deleted_at="2026-11-01")
+
+    response = await client.delete("/v1/files/file-gone", headers=_auth("key-root"))
+
+    assert response.status_code == 404
+    assert audits == []
+
+
+async def test_another_owners_file_is_not_reached_without_an_audit_log(app, client, file_store):
+    app.dependency_overrides[get_operational_store] = lambda: None
+
+    read = await client.get("/v1/files/file-output", headers=_auth("key-root"))
+    deleted = await client.delete("/v1/files/file-output", headers=_auth("key-root"))
+    own = await client.get("/v1/files/file-root", headers=_auth("key-root"))
+
+    # Nowhere to write its row: neither answered nor deleted. One's own needs none.
+    assert (read.status_code, deleted.status_code) == (500, 500)
+    assert "file-output" in file_store.files
+    assert own.status_code == 200
 
 
 async def test_an_unknown_file_is_404_and_not_audited(client, audits):

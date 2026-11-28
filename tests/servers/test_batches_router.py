@@ -12,7 +12,9 @@ import hashlib
 import itertools
 import json
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -23,7 +25,7 @@ from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.batch import admission, config as batch_config_module, targets
 from serving.servers.auth import verify_api_key, verify_batch_management_identity
-from serving.servers.deps import AppServices
+from serving.servers.deps import AppServices, get_operational_store
 from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import batches, files
 from serving.storage.batch_store import (
@@ -348,9 +350,16 @@ def services(store, scheduler) -> AppServices:
 
 
 @pytest.fixture
-def app(services, users, settings) -> FastAPI:
+def audit_log() -> SimpleNamespace:
+    """The operational store an administrator's access to another owner's batch is audited in."""
+    return SimpleNamespace(log_admin_action=AsyncMock())
+
+
+@pytest.fixture
+def app(services, users, settings, audit_log) -> FastAPI:
     app = FastAPI(title="Batches Test App")
     app.state.services = services
+    app.dependency_overrides[get_operational_store] = lambda: audit_log
 
     async def fake_verify(authorization: str | None = Header(None)) -> dict[str, Any]:
         key = (authorization or "").removeprefix("Bearer ")
@@ -1615,6 +1624,10 @@ async def test_an_admin_reaching_another_owners_batch_is_audited_against_the_own
         assert (row["actor"].type, row["actor"].id) == ("admin", "root")
         assert (row["target"].type, row["target"].id) == ("user", "alice")
         assert row["details"]["batch_id"] == batch["id"]
+        assert row["success"] is True
+    # A cancel and a delete name the status they found the batch in.
+    assert audits[2]["details"]["status"] == "validating"
+    assert audits[4]["details"]["status"] == "cancelled"
     # A page of results names what it returned.
     (result,) = results.json()["data"]
     assert audits[1]["details"] == {
@@ -1657,6 +1670,82 @@ async def test_another_owners_results_are_not_returned_when_the_audit_fails(
 
     assert response.status_code == 500
     assert "req-0" not in response.text
+
+
+@pytest.mark.parametrize("change", ["cancel", "delete"])
+async def test_another_owners_batch_is_not_changed_when_the_audit_fails(
+    app, store, monkeypatch, change
+):
+    batch = await _create_with(app, "key-alice")
+    before = (dict(store.batches[batch["id"]]), [dict(item) for item in store.items[batch["id"]]])
+
+    async def unwritable(_op_store: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("the audit log is unavailable")
+
+    monkeypatch.setattr(files, "log_admin_action", unwritable)
+    path = f"/v1/batches/{batch['id']}"
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        if change == "cancel":
+            response = await ac.post(f"{path}/cancel", headers=_auth("key-root"))
+        else:
+            response = await ac.delete(path, headers=_auth("key-root"))
+
+    # Audited before it is made: a change whose row cannot be written is not made.
+    assert response.status_code == 500
+    assert (store.batches[batch["id"]], store.items[batch["id"]]) == before
+
+
+async def test_a_delete_refused_after_its_audit_is_recorded_as_not_made(
+    client, store, audits, monkeypatch
+):
+    batch = await _create(client, "key-alice")
+
+    async def still_running(batch_id: str, *, user_id: str | None = None) -> bool:
+        raise BatchDeleteInProgress(batch_id)
+
+    monkeypatch.setattr(store, "delete_batch", still_running)
+    response = await client.delete(f"/v1/batches/{batch['id']}", headers=_auth("key-root"))
+
+    assert response.status_code == 409
+    assert batch["id"] in store.batches
+    assert [(row["action"], row["success"]) for row in audits] == [
+        ("batch.jobs.delete", True),
+        ("batch.jobs.delete", False),
+    ]
+    assert audits[1]["details"] == {
+        "batch_id": batch["id"],
+        "status": "validating",
+        "error": "not made (HTTP 409)",
+        "api_key_id": None,
+    }
+
+
+async def test_a_cancel_of_a_finished_batch_records_the_status_it_found(client, store, audits):
+    batch = await _create(client, "key-alice")
+    store.batches[batch["id"]]["status"] = "completed"
+
+    response = await client.post(f"/v1/batches/{batch['id']}/cancel", headers=_auth("key-root"))
+
+    # Returned unchanged; the row says the cancel found it already finished.
+    assert response.json()["status"] == "completed"
+    (row,) = audits
+    assert (row["action"], row["details"]["status"]) == ("batch.jobs.cancel", "completed")
+
+
+async def test_another_owners_batch_is_not_reached_without_an_audit_log(app, client, store):
+    app.dependency_overrides[get_operational_store] = lambda: None
+    batch = await _create(client, "key-alice")
+    path = f"/v1/batches/{batch['id']}"
+
+    read = await client.get(path, headers=_auth("key-root"))
+    deleted = await client.delete(path, headers=_auth("key-root"))
+    own = await client.get(path, headers=_auth("key-alice"))
+
+    # Nowhere to write its row: neither answered nor deleted. One's own needs none.
+    assert (read.status_code, deleted.status_code) == (500, 500)
+    assert batch["id"] in store.batches
+    assert own.status_code == 200
 
 
 async def _create_with(app, key: str) -> dict[str, Any]:
