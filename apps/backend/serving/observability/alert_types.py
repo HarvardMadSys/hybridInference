@@ -147,6 +147,28 @@ ALERT_TYPES: tuple[AlertType, ...] = (
         key_pattern="auth_ip_blocked",
     ),
     AlertType(
+        id="admin_new_address",
+        label="Administrator access from a new address",
+        description=(
+            "An administrator signed in, failed to, or acted from an address the account had "
+            "not used in the lookback, or the admin token acted from a new address. Checked "
+            "hourly."
+        ),
+        group="Auth",
+        key_pattern="admin_new_address:<window end>",
+    ),
+    AlertType(
+        id="admin_dangerous_action",
+        label="Dangerous administrator actions",
+        description=(
+            "An administrator or the admin token deleted an account, granted the admin role, "
+            "exported data, changed a security setting, silenced alerts or did something "
+            "similar. Checked hourly."
+        ),
+        group="Auth",
+        key_pattern="admin_dangerous_action:<window end>",
+    ),
+    AlertType(
         id="db_disconnect",
         label="Database disconnected",
         description="The health check lost the operational store or the log store.",

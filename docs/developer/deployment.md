@@ -490,6 +490,50 @@ stored in the database and reach every process within seconds. An incident that
 opens while muted or snoozed closes without a recovery message; one posted
 before still gets its recovery.
 
+### Administrator activity
+
+Every hour the backend checks what administrators did since its last report
+and sends up to two cards, each an alert type you can mute on its own:
+
+- **Administrator access from a new address** (`admin_new_address`): an
+  administrator signed in, or failed to sign in, from an address the account
+  had not used in the previous 30 days; an administrator's session acted from
+  such an address; or the admin token acted from an address it had not acted
+  from. A session acting from an address the account has not signed in from is
+  marked as such, because a stolen session cookie looks like that.
+- **Dangerous administrator actions** (`admin_dangerous_action`): deleting an
+  account, removing an authenticator, creating a service account, revealing an
+  API key, exporting request logs or reading a batch's prompts, downloading or
+  restoring a configuration backup, adding, removing or changing provider keys
+  and definitions, muting or snoozing alerts, purging sign-in records, lifting
+  an auth-failure block, restarting the backend, and giving an account the
+  admin or internal role. Changing a setting that decides where alerts go, who
+  may sign in or sign up, or which client addresses the backend believes, or
+  any secret setting, counts too. Refused attempts are listed as well.
+
+An address is an IPv4 address or an IPv6 /64. Each card lists up to 20 findings
+(who, what, from which address and when) and counts the rest.
+
+Each finding is reported once. When a card is delivered, the backend writes an
+`admin_activity.alerted` row to the audit log saying how far it covered, and
+the next check starts there, whichever replica runs it. A card that is not
+delivered, because the channel refused it or alerts are snoozed, goes out with
+the next check's findings, for up to seven days. A muted type is recorded as
+handled without a card. The first check covers the hour before it and records
+an `admin_activity.started` row.
+
+The check reads nothing while no notification channel is set. It needs the
+backend to know client addresses (see
+[Trusted Proxies and Client IPs](trusted-proxies-and-client-ips.md)): a sign-in
+or action whose address was not recorded is never new. In `ALERT_RULES`,
+`admin_activity.enabled: false` turns it off and `admin_activity.lookback_days`
+(30 by default, 1 to 365) sets how long an address stays known; both apply
+after a restart.
+
+```json
+{"admin_activity": {"enabled": true, "lookback_days": 30}}
+```
+
 ## The first admin account
 
 A new deployment creates its first administrator on the console's setup page.
