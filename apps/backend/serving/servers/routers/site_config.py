@@ -63,11 +63,11 @@ async def _deployment_state(
 
 # Feature flags that are off unless a deployment turns them on, each newer than
 # some console still in use. Consoles read a missing one as off.
-_OPT_IN_FEATURES = frozenset({"public_stats", "phone_auth"})
+_OPT_IN_FEATURES = frozenset({"public_stats", "phone_auth", "openinfra"})
 
 
 def _public_features(features: dict[str, Any]) -> dict[str, Any]:
-    """Drop each opt-in flag (``public_stats``, ``phone_auth``) that is not enabled.
+    """Drop each opt-in flag (``public_stats``, ``phone_auth``, ``openinfra``) that is off.
 
     Consoles parse ``features`` strictly, so an older console would reject the
     whole document, and with it every page, over a key it does not know.

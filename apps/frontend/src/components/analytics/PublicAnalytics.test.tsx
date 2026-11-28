@@ -258,6 +258,9 @@ describe('isAnalyticsPath', () => {
   it('matches the public pages, with or without a trailing slash', () => {
     expect(isAnalyticsPath('/')).toBe(true);
     expect(isAnalyticsPath('/stats/')).toBe(true);
+    expect(isAnalyticsPath('/openinfra')).toBe(true);
+    expect(isAnalyticsPath('/openinfra/')).toBe(true);
+    expect(isAnalyticsPath('/openinfra-old')).toBe(false);
     expect(isAnalyticsPath('/terms')).toBe(true);
     expect(isAnalyticsPath('/team')).toBe(true);
     expect(isAnalyticsPath('/teams')).toBe(false);
