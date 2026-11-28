@@ -42,6 +42,13 @@ def test_the_public_agent_link_is_runtime_only() -> None:
     assert "AGENT_PUBLIC_URL" not in frontend["build"]["args"]
 
 
+def test_the_openinfra_link_is_runtime_only() -> None:
+    """A staging console can point at production's OpenInfra page without a rebuild."""
+    frontend = _frontend()
+    assert frontend["environment"]["OPENINFRA_PUBLIC_URL"] == "${OPENINFRA_PUBLIC_URL-}"
+    assert "OPENINFRA_PUBLIC_URL" not in frontend["build"]["args"]
+
+
 def test_backend_internal_url_is_one_build_time_contract() -> None:
     """Rewrites and server fetches cannot be retargeted independently."""
     frontend = _frontend()

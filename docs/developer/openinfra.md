@@ -63,6 +63,20 @@ browser ──/openinfra──▶ console page ──GET /public-openinfra, /pub
      an archive. See
      [Retention and weekly archives](#retention-and-weekly-archives).
 
+### Pointing another deployment at this page
+
+A fleet should report to one gateway. A second deployment of the same fleet,
+such as a staging site, can link to that gateway's page instead of collecting
+its own copy: set `OPENINFRA_PUBLIC_URL` in the second deployment's console
+(frontend container) environment to the page's public HTTPS address, for
+example `https://gateway.example.org/openinfra`. The header and footer then link
+there, opening it in a new tab, and that deployment's `/openinfra` redirects
+there. Its own `features.openinfra` flag and ingest token are not needed and
+can stay unset; its `/public-openinfra` endpoints keep answering `404`. The
+value is read when the console starts, and recreating the console applies a
+change. A URL that is not HTTPS, or that carries credentials, is ignored with a
+warning.
+
 ## Running a reporter on a GPU host
 
 The reporter is `ops/openinfra/reporter.py`. It uses only the Python standard

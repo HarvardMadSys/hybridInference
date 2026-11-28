@@ -154,6 +154,32 @@ msgstr ""
 "](#retention-and-weekly-archives)。"
 
 #: ../developer/openinfra.md:66
+msgid "Pointing another deployment at this page"
+msgstr "让另一个部署指向本页面"
+
+#: ../developer/openinfra.md:68
+msgid ""
+"A fleet should report to one gateway. A second deployment of the same "
+"fleet, such as a staging site, can link to that gateway's page instead of"
+" collecting its own copy: set `OPENINFRA_PUBLIC_URL` in the second "
+"deployment's console (frontend container) environment to the page's "
+"public HTTPS address, for example "
+"`https://gateway.example.org/openinfra`. The header and footer then link "
+"there, opening it in a new tab, and that deployment's `/openinfra` "
+"redirects there. Its own `features.openinfra` flag and ingest token are "
+"not needed and can stay unset; its `/public-openinfra` endpoints keep "
+"answering `404`. The value is read when the console starts, and "
+"recreating the console applies a change. A URL that is not HTTPS, or that"
+" carries credentials, is ignored with a warning."
+msgstr ""
+"一组机器应只向一个网关上报。同一组机器的第二个部署（例如 staging 站点）可以链接到该网关的页面，而不必自己再收集一份：在第二个部署的控制台（前端容器）环境中把 "
+"`OPENINFRA_PUBLIC_URL` 设为该页面的公开 HTTPS 地址，例如 "
+"`https://gateway.example.org/openinfra`。页头和页脚随后会链接到那里（在新标签页中打开），该部署的 "
+"`/openinfra` 也会重定向到那里。它自己的 `features.openinfra` 开关和 ingest token "
+"都不需要，可以保持未设置；它的 `/public-openinfra` 端点仍然返回 "
+"`404`。该值在控制台启动时读取，重新创建控制台容器即可应用修改。不是 HTTPS 或带有凭据的 URL 会被忽略并记录警告。"
+
+#: ../developer/openinfra.md:80
 msgid "Running a reporter on a GPU host"
 msgstr "在 GPU 主机上运行 reporter"
 

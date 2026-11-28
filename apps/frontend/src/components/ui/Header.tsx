@@ -42,7 +42,7 @@ export function Header() {
   const consoleWidth = useConsoleWidth();
   const { bar, shell } = useConsoleFrame();
   const { state } = useAuth();
-  const { branding, features } = useSiteConfig();
+  const { branding, features, openinfraUrl } = useSiteConfig();
   const t = useT();
   const pathname = usePathname();
   const menuId = useId();
@@ -77,11 +77,12 @@ export function Header() {
     });
   }
   if (features.openinfra) {
+    // Another deployment's page when this one links there (openinfraUrl).
     links.push({
       key: 'openinfra',
-      href: '/openinfra',
+      href: openinfraUrl || '/openinfra',
       label: t('chrome.header.openinfra', 'OpenInfra'),
-      external: false,
+      external: Boolean(openinfraUrl),
       prefetch: false,
     });
   }

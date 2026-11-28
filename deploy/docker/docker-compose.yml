@@ -251,6 +251,9 @@ services:
       # Optional public entry point for an agent served on its own origin.
       # This enables the dashboard link without enabling the /agents proxy.
       AGENT_PUBLIC_URL: ${AGENT_PUBLIC_URL-}
+      # Optional: another deployment's OpenInfra page. When set, the header and
+      # footer link there and /openinfra redirects there (docs/developer/openinfra.md).
+      OPENINFRA_PUBLIC_URL: ${OPENINFRA_PUBLIC_URL-}
       # Absolute path inside this container to a dedicated, read-only branding
       # image directory. Deployment overlays that use it also bind-mount that
       # directory. A file there wins over one of the same path packaged with the

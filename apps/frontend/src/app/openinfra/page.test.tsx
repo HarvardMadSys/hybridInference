@@ -25,6 +25,17 @@ const auth = vi.hoisted(() => ({
 }));
 vi.mock('@/components/providers', () => ({ useAuth: () => ({ state: auth.state }) }));
 
+const site = vi.hoisted(() => ({ openinfraUrl: '' }));
+vi.mock('@/config/site-config.server', () => ({
+  loadRuntimeSiteConfig: async () => ({ openinfraUrl: site.openinfraUrl }),
+}));
+const redirect = vi.hoisted(() =>
+  vi.fn((url: string) => {
+    throw new Error(`NEXT_REDIRECT ${url}`);
+  }),
+);
+vi.mock('next/navigation', () => ({ redirect }));
+
 const saved = vi.hoisted(() => [] as Array<{ name: string; mime: string }>);
 vi.mock('./download', () => ({
   saveFile: (name: string, _content: unknown, mime: string) => saved.push({ name, mime }),
@@ -57,7 +68,7 @@ afterEach(() => {
 
 describe('OpenInfraPage', () => {
   it('shows the first deployment, one tab per name, with every section', async () => {
-    render(<OpenInfraPage />);
+    render(<OpenInfraContent />);
     expect(screen.getByText('Loading OpenInfra…')).toBeInTheDocument();
     await loaded();
 
@@ -94,7 +105,7 @@ describe('OpenInfraPage', () => {
   });
 
   it('switches deployment from its tab and the address', async () => {
-    render(<OpenInfraPage />);
+    render(<OpenInfraContent />);
     await loaded();
 
     fireEvent.click(screen.getByRole('button', { name: 'code-model' }));
@@ -115,7 +126,7 @@ describe('OpenInfraPage', () => {
 
   it('opens on the deployment and range the address names', async () => {
     window.history.replaceState(null, '', '/openinfra?hours=168#embed-model');
-    render(<OpenInfraPage />);
+    render(<OpenInfraContent />);
     await loaded();
 
     expect(api.getOpenInfraHistory).toHaveBeenCalledWith(168);
@@ -125,7 +136,7 @@ describe('OpenInfraPage', () => {
   });
 
   it('loads another range when one is picked, and records it in the address', async () => {
-    render(<OpenInfraPage />);
+    render(<OpenInfraContent />);
     await loaded();
 
     fireEvent.click(screen.getByRole('button', { name: '24h' }));
@@ -141,20 +152,20 @@ describe('OpenInfraPage', () => {
 
   it('says so when the deployment does not publish the page', async () => {
     api.getOpenInfraDashboard.mockResolvedValue({ status: 'unavailable' });
-    render(<OpenInfraPage />);
+    render(<OpenInfraContent />);
     expect(await screen.findByText(/not published for this site/)).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Served' })).not.toBeInTheDocument();
   });
 
   it('reports a failed load without breaking the page', async () => {
     api.getOpenInfraDashboard.mockResolvedValue({ status: 'error' });
-    render(<OpenInfraPage />);
+    render(<OpenInfraContent />);
     expect(await screen.findByText(/could not be loaded/)).toBeInTheDocument();
   });
 
   it('keeps the snapshot when only the history fails', async () => {
     api.getOpenInfraHistory.mockResolvedValue({ status: 'error' });
-    render(<OpenInfraPage />);
+    render(<OpenInfraContent />);
     await loaded();
     expect(screen.getByRole('status')).toHaveTextContent('The charts could not be refreshed');
     // The tiles fall back to the snapshot.
@@ -162,7 +173,7 @@ describe('OpenInfraPage', () => {
   });
 
   it('keeps what it shows when a refresh fails, and says it is stale', async () => {
-    render(<OpenInfraPage />);
+    render(<OpenInfraContent />);
     await loaded();
     api.getOpenInfraDashboard.mockResolvedValue({ status: 'error' });
 
@@ -175,7 +186,7 @@ describe('OpenInfraPage', () => {
 
   it('refreshes every 30 seconds', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    render(<OpenInfraPage />);
+    render(<OpenInfraContent />);
     await loaded();
     expect(api.getOpenInfraDashboard).toHaveBeenCalledTimes(1);
 
@@ -195,7 +206,7 @@ describe('OpenInfraPage', () => {
   it('refreshes the last 15 minutes every 5 seconds', async () => {
     window.history.replaceState(null, '', '/openinfra?hours=0.25');
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    render(<OpenInfraPage />);
+    render(<OpenInfraContent />);
     await loaded();
     expect(api.getOpenInfraHistory).toHaveBeenLastCalledWith(0.25);
     expect(screen.getByRole('button', { name: '15m' })).toHaveAttribute('aria-pressed', 'true');
@@ -210,7 +221,7 @@ describe('OpenInfraPage', () => {
   });
 
   it('opens a chart larger, saves its CSV, and closes on Escape', async () => {
-    render(<OpenInfraPage />);
+    render(<OpenInfraContent />);
     await loaded();
 
     fireEvent.click(screen.getByRole('button', { name: 'CSV: GPU SM' }));
@@ -227,7 +238,7 @@ describe('OpenInfraPage', () => {
   });
 
   it('leaves a plain wheel to the page, and zooms a chart with Ctrl or ⌘ held', async () => {
-    render(<OpenInfraPage />);
+    render(<OpenInfraContent />);
     await loaded();
     const canvas = screen.getByRole('img', { name: 'GPU SM (%)' });
     const wheel = (init: WheelEventInit) => {
@@ -248,7 +259,7 @@ describe('OpenInfraPage', () => {
   });
 
   it('offers the export to administrators only', async () => {
-    render(<OpenInfraPage />);
+    render(<OpenInfraContent />);
     await loaded();
     expect(screen.queryByRole('button', { name: 'Export' })).not.toBeInTheDocument();
     cleanup();
@@ -258,7 +269,7 @@ describe('OpenInfraPage', () => {
       filename: 'openinfra-export-7d.json',
       blob: new Blob(['{}']),
     });
-    render(<OpenInfraPage />);
+    render(<OpenInfraContent />);
     await loaded();
 
     fireEvent.click(screen.getByRole('button', { name: 'Export' }));
@@ -274,7 +285,7 @@ describe('OpenInfraPage', () => {
   it('shows a refused export in the dialog', async () => {
     auth.state = { isAuthenticated: true, user: { is_admin: true } };
     api.exportOpenInfra.mockRejectedValue(new Error('Admin access required.'));
-    render(<OpenInfraPage />);
+    render(<OpenInfraContent />);
     await loaded();
 
     fireEvent.click(screen.getByRole('button', { name: 'Export' }));
@@ -283,6 +294,26 @@ describe('OpenInfraPage', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Admin access required.');
     expect(screen.getByRole('dialog', { name: 'Export data' })).toBeInTheDocument();
     expect(api.exportOpenInfra).toHaveBeenCalledWith(30);
+  });
+});
+
+describe('OpenInfraPage, the route', () => {
+  afterEach(() => {
+    site.openinfraUrl = '';
+    redirect.mockClear();
+  });
+
+  it("serves this deployment's own page when no other is named", async () => {
+    render(await OpenInfraPage());
+    expect(await loaded()).toBeInTheDocument();
+    expect(redirect).not.toHaveBeenCalled();
+  });
+
+  it("redirects to another deployment's page when one is named", async () => {
+    site.openinfraUrl = 'https://prod.example.test/openinfra';
+    await expect(OpenInfraPage()).rejects.toThrow('NEXT_REDIRECT');
+    expect(redirect).toHaveBeenCalledWith('https://prod.example.test/openinfra');
+    expect(api.getOpenInfraDashboard).not.toHaveBeenCalled();
   });
 });
 
