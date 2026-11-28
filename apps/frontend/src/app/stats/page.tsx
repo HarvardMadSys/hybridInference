@@ -1,19 +1,22 @@
 import type { Metadata } from 'next';
-import { config } from '@/config/env';
+import { loadRuntimeSiteConfig } from '@/config/site-config.server';
 import { requestTranslator } from '@/lib/i18n/request.server';
 import { fill } from '@/lib/utils/interpolate';
 import { StatsContent } from './StatsContent';
 
 export async function generateMetadata(): Promise<Metadata> {
-  const t = await requestTranslator();
+  // The site's name as the deployment configures it now, not the one the
+  // image was built with: a neutral image is built as HybridInference.
+  const [{ branding }, t] = await Promise.all([loadRuntimeSiteConfig(), requestTranslator()]);
+  const name = { app_name: branding.appName };
   return {
-    title: fill(t('stats.meta_title', 'Usage stats | {app_name}'), { app_name: config.appName }),
+    title: fill(t('stats.meta_title', 'Usage stats | {app_name}'), name),
     description: fill(
       t(
         'stats.meta_description',
         'Tokens served, countries, languages and agents on {app_name}, refreshed daily.',
       ),
-      { app_name: config.appName },
+      name,
     ),
   };
 }
