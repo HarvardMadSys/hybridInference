@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, ValidationError, model_validator
@@ -47,13 +48,22 @@ _call_body = json_body_after(_require_internal, McpCallBody)
 
 
 def _catalog() -> McpServersDocument | None:
-    from serving.config import documents
+    from serving.config import app_config, documents
 
+    if app_config.validation_problem("MCP_SERVERS"):
+        logger.warning("MCP server store is invalid")
+        return None
     try:
         return McpServersDocument.model_validate(documents.get("mcp"))
     except ValidationError as exc:
         logger.warning("MCP server store is invalid", exc_info=exc)
         return None
+
+
+def _public_url(url: str) -> str:
+    """The entry's origin; a path or query may hold a routing token."""
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else ""
 
 
 def _store_entry(server_id: str) -> McpServerEntry:
@@ -106,7 +116,7 @@ async def list_servers(
                 "id": entry.id,
                 "name": entry.name,
                 "description": entry.description,
-                "url": entry.url,
+                "url": _public_url(entry.url),
                 "docsUrl": entry.docs_url,
                 "iconUrl": entry.icon_url,
             }

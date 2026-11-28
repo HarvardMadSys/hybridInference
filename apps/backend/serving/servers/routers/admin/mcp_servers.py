@@ -13,22 +13,41 @@ from serving.config import app_config, documents
 from serving.config.mcp_servers import McpServerEntry, McpServersDocument
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_admin_audit_actor, get_operational_store, verify_admin_access
+from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from serving.config.revisions import SourceVersion
 
 router = APIRouter(prefix="/admin")
+logger = get_logger(__name__)
 
 
-def _read() -> tuple[McpServersDocument, SourceVersion | None]:
+async def _read() -> tuple[McpServersDocument, SourceVersion | None]:
     """Read the catalog and the version the edit must replace.
 
-    The version is captured before the document, so a concurrent save makes
-    this write conflict rather than silently overwriting the other edit.
+    A stored document that does not validate reads as empty from
+    ``documents.get``. Refusing here keeps an additive edit from replacing it
+    with a fresh list and losing the entries the administrator still needs to
+    repair in the raw setting.
     """
+    try:
+        await app_config.refresh()
+    except Exception as exc:
+        logger.warning("MCP server store refresh failed (%s)", type(exc).__name__)
+    if app_config.validation_problem("MCP_SERVERS"):
+        raise HTTPException(
+            409, "The stored MCP server document is invalid; fix it in Admin Settings first."
+        )
     version = app_config.source_version()
     try:
         return McpServersDocument.model_validate(documents.get("mcp")), version
+    except ValidationError as exc:
+        raise HTTPException(400, documents.describe_validation_error(exc)) from None
+
+
+def _document_with(servers: list[McpServerEntry]) -> McpServersDocument:
+    try:
+        return McpServersDocument(servers=servers)
     except ValidationError as exc:
         raise HTTPException(400, documents.describe_validation_error(exc)) from None
 
@@ -70,7 +89,8 @@ async def list_mcp_servers(
     _admin_id: str = Depends(verify_admin_access),
 ) -> dict[str, Any]:
     """Return the store catalog, including header references but never their values."""
-    return _response(_read()[0])
+    document, _version = await _read()
+    return _response(document)
 
 
 @router.post("/mcp-servers", response_model=None, status_code=201)
@@ -81,10 +101,10 @@ async def create_mcp_server(
     op_store=Depends(get_operational_store),
 ) -> dict[str, Any]:
     """Add one server to the store."""
-    document, version = _read()
+    document, version = await _read()
     if any(entry.id == payload.id for entry in document.servers):
         raise HTTPException(409, "A server with that id already exists.")
-    updated = McpServersDocument(servers=[*document.servers, payload])
+    updated = _document_with([*document.servers, payload])
     return await _save(
         updated,
         admin_id=admin_id,
@@ -107,11 +127,11 @@ async def update_mcp_server(
     """Replace one server's entry; the id in the path is the key that stays."""
     if payload.id != server_id:
         raise HTTPException(400, "The server id cannot change.")
-    document, version = _read()
+    document, version = await _read()
     if not any(entry.id == server_id for entry in document.servers):
         raise HTTPException(404, "That server is not in the store.")
-    updated = McpServersDocument(
-        servers=[payload if entry.id == server_id else entry for entry in document.servers]
+    updated = _document_with(
+        [payload if entry.id == server_id else entry for entry in document.servers]
     )
     return await _save(
         updated,
@@ -132,13 +152,11 @@ async def delete_mcp_server(
     op_store=Depends(get_operational_store),
 ) -> dict[str, Any]:
     """Remove one server from the store."""
-    document, version = _read()
+    document, version = await _read()
     if not any(entry.id == server_id for entry in document.servers):
         raise HTTPException(404, "That server is not in the store.")
     entry = next(entry for entry in document.servers if entry.id == server_id)
-    updated = McpServersDocument(
-        servers=[entry for entry in document.servers if entry.id != server_id]
-    )
+    updated = _document_with([item for item in document.servers if item.id != server_id])
     return await _save(
         updated,
         admin_id=admin_id,

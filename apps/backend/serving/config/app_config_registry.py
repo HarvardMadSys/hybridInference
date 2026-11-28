@@ -2302,8 +2302,24 @@ def _discover_sso(data: Any, found: dict[str, DiscoveredReference]) -> None:
             _note(found, key, "security").single_sign_on = True
 
 
+def _discover_mcp(data: Any, found: dict[str, DiscoveredReference]) -> None:
+    """Every header reference is a credential, whatever its name looks like."""
+    servers = data.get("servers") if isinstance(data, dict) else None
+    if not isinstance(servers, list):
+        return
+    for server in servers:
+        if not isinstance(server, dict):
+            continue
+        headers = server.get("headers")
+        if not isinstance(headers, dict):
+            continue
+        used_by = [str(server.get("id") or "MCP_SERVERS")]
+        for key in _references(headers):
+            _note(found, key, "application", used_by).credential = True
+
+
 def discover_documents(
-    models: Any, routing: Any, alerts: Any, sso: Any = None
+    models: Any, routing: Any, alerts: Any, sso: Any = None, mcp: Any = None
 ) -> dict[str, DiscoveredReference]:
     """Discover settings referenced by parsed database application documents."""
     found: dict[str, DiscoveredReference] = {}
@@ -2311,6 +2327,7 @@ def discover_documents(
     _discover_routing(routing, found)
     _discover_alerts(alerts, found)
     _discover_sso(sso, found)
+    _discover_mcp(mcp, found)
     for data in (models, routing, alerts, sso):
         for key in _credential_references(data):
             if key in found:

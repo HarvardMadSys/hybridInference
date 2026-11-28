@@ -35,6 +35,9 @@ audit, security confirmation and backup as every other setting:
 | `SSO_PROVIDERS` | Identity providers for [single sign-on](sso.md) | On settings refresh |
 | `MCP_SERVERS` | MCP servers the Playground offers as a store | On settings refresh |
 
+`MCP_SERVERS` references `MCP_*` secret settings; a secret added or rotated after
+startup applies after a backend restart.
+
 **Admin → Routing → Models** edits `MODEL_CATALOG`; **Admin → Settings → Site &
 Setup → Advanced settings → Application** edits the rest. Admin shows a document as one plain-string field
 per value, named by its path, such as `models[0].route[0].base_url`. Numbers

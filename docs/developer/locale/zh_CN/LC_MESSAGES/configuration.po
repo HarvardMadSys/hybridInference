@@ -982,6 +982,12 @@ msgid "For"
 msgstr "用途"
 
 #: ../developer/configuration.md
+msgid ""
+"`MCP_SERVERS` references `MCP_*` secret settings; a secret added or rotated "
+"after startup applies after a backend restart."
+msgstr "`MCP_SERVERS` 引用 `MCP_*` 秘密设置；在启动后新增或轮换的秘密设置会在后端重启后生效。"
+
+#: ../developer/configuration.md
 msgid "Both"
 msgstr "两者共用"
 
