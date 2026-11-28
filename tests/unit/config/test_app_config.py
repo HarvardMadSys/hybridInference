@@ -358,8 +358,8 @@ async def test_api_key_secret_is_not_generated_over_existing_api_keys(config_env
     assert "JWT_SECRET_KEY" not in store.rows
     # The remedy passes the secret on standard input, not on the command line.
     assert (
-        "`printf '%s' \"$VALUE\" | python -m serving.config.manage set API_KEY_SECRET "
-        "--value-file -`" in str(excinfo.value)
+        "`read -rs VALUE; printf '%s' \"$VALUE\" | python -m serving.config.manage set "
+        "API_KEY_SECRET --value-file -`" in str(excinfo.value)
     )
 
 
@@ -2157,8 +2157,8 @@ async def test_invalid_extension_env_is_not_imported(
         (False, "python -m serving.config.manage set SAMPLE_TEMPLATE VALUE"),
         (
             True,
-            "printf '%s' \"$VALUE\" | python -m serving.config.manage set SAMPLE_TEMPLATE "
-            "--value-file -",
+            "read -rs VALUE; printf '%s' \"$VALUE\" | python -m serving.config.manage set "
+            "SAMPLE_TEMPLATE --value-file -",
         ),
     ],
     ids=["ordinary", "secret"],

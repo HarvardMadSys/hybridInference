@@ -34,7 +34,10 @@ Run it where the backend runs, for example::
 Pass a secret on standard input with ``--value-file -``, not as an argument,
 which the process list shows and shell history keeps::
 
-    printf '%s' "$VALUE" | docker exec -i hybridinference-backend python -m serving.config.manage set API_KEY_SECRET --value-file -
+    read -rs VALUE; printf '%s' "$VALUE" | docker exec -i hybridinference-backend python -m serving.config.manage set API_KEY_SECRET --value-file -
+
+On a terminal, with no pipe (``docker exec -it ...``), ``--value-file -`` asks
+for the value and does not show it as it is typed. An empty value is refused.
 
 Running backends apply a change within ten seconds; a setting marked
 restart-required waits for the next restart.
@@ -48,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import getpass
 import json
 import sys
 from pathlib import Path
@@ -73,7 +77,8 @@ _DATABASE_ERRORS = (OSError, asyncio.TimeoutError, asyncpg.PostgresError, asyncp
 _ARGUMENT_SECRET_WARNING = (
     "Warning: {key} is a secret, and a value given as an argument is visible in the "
     "process list and kept in shell history. Pass it on standard input instead: "
-    "printf '%s' \"$VALUE\" | python -m serving.config.manage set {key} --value-file -"
+    "read -rs VALUE; printf '%s' \"$VALUE\" | python -m serving.config.manage set {key} "
+    "--value-file -"
 )
 
 
@@ -222,13 +227,35 @@ def _is_secret(key: str, *, marked: bool) -> bool:
         return registry.numbered_key_entry(key) is not None or registry.is_secret_name(key)
 
 
-def _read_value(path: str) -> str:
+def _read_value(path: str, key: str) -> str:
     """Return the value ``set --value-file`` names: the file's, or standard input's for ``-``.
 
-    One trailing newline, which ``echo`` and editors add, is not part of it.
+    One trailing line ending (LF, or CRLF from a file saved on Windows), which
+    ``echo`` and editors add, is not part of it. Standard input that is a
+    terminal is asked for without showing what is typed
+    (:func:`getpass.getpass`), one line.
+
+    Raises:
+        OSError: The file cannot be read.
+        UnicodeDecodeError: The file is not UTF-8.
+        ManageError: The value is empty or only whitespace: what an unset
+            variable, an empty pipe or the wrong file gives, and never a value
+            meant to be stored. ``reset`` is how a stored value is removed.
     """
-    text = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
-    return text.removesuffix("\n")
+    if path != "-":
+        text = Path(path).read_text(encoding="utf-8")
+    elif sys.stdin is not None and sys.stdin.isatty():
+        text = getpass.getpass(f"Value for {key} (not shown): ")
+    else:
+        text = sys.stdin.read() if sys.stdin is not None else ""
+    value = text[:-2] if text.endswith("\r\n") else text.removesuffix("\n")
+    if not value.strip():
+        source = "standard input" if path == "-" else path
+        raise ManageError(
+            f"Refused: the value read from {source} is empty or only whitespace; nothing "
+            f"was stored. `reset {key}` removes a stored value."
+        )
+    return value
 
 
 def _how_it_applies(entry: dict[str, Any]) -> str:
@@ -544,7 +571,8 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help=(
             "read the value from PATH, or from standard input for -, which keeps it out of "
-            "the process list and shell history; one trailing newline is dropped"
+            "the process list and shell history; one trailing line ending is dropped and an "
+            "empty value is refused. On a terminal, - asks for it without showing it"
         ),
     )
     store.add_argument(
@@ -596,9 +624,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "set" and args.value_file is not None:
         try:
-            args.value = _read_value(args.value_file)
+            args.value = _read_value(args.value_file, args.key)
         except (OSError, UnicodeDecodeError) as exc:
             print(f"Could not read the value: {exc}", file=sys.stderr)
+            return 1
+        except ManageError as exc:
+            print(str(exc), file=sys.stderr)
             return 1
     # Before anything is resolved, read .env the way the gateway does at startup
     # (bootstrap.initialize): a value only .env holds, as under a systemd unit

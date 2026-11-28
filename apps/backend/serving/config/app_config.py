@@ -1358,10 +1358,15 @@ async def _import_environment(
 def _set_command(key: str, *, secret: bool) -> str:
     """The recovery command that stores *key*: a secret's value on standard input.
 
-    An argument is visible in the process list and kept in shell history.
+    An argument is visible in the process list and kept in shell history. The
+    secret is typed into ``VALUE`` first, unseen, so the command pasted as
+    shown asks for it instead of sending an unset variable.
     """
     if secret:
-        return f"printf '%s' \"$VALUE\" | python -m serving.config.manage set {key} --value-file -"
+        return (
+            f"read -rs VALUE; printf '%s' \"$VALUE\" | python -m serving.config.manage set {key} "
+            "--value-file -"
+        )
     return f"python -m serving.config.manage set {key} VALUE"
 
 

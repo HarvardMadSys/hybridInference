@@ -137,6 +137,67 @@ def test_set_reads_a_value_from_a_file_less_one_trailing_newline(store, tmp_path
     assert store.rows["MY_BOX_TOKEN"].value == "t0k3n\n"
 
 
+def test_set_drops_a_crlf_line_ending_too(store, tmp_path, monkeypatch) -> None:
+    """A file saved with Windows line endings stores no carriage return."""
+    path = tmp_path / "value"
+    path.write_bytes(b"t0k3n\r\n")
+
+    assert manage.main(["set", "MY_BOX_TOKEN", "--value-file", str(path)]) == 0
+    assert store.rows["MY_BOX_TOKEN"].value == "t0k3n"
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("smtp-hunter2\r\n"))
+    assert manage.main(["set", "SMTP_PASSWORD", "--value-file", "-"]) == 0
+    assert store.rows["SMTP_PASSWORD"].value == "smtp-hunter2"
+
+
+@pytest.mark.parametrize("text", ["", "\n", "\r\n", " \t\n"], ids=["empty", "lf", "crlf", "blank"])
+@pytest.mark.parametrize("source", ["stdin", "file"])
+def test_an_empty_value_file_is_refused_and_stores_nothing(
+    store, tmp_path, monkeypatch, capsys, text, source
+) -> None:
+    """An unset variable, an empty pipe or the wrong file never stores an empty secret."""
+    if source == "stdin":
+        monkeypatch.setattr("sys.stdin", io.StringIO(text))
+        path = "-"
+    else:
+        path = str(tmp_path / "value")
+        (tmp_path / "value").write_bytes(text.encode())
+
+    assert manage.main(["set", "SMTP_PASSWORD", "--value-file", path]) == 1
+
+    assert "SMTP_PASSWORD" not in store.rows
+    err = capsys.readouterr().err
+    assert "is empty or only whitespace; nothing was stored" in err
+    assert "`reset SMTP_PASSWORD` removes a stored value" in err
+
+
+def test_a_value_typed_at_a_terminal_is_not_shown(store, monkeypatch, capsys) -> None:
+    """Standard input that is a terminal is read without echo, not as an ordinary read."""
+
+    class Terminal(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+        def read(self, *_args) -> str:
+            raise AssertionError("a terminal is not read with echo")
+
+    prompts: list[str] = []
+
+    def typed(prompt: str) -> str:
+        prompts.append(prompt)
+        return "smtp-hunter2"
+
+    monkeypatch.setattr("sys.stdin", Terminal())
+    monkeypatch.setattr(manage.getpass, "getpass", typed)
+
+    assert manage.main(["set", "SMTP_PASSWORD", "--value-file", "-"]) == 0
+
+    assert store.rows["SMTP_PASSWORD"].value == "smtp-hunter2"
+    assert prompts == ["Value for SMTP_PASSWORD (not shown): "]
+    captured = capsys.readouterr()
+    assert "smtp-hunter2" not in captured.out + captured.err
+
+
 def test_an_unreadable_value_file_stores_nothing(store, tmp_path, capsys) -> None:
     missing = tmp_path / "missing"
 
@@ -169,7 +230,11 @@ def test_a_secret_given_as_an_argument_is_stored_with_a_warning(store, capsys, a
     assert store.rows[key].secret
     err = capsys.readouterr().err
     assert f"Warning: {key} is a secret" in err
-    assert f"| python -m serving.config.manage set {key} --value-file -" in err
+    # Pasted as shown, the command asks for the value rather than sending an unset one.
+    assert (
+        f"read -rs VALUE; printf '%s' \"$VALUE\" | python -m serving.config.manage set {key} "
+        "--value-file -"
+    ) in err
     assert "smtp-hunter2" not in err
 
 

@@ -804,21 +804,27 @@ msgstr "传给 `document` 的文件只导入一次，运行时不会读取它。
 
 #: ../developer/configuration.md:345
 msgid ""
-"Give `set` a secret on standard input with `--value-file -` (or a file "
-"with `--value-file PATH`), not as an argument: an argument is visible in "
-"the process list, on the host as well as in the container, and stays in "
-"shell history. One trailing newline is dropped. `read -rs` keeps the "
-"value off the screen, and `docker exec` needs `-i`, not `-it`, to pass "
-"the pipe through:"
+"Give `set` a secret on standard input with `--value-file -` (or a file with "
+"`--value-file PATH`), not as an argument: an argument is visible in the "
+"process list, on the host as well as in the container, and stays in shell "
+"history. One trailing line ending (LF or CRLF) is dropped, and an empty or "
+"blank value is refused, so an unset variable or an empty pipe stores "
+"nothing. `read -rs` keeps the value off the screen, and `docker exec` needs "
+"`-i`, not `-it`, to pass the pipe through:"
 msgstr ""
 "用 `--value-file -` 从标准输入把秘密值交给 `set`（或用 `--value-file PATH` "
 "从文件读取），不要作为参数传入：参数在进程列表中可见（宿主机和容器中都可见），并且会留在 shell "
-"历史里。末尾的一个换行符会被去掉。`read -rs` 让值不显示在屏幕上；`docker exec` 需要用 `-i` 而不是 "
+"历史里。末尾的一个行结束符（LF 或 CRLF）会被去掉；空值或只有空白的值会被拒绝，因此未设置的变量或空的管道不会保存任何内容。`read -rs` 让值不显示在屏幕上；`docker exec` 需要用 `-i` 而不是 "
 "`-it`，管道才能传进去："
 
 #: ../developer/configuration.md:357
-msgid "A secret given as an argument is still stored, with a warning."
-msgstr "以参数形式给出的秘密值仍会被保存，但会显示一条警告。"
+msgid ""
+"Without a pipe, on a terminal (`docker exec -it ... set KEY --value-file "
+"-`), `set` asks for the value and does not show it as it is typed. A secret "
+"given as an argument is still stored, with a warning."
+msgstr ""
+"不用管道、在终端上运行时（`docker exec -it ... set KEY --value-file -`），`set` "
+"会提示输入值，输入时不会显示。以参数形式给出的秘密值仍会被保存，但会显示一条警告。"
 
 #: ../developer/configuration.md:345
 msgid "Missing settings"
