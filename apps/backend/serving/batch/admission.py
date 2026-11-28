@@ -217,6 +217,12 @@ def limit_error(exc: BatchLimitExceeded) -> HTTPException:
             f"Too many unfinished batches: at most {exc.limit} may be queued or running at "
             "once; wait for one to finish or cancel one",
         )
+    if exc.kind == "batches_per_hour":
+        return HTTPException(
+            429,
+            f"Too many batches created: at most {exc.limit} may be created in an hour; "
+            "wait and try again",
+        )
     return HTTPException(
         429,
         f"Too many unfinished batch requests: you have {exc.current} and this batch adds "

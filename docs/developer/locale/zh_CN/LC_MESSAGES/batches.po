@@ -1452,6 +1452,20 @@ msgid "`BATCH_MAX_QUEUED_REQUESTS_PER_USER`"
 msgstr ""
 
 #: ../developer/batches.md:23
+msgid ""
+"Batches a user may create in any hour, finished and cancelled ones "
+"included"
+msgstr "每个用户在任意一小时内可创建的批次数，已结束和已取消的批次也计入"
+
+#: ../developer/batches.md:23
+msgid "60 (`429` above it)"
+msgstr "60（超过返回 `429`）"
+
+#: ../developer/batches.md:23
+msgid "`BATCH_MAX_CREATES_PER_HOUR`"
+msgstr ""
+
+#: ../developer/batches.md:23
 msgid "One line of an input file"
 msgstr "输入文件的一行"
 
@@ -1635,10 +1649,11 @@ msgstr ""
 
 #: ../developer/batches.md:23
 msgid ""
-"You have the most unfinished batches allowed, the batch would take your "
-"unfinished requests over their limit, your daily or monthly quota is used"
-" up, or the key has spent its own budget"
-msgstr "你的未完成批次已达上限、该批次会让你的未完成请求超过上限、你的每日或每月额度已用完，或这个 key 已用完它自己的预算"
+"You have the most unfinished batches allowed, you created the most "
+"batches allowed in the last hour, the batch would take your unfinished "
+"requests over their limit, your daily or monthly quota is used up, or the"
+" key has spent its own budget"
+msgstr "你的未完成批次已达上限、你在过去一小时内创建的批次已达上限、该批次会让你的未完成请求超过上限、你的每日或每月额度已用完，或这个 key 已用完它自己的预算"
 
 #: ../developer/batches.md:489
 msgid ""

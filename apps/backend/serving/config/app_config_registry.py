@@ -1322,6 +1322,17 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         default="100000",
         minimum=1,
     ),
+    ConfigEntry(
+        "BATCH_MAX_CREATES_PER_HOUR",
+        "batch",
+        "Batches one user may create in any hour, finished, cancelled and failed ones "
+        "included: a finished batch stops counting toward the other caps, but its "
+        "requests and results are kept for BATCH_RETENTION_DAYS. Another is refused "
+        "until the hour has passed.",
+        type="int",
+        default="60",
+        minimum=1,
+    ),
     *(
         ConfigEntry(
             f"BATCH_ROLE_CONCURRENCY_{role.upper()}",

@@ -609,6 +609,7 @@ async def create_batch(
         "idempotency": {"key": key, "digest": digest} if key else None,
         "max_active": config.max_active_per_user,
         "max_queued": config.max_queued_per_user,
+        "max_per_hour": config.max_creates_per_hour,
         "protocol_profile": version,
     }
     if file_mode:
@@ -758,6 +759,7 @@ async def retry_failed_batch(
         retention_seconds=config.retention_seconds,
         max_active=config.max_active_per_user,
         max_queued=config.max_queued_per_user,
+        max_per_hour=config.max_creates_per_hour,
     )
     logger.info(
         "Batch %s retried from %s: %d request(s) retried, %d skipped",

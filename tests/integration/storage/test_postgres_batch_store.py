@@ -24,6 +24,7 @@ from serving.storage.batch_store import (
     ACTIVE_BATCH_STATUSES,
     TERMINAL_BATCH_STATUSES,
     BatchDeleteInProgress,
+    BatchLimitExceeded,
     BatchOwnerUnavailable,
     BatchStore,
 )
@@ -1721,6 +1722,51 @@ async def test_a_batch_another_sweep_holds_is_skipped_for_the_next_one(pool, sto
 
 
 # -- deletes ---------------------------------------------------------------------
+
+
+async def test_the_hourly_create_cap_counts_batches_however_they_ended(pool, store):
+    """A finished batch stops counting as unfinished, but its requests stay stored."""
+    model = _model()
+
+    async def create(user: str = "alice") -> dict[str, Any]:
+        return await store.create_batch(
+            batch_id=f"batch_{uuid.uuid4().hex}",
+            user_id=user,
+            key_hash="key-hash",
+            endpoint=ENDPOINT,
+            model_ids=[model],
+            items=_items(model, 1),
+            metadata=None,
+            completion_window_seconds=3600,
+            max_active=10,
+            max_per_hour=2,
+        )
+
+    first, second = await create(), await create()
+    await _execute(
+        pool,
+        "UPDATE batch_jobs SET status = 'cancelled', cancelled_at = now() "
+        "WHERE id = ANY($1::text[])",
+        [first["id"], second["id"]],
+    )
+    with pytest.raises(BatchLimitExceeded) as refused:
+        await create()
+    assert (refused.value.kind, refused.value.limit, refused.value.current) == (
+        "batches_per_hour",
+        2,
+        2,
+    )
+    # Someone else is not held back, and an hour later the first stops counting.
+    await create(user="bob")
+    await _execute(
+        pool,
+        "UPDATE batch_jobs SET created_at = now() - interval '61 minutes' WHERE id = $1",
+        first["id"],
+    )
+    await create()
+    # A deleted batch no longer holds its requests: it stops counting once purged.
+    assert await store.delete_batch(second["id"], user_id="alice")
+    await create()
 
 
 async def test_delete_waits_until_live_items_finish(pool, store):

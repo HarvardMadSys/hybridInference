@@ -121,8 +121,8 @@ class BatchInputUnavailable(RuntimeError):
 class BatchLimitExceeded(RuntimeError):
     """Admission refused: a per-user cap would be exceeded.
 
-    ``kind`` is ``active_batches`` or ``queued_requests``; ``limit`` the cap and
-    ``current`` what the user already holds.
+    ``kind`` is ``active_batches``, ``queued_requests`` or ``batches_per_hour``;
+    ``limit`` the cap and ``current`` what the user already holds.
     """
 
     def __init__(self, kind: str, *, limit: int, current: int, requested: int = 0) -> None:
@@ -903,6 +903,7 @@ class BatchStore:
         idempotency: dict[str, str] | None = None,
         max_active: int | None = None,
         max_queued: int | None = None,
+        max_per_hour: int | None = None,
     ) -> dict[str, Any]:
         """Store a new batch and all of its items in one transaction.
 
@@ -936,6 +937,8 @@ class BatchStore:
                 ``Idempotency-Key``; checked again under the user's lock.
             max_active: The user's cap on unfinished batches, or None.
             max_queued: The user's cap on unfinished requests, or None.
+            max_per_hour: The user's cap on batches created in the last
+                hour, or None.
 
         Returns:
             The batch row. With ``idempotency``, when another create with the
@@ -992,6 +995,7 @@ class BatchStore:
                 max_active=max_active,
                 max_queued=max_queued,
                 requested=len(queued_records),
+                max_per_hour=max_per_hour,
             )
             if input_file_id is not None:
                 await self._pin_input(conn, input_file_id, user_id)
@@ -1150,6 +1154,7 @@ class BatchStore:
         max_active: int | None,
         max_queued: int | None,
         console: dict[str, Any],
+        max_per_hour: int | None = None,
     ) -> dict[str, Any]:
         """Store a console batch over its source file, adopting its stored-request copy.
 
@@ -1202,7 +1207,12 @@ class BatchStore:
             if replay is not None:
                 return replay
             await self._check_user_caps(
-                conn, user_id, max_active=max_active, max_queued=max_queued, requested=0
+                conn,
+                user_id,
+                max_active=max_active,
+                max_queued=max_queued,
+                requested=0,
+                max_per_hour=max_per_hour,
             )
             # Lock first, then judge the row in a statement of its own. A
             # ``FOR UPDATE`` that waited for another holder returns the row as
@@ -1567,8 +1577,24 @@ class BatchStore:
         max_active: int | None,
         max_queued: int | None,
         requested: int,
+        max_per_hour: int | None = None,
     ) -> None:
-        """Refuse admission past the user's caps; call under the admission lock."""
+        """Refuse admission past the user's caps; call under the admission lock.
+
+        The hourly cap counts every batch the user created in the last hour,
+        whatever its status: a finished or cancelled batch no longer counts as
+        unfinished, but its requests and results stay stored until its
+        retention ends. A deleted batch no longer holds them, and counts only
+        until it is purged.
+        """
+        if max_per_hour is not None:
+            created = await conn.fetchval(
+                "SELECT count(*) FROM batch_jobs "
+                "WHERE user_id = $1 AND created_at > now() - interval '1 hour'",
+                user_id,
+            )
+            if created >= max_per_hour:
+                raise BatchLimitExceeded("batches_per_hour", limit=max_per_hour, current=created)
         if max_active is None and max_queued is None:
             return
         usage = await conn.fetchrow(
