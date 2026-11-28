@@ -327,7 +327,7 @@ of ending the stream with a fake `[DONE]`.
 
 Application documents are validated JSON settings in `app_config`:
 `MODEL_CATALOG`, `ROUTING_POLICY`, `ALERT_RULES`, `SITE_CONFIGURATION`,
-`SITE_BRANDING` and `SSO_PROVIDERS`. No YAML file is read at runtime, and a
+`SITE_BRANDING`, `SSO_PROVIDERS` and `MCP_SERVERS`. No YAML file is read at runtime, and a
 fresh gateway serves no models until an administrator configures it.
 Credentials are secret settings that documents reference as `${NAME}`.
 

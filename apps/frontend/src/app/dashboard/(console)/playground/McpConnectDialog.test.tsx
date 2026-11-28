@@ -2,8 +2,15 @@
 import '@testing-library/jest-dom/vitest';
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { chooseOption } from '@/test-utils/select';
+
+const fetchWithAuth = vi.fn();
+
+vi.mock('@/lib/api/client', () => ({
+  fetchWithAuth: (...args: unknown[]) => fetchWithAuth(...args),
+  jsonOrThrow: async (resp: { json: () => Promise<unknown> }) => resp.json(),
+}));
 
 import { McpConnectDialog, mcpAuthHeaders } from './McpConnectDialog';
 
@@ -36,13 +43,23 @@ describe('mcpAuthHeaders', () => {
 });
 
 describe('McpConnectDialog', () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    fetchWithAuth.mockReset();
+  });
+
+  beforeEach(() => {
+    fetchWithAuth.mockResolvedValue({
+      ok: true,
+      json: async () => ({ servers: [] }),
+    });
+  });
 
   it('connects with the URL, description and a Bearer token', async () => {
     const onConnect = vi.fn().mockResolvedValue(undefined);
     render(<McpConnectDialog onClose={vi.fn()} onConnect={onConnect} />);
 
-    expect(screen.getByRole('dialog', { name: 'Connect to MCP Server' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Add MCP server' })).toBeInTheDocument();
     expect(screen.getByText('Only use MCP servers you trust and verify.')).toBeInTheDocument();
     const connect = screen.getByRole('button', { name: 'Connect' });
     expect(connect).toBeDisabled();
@@ -107,6 +124,41 @@ describe('McpConnectDialog', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('The MCP server request failed.');
     expect(screen.getByRole('button', { name: 'Connect' })).not.toBeDisabled();
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('connects a store server by id and keeps its credentials server-side', async () => {
+    fetchWithAuth.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        servers: [
+          {
+            id: 'docs',
+            name: 'Docs search',
+            description: 'Find pages',
+            url: 'https://docs.example/mcp',
+            docsUrl: '',
+          },
+        ],
+      }),
+    });
+    const onConnect = vi.fn().mockResolvedValue(undefined);
+    render(<McpConnectDialog onClose={vi.fn()} onConnect={onConnect} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Docs search/ }));
+
+    await waitFor(() =>
+      expect(onConnect).toHaveBeenCalledWith({
+        url: 'https://docs.example/mcp',
+        description: 'Find pages',
+        headers: {},
+        catalogId: 'docs',
+        name: 'Docs search',
+      }),
+    );
+    const call = fetchWithAuth.mock.calls.find(
+      (args) => args[1] === '/internal/playground/mcp/servers',
+    );
+    expect(call).toBeDefined();
   });
 
   it('closes on Escape and on Cancel', () => {

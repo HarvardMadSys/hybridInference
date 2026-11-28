@@ -161,6 +161,7 @@ function applyToolDeltas(current: ToolCall[] | undefined, deltas: ToolCallDelta[
       arguments: existing?.arguments ?? '',
       ...(existing?.mcpName ? { mcpName: existing.mcpName } : {}),
       ...(existing?.serverUrl ? { serverUrl: existing.serverUrl } : {}),
+      ...(existing?.serverCatalogId ? { serverCatalogId: existing.serverCatalogId } : {}),
       ...(existing?.serverHeaders ? { serverHeaders: existing.serverHeaders } : {}),
       ...(existing?.status ? { status: existing.status } : {}),
       ...(existing?.complete !== undefined ? { complete: existing.complete } : {}),
@@ -439,19 +440,20 @@ export default function PlaygroundPage() {
 
   /** Discover a server's tools and add it; rejects with the message the dialog shows. */
   const connectMcpServer = useCallback(
-    async ({ url, description, headers }: McpConnectRequest) => {
+    async ({ url, description, headers, catalogId, name }: McpConnectRequest) => {
       const resp = await fetchWithAuth(API_BASE, '/internal/playground/mcp/tools', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          url,
-          headers,
+          ...(catalogId ? { server_id: catalogId } : { url, headers }),
           connection_id: session?.connectionId ?? newConnectionId(),
         }),
       });
       const data = await jsonOrThrow<{ tools: McpTool[] }>(resp);
       const server: McpServer = {
         id: `mcp-${Date.now()}`,
+        ...(catalogId ? { catalogId } : {}),
+        ...(name ? { name } : {}),
         url,
         ...(description ? { description } : {}),
         headers,
@@ -525,8 +527,9 @@ export default function PlaygroundPage() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            url: call.serverUrl,
-            headers: call.serverHeaders ?? {},
+            ...(call.serverCatalogId
+              ? { server_id: call.serverCatalogId }
+              : { url: call.serverUrl, headers: call.serverHeaders ?? {} }),
             connection_id: connection?.connectionId ?? '',
             name: call.mcpName ?? call.name,
             arguments: args,
@@ -1447,6 +1450,11 @@ export default function PlaygroundPage() {
                   <div key={server.id} className="mt-2 rounded-lg border border-gray-200 p-2">
                     <div className="flex items-center justify-between gap-2">
                       <span className="min-w-0">
+                        {server.name && (
+                          <span className="block truncate text-[12px] font-medium text-gray-700">
+                            {server.name}
+                          </span>
+                        )}
                         <span
                           className="block truncate text-[11px] text-gray-600"
                           title={server.url}

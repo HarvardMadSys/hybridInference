@@ -667,6 +667,28 @@ def test_a_custom_entry_follows_its_name_unless_flagged() -> None:
     assert registry.custom_entry("ACME_REGION", secret=True).secret
 
 
+def test_mcp_store_keys_are_secret_before_an_entry_references_them() -> None:
+    entry = registry.custom_entry("MCP_CONTEXT7")
+    assert entry.secret is True
+    assert entry.category == "application"
+
+
+def test_mcp_header_references_are_credentials() -> None:
+    found = registry.discover_documents(
+        {},
+        {},
+        {},
+        None,
+        {"servers": [{"id": "docs", "headers": {"Authorization": "${MCP_CONTEXT7}"}}]},
+    )
+    assert found["MCP_CONTEXT7"].credential is True
+    assert found["MCP_CONTEXT7"].used_by == {"docs"}
+
+    entries = registry.build_entries(found, {}, {})
+    assert entries["MCP_CONTEXT7"].secret is True
+    assert entries["MCP_CONTEXT7"].restart_required is True
+
+
 def test_discovery_marks_references_from_credential_fields() -> None:
     models = _document(
         """

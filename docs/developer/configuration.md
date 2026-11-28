@@ -22,7 +22,7 @@ local tutorial (`make up DISTRIBUTION=example`) is a separate, opt-in fixture.
 
 ### Application documents
 
-Six settings hold validated JSON documents, with the same conditional saves,
+Seven settings hold validated JSON documents, with the same conditional saves,
 audit, security confirmation and backup as every other setting:
 
 | Setting | Holds | Applies |
@@ -33,6 +33,10 @@ audit, security confirmation and backup as every other setting:
 | `SITE_CONFIGURATION` | Public site identity and feature restrictions | On settings refresh |
 | `SITE_BRANDING` | Public branding | On settings refresh |
 | `SSO_PROVIDERS` | Identity providers for [single sign-on](sso.md) | On settings refresh |
+| `MCP_SERVERS` | MCP servers the Playground offers as a store | On settings refresh |
+
+`MCP_SERVERS` references `MCP_*` secret settings; a secret added or rotated after
+startup applies after a backend restart.
 
 **Admin → Routing → Models** edits `MODEL_CATALOG`; **Admin → Settings** edits
 each of the rest under the **Advanced settings** of the tab it configures:

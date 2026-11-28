@@ -53,6 +53,7 @@ TargetType = Literal[
     "signup_domain",
     "site_update",
     "broadcast",
+    "mcp_server",
     "user_tag",
 ]
 

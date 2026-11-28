@@ -652,7 +652,9 @@ async def test_a_free_user_cannot_use_the_proxy() -> None:
             "/internal/playground/mcp/tools",
             json={"url": "https://mcp.example/rpc", "connection_id": "conn-1"},
         )
+        listed = await client.get("/internal/playground/mcp/servers")
     assert response.status_code == 403
+    assert listed.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -721,3 +723,175 @@ async def test_chat_forwards_tools_and_tool_choice() -> None:
     payload = _public_chat_request(body)
     assert payload["tools"] == [{"type": "function", "function": {"name": "search"}}]
     assert payload["tool_choice"] == "auto"
+
+
+def _store_document():
+    from serving.config.mcp_servers import McpServersDocument
+
+    return McpServersDocument.model_validate(
+        {
+            "servers": [
+                {
+                    "id": "docs",
+                    "name": "Docs search",
+                    "description": "Find pages",
+                    "url": "https://docs.example/mcp/secret?token=hidden",
+                    "headers": {"Authorization": "${MCP_DOCS_TOKEN}"},
+                }
+            ]
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_store_lists_servers_without_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(playground_mcp, "_catalog", _store_document)
+    async with _client(INTERNAL) as client:
+        response = await client.get("/internal/playground/mcp/servers")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "servers": [
+            {
+                "id": "docs",
+                "name": "Docs search",
+                "description": "Find pages",
+                "url": "https://docs.example",
+                "docsUrl": "",
+                "iconUrl": "",
+            }
+        ]
+    }
+    assert "MCP_DOCS_TOKEN" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_a_store_server_resolves_its_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    async def _tools(url: str, headers: Any = None, **kwargs: Any) -> list[dict[str, Any]]:
+        seen.update(url=url, headers=headers, **kwargs)
+        return [{"name": "search"}]
+
+    from serving.servers import registry
+
+    monkeypatch.setattr(playground_mcp, "_catalog", _store_document)
+    monkeypatch.setattr(registry, "resolve_reference", lambda name: "secret-value")
+    monkeypatch.setattr(mcp_client, "list_tools", _tools)
+    async with _client(INTERNAL) as client:
+        response = await client.post(
+            "/internal/playground/mcp/tools",
+            json={"server_id": "docs", "connection_id": "conn-1"},
+        )
+
+    assert response.status_code == 200
+    assert seen["url"] == "https://docs.example/mcp/secret?token=hidden"
+    assert seen["headers"] == {"Authorization": "secret-value"}
+    assert seen["scope"] == "u-internal:conn-1"
+
+
+@pytest.mark.asyncio
+async def test_a_store_server_with_an_unset_secret_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from serving.servers import registry
+
+    called = False
+
+    async def _tools(_url: str, _headers: Any = None, **_kwargs: Any) -> list[dict[str, Any]]:
+        nonlocal called
+        called = True
+        return []
+
+    monkeypatch.setattr(playground_mcp, "_catalog", _store_document)
+    monkeypatch.setattr(registry, "resolve_reference", lambda name: None)
+    monkeypatch.setattr(mcp_client, "list_tools", _tools)
+    async with _client(INTERNAL) as client:
+        response = await client.post(
+            "/internal/playground/mcp/tools",
+            json={"server_id": "docs", "connection_id": "conn-1"},
+        )
+
+    assert response.status_code == 503
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_store_server_is_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(playground_mcp, "_catalog", _store_document)
+    async with _client(INTERNAL) as client:
+        response = await client.post(
+            "/internal/playground/mcp/tools",
+            json={"server_id": "missing", "connection_id": "conn-1"},
+        )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_a_request_names_either_a_url_or_a_store_server() -> None:
+    async with _client(INTERNAL) as client:
+        response = await client.post(
+            "/internal/playground/mcp/tools",
+            json={
+                "url": "https://mcp.example/rpc",
+                "server_id": "docs",
+                "connection_id": "conn-1",
+            },
+        )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_store_is_empty_and_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    from serving.config import documents
+
+    monkeypatch.setattr(documents, "get", lambda _kind: {"servers": [{"id": "Bad"}]})
+    async with _client(INTERNAL) as client:
+        listed = await client.get("/internal/playground/mcp/servers")
+        tools = await client.post(
+            "/internal/playground/mcp/tools",
+            json={"server_id": "docs", "connection_id": "conn-1"},
+        )
+
+    assert listed.status_code == 200
+    assert listed.json() == {"servers": []}
+    assert tools.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_by_server_id_resolves_the_store_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    async def _call(
+        url: str,
+        name: str,
+        arguments: dict[str, Any],
+        headers: Any = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        seen.update(url=url, name=name, headers=headers, **kwargs)
+        return {"content": "42", "isError": False}
+
+    from serving.servers import registry
+
+    monkeypatch.setattr(playground_mcp, "_catalog", _store_document)
+    monkeypatch.setattr(registry, "resolve_reference", lambda name: "secret-value")
+    monkeypatch.setattr(mcp_client, "call_tool", _call)
+    async with _client(INTERNAL) as client:
+        response = await client.post(
+            "/internal/playground/mcp/call",
+            json={
+                "server_id": "docs",
+                "connection_id": "conn-1",
+                "name": "search",
+                "arguments": {},
+            },
+        )
+
+    assert response.status_code == 200
+    assert seen["url"] == "https://docs.example/mcp/secret?token=hidden"
+    assert seen["headers"] == {"Authorization": "secret-value"}

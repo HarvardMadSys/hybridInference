@@ -377,6 +377,14 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         one_time=True,
         validator=_document_validator("SSO_PROVIDERS"),
     ),
+    ConfigEntry(
+        "MCP_SERVERS",
+        "application",
+        "MCP server store as JSON. Each entry offers a connection target in the playground; "
+        "header values reference separate MCP_* secret settings as ${MCP_NAME}. Omit for an empty store.",
+        type="text",
+        validator=_document_validator("MCP_SERVERS"),
+    ),
     # --- general -----------------------------------------------------------
     _setting(
         "base_url",
@@ -2145,15 +2153,19 @@ def numbered_key_entry(key: str) -> ConfigEntry | None:
 def custom_entry(key: str, *, secret: bool = False) -> ConfigEntry:
     """Return the entry for an administrator-added variable.
 
-    It is secret when *secret* says so or when its name looks like a
-    credential's (:func:`is_secret_name`); a flag can add secrecy, never take
-    the name's away.
+    It is secret when *secret* says so, when it is an ``MCP_*`` store
+    credential, or when its name looks like a credential's
+    (:func:`is_secret_name`); a flag can add secrecy, never take the name's
+    away.
     """
+    mcp_store = key.upper().startswith("MCP_")
     return ConfigEntry(
         key,
-        "providers",
-        "Added by an administrator for a reference in the model registry.",
-        secret=secret or is_secret_name(key),
+        "application" if mcp_store else "providers",
+        "Added by an administrator for the Playground MCP server store."
+        if mcp_store
+        else "Added by an administrator for a reference in the model registry.",
+        secret=secret or mcp_store or is_secret_name(key),
         restart_required=True,
         origin="custom",
     )
@@ -2294,8 +2306,24 @@ def _discover_sso(data: Any, found: dict[str, DiscoveredReference]) -> None:
             _note(found, key, "security").single_sign_on = True
 
 
+def _discover_mcp(data: Any, found: dict[str, DiscoveredReference]) -> None:
+    """Every header reference is a credential, whatever its name looks like."""
+    servers = data.get("servers") if isinstance(data, dict) else None
+    if not isinstance(servers, list):
+        return
+    for server in servers:
+        if not isinstance(server, dict):
+            continue
+        headers = server.get("headers")
+        if not isinstance(headers, dict):
+            continue
+        used_by = [str(server.get("id") or "MCP_SERVERS")]
+        for key in _references(headers):
+            _note(found, key, "application", used_by).credential = True
+
+
 def discover_documents(
-    models: Any, routing: Any, alerts: Any, sso: Any = None
+    models: Any, routing: Any, alerts: Any, sso: Any = None, mcp: Any = None
 ) -> dict[str, DiscoveredReference]:
     """Discover settings referenced by parsed database application documents."""
     found: dict[str, DiscoveredReference] = {}
@@ -2303,6 +2331,7 @@ def discover_documents(
     _discover_routing(routing, found)
     _discover_alerts(alerts, found)
     _discover_sso(sso, found)
+    _discover_mcp(mcp, found)
     for data in (models, routing, alerts, sso):
         for key in _credential_references(data):
             if key in found:

@@ -157,7 +157,7 @@ picking example models or a provider.
 
 | Configuration | Owner |
 |---|---|
-| Model catalog, optional routing policy, alert rules, site identity and branding, single sign-on providers | `app_config`: `MODEL_CATALOG`, `ROUTING_POLICY`, `ALERT_RULES`, `SITE_CONFIGURATION`, `SITE_BRANDING`, `SSO_PROVIDERS`, as validated JSON |
+| Model catalog, optional routing policy, alert rules, site identity and branding, single sign-on providers, Playground MCP server store | `app_config`: `MODEL_CATALOG`, `ROUTING_POLICY`, `ALERT_RULES`, `SITE_CONFIGURATION`, `SITE_BRANDING`, `SSO_PROVIDERS`, `MCP_SERVERS`, as validated JSON |
 | Provider keys, live routes, weights and model overrides | Admin Providers/Routing and the operational store |
 | Database connection and infrastructure wiring | `.env` and Docker Compose; persistent lifecycle choices in `.ops.env` |
 

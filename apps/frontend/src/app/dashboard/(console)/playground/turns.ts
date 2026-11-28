@@ -28,6 +28,8 @@ export interface ToolCall {
   /** False until the turn ends without a stop or error. */
   complete?: boolean;
   serverUrl?: string;
+  /** Set for a store server: the gateway resolves its address and credentials. */
+  serverCatalogId?: string;
   serverHeaders?: Record<string, string>;
   status?: 'running' | 'done' | 'error';
   result?: string;

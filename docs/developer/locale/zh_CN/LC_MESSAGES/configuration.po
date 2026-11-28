@@ -95,9 +95,9 @@ msgstr "应用文档"
 
 #: ../developer/configuration.md:25
 msgid ""
-"Six settings hold validated JSON documents, with the same conditional "
+"Seven settings hold validated JSON documents, with the same conditional "
 "saves, audit, security confirmation and backup as every other setting:"
-msgstr "有六个设置项保存经过校验的 JSON 文档，它们与其他所有设置项一样，支持条件保存、审计、安全确认和备份："
+msgstr "有七个设置项保存经过校验的 JSON 文档，它们与其他所有设置项一样，支持条件保存、审计、安全确认和备份："
 
 #: ../developer/configuration.md
 msgid "Setting"
@@ -930,8 +930,23 @@ msgstr ""
 "`SMS_PROVIDER=tencent`。在该模块变为可选之前就使用腾讯云的部署，升级时要把它加进去；设置项保持不变。"
 
 #: ../developer/configuration.md
+#: ../developer/configuration.md
+msgid "`MCP_SERVERS`"
+msgstr "`MCP_SERVERS`"
+
+#: ../developer/configuration.md
+msgid "MCP servers the Playground offers as a store"
+msgstr "Playground 以商店形式提供的 MCP 服务器"
+
+#: ../developer/configuration.md
 msgid "For"
 msgstr "用途"
+
+#: ../developer/configuration.md
+msgid ""
+"`MCP_SERVERS` references `MCP_*` secret settings; a secret added or rotated "
+"after startup applies after a backend restart."
+msgstr "`MCP_SERVERS` 引用 `MCP_*` 秘密设置；在启动后新增或轮换的秘密设置会在后端重启后生效。"
 
 #: ../developer/configuration.md
 msgid "Both"

@@ -25,6 +25,7 @@ DOCUMENT_KEYS = {
     "distribution": "SITE_CONFIGURATION",
     "branding": "SITE_BRANDING",
     "sso": "SSO_PROVIDERS",
+    "mcp": "MCP_SERVERS",
 }
 KEY_KINDS = {key: kind for kind, key in DOCUMENT_KEYS.items()}
 _REFERENCE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
@@ -36,6 +37,7 @@ _TITLES = {
     "distribution": "site configuration",
     "branding": "site branding",
     "sso": "single sign-on providers document",
+    "mcp": "MCP servers document",
 }
 
 
@@ -238,6 +240,10 @@ def _check(kind: str, value: dict[str, Any]) -> None:
         from serving.config.sso import SsoProvidersDocument
 
         SsoProvidersDocument.model_validate(value)
+    elif kind == "mcp":
+        from serving.config.mcp_servers import McpServersDocument
+
+        McpServersDocument.model_validate(value)
 
 
 def separate_secrets(
