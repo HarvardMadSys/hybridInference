@@ -1,6 +1,5 @@
 """Simple health-check loop for deployment endpoints."""
 
-# mypy: disable-error-code=no-any-unimported
 from __future__ import annotations
 
 import asyncio

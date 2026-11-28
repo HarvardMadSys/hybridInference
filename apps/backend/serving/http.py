@@ -1,4 +1,3 @@
-# mypy: disable-error-code=no-any-unimported
 """Lightweight shared async HTTP client for adapters.
 
 Provides a shared aiohttp session with convenience helpers for JSON
