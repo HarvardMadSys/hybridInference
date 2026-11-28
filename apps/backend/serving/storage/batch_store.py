@@ -118,6 +118,21 @@ class BatchInputUnavailable(RuntimeError):
         super().__init__(f"File {file_id!r} is not available.")
 
 
+class BatchItemUnstorable(ValueError):
+    """An item's request cannot be encoded for its JSONB column.
+
+    ``json.dumps`` recurses once per level of nesting, so a request nested
+    deeper than the interpreter allows raises ``RecursionError`` there. This
+    names the item (and its input line, for a file batch) so admission can
+    refuse that request instead of failing with an unexpected exception.
+    """
+
+    def __init__(self, custom_id: str, line_no: int | None) -> None:
+        self.custom_id = custom_id
+        self.line_no = line_no
+        super().__init__(f"The request of {custom_id!r} is nested too deeply to store.")
+
+
 class BatchLimitExceeded(RuntimeError):
     """Admission refused: a per-user cap would be exceeded.
 
@@ -948,6 +963,8 @@ class BatchStore:
             BatchLimitExceeded: A per-user cap would be exceeded.
             IdempotencyConflict: The key was used for a different request.
             IdempotencyTombstoned: The key's batch was deleted.
+            BatchItemUnstorable: An item's request is nested too deeply to
+                store; nothing was stored.
             ValueError: Two items share a ``custom_id``, or one holds a NUL
                 character (which a text column cannot store).
         """
@@ -969,7 +986,7 @@ class BatchStore:
                 batch_id,
                 item["custom_id"],
                 item["model_id"],
-                _dump_json(item["request"]),
+                _dump_request(item),
                 item.get("line_no"),
             )
             for item in items
@@ -1488,7 +1505,7 @@ class BatchStore:
                 batch_id,
                 item["custom_id"],
                 item["model_id"],
-                _dump_json(item["request"]),
+                _dump_request(item),
                 item.get("line_no"),
                 "failed",
                 _dump_json(item["error"]),
@@ -3035,6 +3052,8 @@ class BatchStore:
             longer ``validating``): nothing was staged.
 
         Raises:
+            BatchItemUnstorable: An item's request is nested too deeply to
+                store; nothing was staged.
             BatchLimitExceeded: The user's queued-request cap would be exceeded.
         """
         records = [
@@ -3042,7 +3061,7 @@ class BatchStore:
                 batch_id,
                 item["custom_id"],
                 item["model_id"],
-                _dump_json(item["request"]),
+                _dump_request(item),
                 item.get("line_no"),
             )
             for item in items
@@ -3832,6 +3851,18 @@ def _dump_json(value: Any) -> str | None:
     return encoded
 
 
+def _dump_request(item: dict[str, Any]) -> str | None:
+    """Encode an item's request with :func:`_dump_json`, naming the item it fails for.
+
+    Raises:
+        BatchItemUnstorable: The request is nested too deeply to encode.
+    """
+    try:
+        return _dump_json(item["request"])
+    except RecursionError:
+        raise BatchItemUnstorable(item["custom_id"], item.get("line_no")) from None
+
+
 def _load_json(value: Any) -> Any:
     """Decode ordinary JSONB and the lossless NUL envelope.
 
@@ -3860,13 +3891,23 @@ def _load_json(value: Any) -> Any:
 
 
 def _contains_nul(value: Any) -> bool:
-    """Return whether a JSON-compatible value contains U+0000 in a key or value."""
-    if isinstance(value, str):
-        return "\x00" in value
-    if isinstance(value, dict):
-        return any(_contains_nul(key) or _contains_nul(item) for key, item in value.items())
-    if isinstance(value, (list, tuple)):
-        return any(_contains_nul(item) for item in value)
+    """Return whether a JSON-compatible value contains U+0000 in a key or value.
+
+    The walk keeps its own stack rather than recursing: a client decides how
+    deeply its request nests, and a recursive walk raised ``RecursionError`` at
+    a few hundred levels -- well within what ``json.loads`` accepts.
+    """
+    stack = [value]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, str):
+            if "\x00" in current:
+                return True
+        elif isinstance(current, dict):
+            stack.extend(current.keys())
+            stack.extend(current.values())
+        elif isinstance(current, (list, tuple)):
+            stack.extend(current)
     return False
 
 
@@ -3898,6 +3939,7 @@ __all__ = [
     "TERMINAL_BATCH_STATUSES",
     "BatchDeleteInProgress",
     "BatchInputUnavailable",
+    "BatchItemUnstorable",
     "BatchLimitExceeded",
     "BatchOwnerUnavailable",
     "BatchStore",

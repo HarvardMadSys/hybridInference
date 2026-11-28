@@ -467,6 +467,16 @@ async def admit_item(target: str, body: Any, ctx: AdmissionContext) -> str:
     Raises:
         ItemRejected: The item cannot run as written.
     """
+    try:
+        return await _admit_body(target, body, ctx)
+    except RecursionError:
+        # A check that recurses into a body nested past the interpreter's
+        # limit. The request is at fault: refused like any other, rather than
+        # raised to the validator, which would try the batch again forever.
+        raise ItemRejected("invalid_request", "body is nested too deeply", param="body") from None
+
+
+async def _admit_body(target: str, body: Any, ctx: AdmissionContext) -> str:
     if not isinstance(body, dict):
         raise ItemRejected("invalid_request", "body must be a JSON object")
     check_limits = {

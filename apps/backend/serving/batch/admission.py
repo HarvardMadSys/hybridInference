@@ -41,6 +41,7 @@ from fastapi import HTTPException, Request
 
 from serving.storage.batch_store import (
     BatchInputUnavailable,
+    BatchItemUnstorable,
     BatchLimitExceeded,
     BatchOwnerUnavailable,
     IdempotencyConflict,
@@ -243,6 +244,10 @@ async def create(store: Any, **kwargs: Any) -> dict[str, Any]:
         raise conflict_error() from None
     except IdempotencyTombstoned:
         raise gone_error() from None
+    except BatchItemUnstorable as exc:
+        raise HTTPException(
+            400, f"custom_id {exc.custom_id!r}: body is nested too deeply to store"
+        ) from None
     except ValueError as exc:
         # The store refuses what it cannot hold (a repeated or unstorable
         # custom_id). Validation catches those first; this keeps a 400, with

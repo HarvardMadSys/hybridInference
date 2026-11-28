@@ -37,7 +37,7 @@ from serving.batch.admission import finite_json_float, has_invalid_unicode
 from serving.batch.profiles import PROFILES
 from serving.batch.targets import TARGET_URLS, AdmissionContext, ItemRejected, admit_item
 from serving.servers.auth import StoredKeyRejected, authenticate_stored_key
-from serving.storage.batch_store import TARGET_MESSAGES, BatchLimitExceeded
+from serving.storage.batch_store import TARGET_MESSAGES, BatchItemUnstorable, BatchLimitExceeded
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -355,6 +355,8 @@ async def validate_file_batch(
                 "line": None,
             }
         )
+    except BatchItemUnstorable as exc:
+        errors.append(_unstorable(exc))
     except BatchLimitExceeded as exc:
         errors.append(
             {
@@ -378,6 +380,8 @@ async def validate_file_batch(
         try:
             if not await flush():
                 return await _abort(store, batch_id, worker_id)
+        except BatchItemUnstorable as exc:
+            errors.append(_unstorable(exc))
         except BatchLimitExceeded as exc:
             errors.append(
                 {
@@ -409,6 +413,16 @@ async def validate_file_batch(
         extra={"event": "batch_validated"},
     )
     return "published"
+
+
+def _unstorable(exc: BatchItemUnstorable) -> dict[str, Any]:
+    """The error entry for a line whose request the store could not encode."""
+    return {
+        "code": "invalid_json_line",
+        "message": f"Line {exc.line_no}: body is nested too deeply to store.",
+        "param": "body",
+        "line": exc.line_no,
+    }
 
 
 async def _abort(store: Any, batch_id: str, worker_id: str) -> str:
