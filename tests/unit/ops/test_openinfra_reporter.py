@@ -722,3 +722,137 @@ def test_readable_engine_logs_give_request_events_and_say_nothing(monkeypatch, c
     stats = reporter.summarize_engine_logs(1001, 60)
     assert [r["input_len"] for r in stats["requests"]] == [812]
     assert capsys.readouterr().err == ""
+
+
+# --- On-demand engines: idle, not offline, while their proxy stopped them ----
+
+_EMBED = {
+    "url": "http://127.0.0.1:18012/metrics",
+    "id": "node-a-embed",
+    "name": "bge-m3",
+    "engine": "vllm",
+    "endpoint": "http://node-a:18012",
+    "gpu_indexes": [1],
+    "on_demand_url": "http://127.0.0.1:8001/v1/models",
+    "on_demand_model": "BAAI/bge-m3",
+}
+
+
+def _listing(*models: tuple[str, str, bool | None]) -> str:
+    """A FreeInference idle proxy's ``GET /v1/models``; an ``idle`` of None leaves the key out."""
+    data = [
+        {"id": i, "object": "model", "owned_by": "sglang", "status": s}
+        | ({} if idle is None else {"idle": idle})
+        for i, s, idle in models
+    ]
+    return json.dumps({"object": "list", "data": data})
+
+
+_REFUSED = reporter.urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+
+
+def _proxy_answers(listing: str | None, engine_error: Exception = _REFUSED):
+    """A fetch at which the engine fails with *engine_error* and its proxy, given a listing, answers."""
+
+    def fetch(url: str) -> str:
+        if url == _EMBED["on_demand_url"] and listing is not None:
+            return listing
+        raise engine_error
+
+    return fetch
+
+
+@pytest.mark.parametrize(
+    ("listing", "idle"),
+    [
+        (_listing(("BAAI/bge-m3", "not_loaded", True)), True),
+        # Only `not_loaded`: a proxy says that of a model starting, failing to
+        # start or dead as well, so it is no word that the engine was idled.
+        (_listing(("BAAI/bge-m3", "not_loaded", None)), False),
+        # A failed start or a dead backend, as the proxy itself says.
+        (_listing(("BAAI/bge-m3", "not_loaded", False)), False),
+        (_listing(("BAAI/bge-m3", "loaded", False)), False),
+        # Another proxy's models: nothing said of this engine.
+        (_listing(("other/model", "not_loaded", True)), False),
+        # The proxy does not answer either.
+        (None, False),
+        ("not json", False),
+    ],
+)
+def test_an_on_demand_engine_is_idle_only_while_its_proxy_says_so(monkeypatch, listing, idle):
+    monkeypatch.setattr(reporter, "fetch", _proxy_answers(listing))
+    assert reporter.on_demand_idle(_EMBED) is idle
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        reporter.urllib.error.URLError(TimeoutError("timed out")),
+        TimeoutError("timed out"),
+        reporter.urllib.error.HTTPError("http://127.0.0.1:18012/metrics", 503, "busy", {}, None),
+    ],
+)
+def test_an_engine_something_still_listens_for_is_never_idle(monkeypatch, error):
+    """Only a refused connection says the port is shut; its proxy is not even asked otherwise."""
+    asked: list[str] = []
+
+    def fetch(url: str) -> str:
+        if url == _EMBED["on_demand_url"]:
+            asked.append(url)
+            return _listing(("BAAI/bge-m3", "not_loaded", True))
+        raise error
+
+    monkeypatch.setattr(reporter, "fetch", fetch)
+    monkeypatch.setattr(reporter, "read_host", lambda: {})
+    monkeypatch.setattr(reporter, "scrape_dcgm", lambda: {})
+    args = argparse.Namespace(skip_gpu=True, skip_sglang=False, once=True)
+    assert reporter.scrape(args, [_EMBED])["sglang"] == {}
+    assert asked == []
+
+
+def test_an_engine_without_a_proxy_is_never_idle(monkeypatch):
+    monkeypatch.setattr(reporter, "fetch", lambda url: pytest.fail(f"asked {url}"))
+    plain = {key: value for key, value in _EMBED.items() if not key.startswith("on_demand")}
+    assert reporter.on_demand_idle(plain) is False
+
+
+def test_a_stopped_on_demand_engine_is_posted_and_stored_idle(monkeypatch):
+    monkeypatch.setattr(
+        reporter, "fetch", _proxy_answers(_listing(("BAAI/bge-m3", "not_loaded", True)))
+    )
+    monkeypatch.setattr(reporter, "read_host", lambda: {})
+    monkeypatch.setattr(reporter, "scrape_dcgm", lambda: {})
+    monkeypatch.setattr(reporter, "_log_holds", {})
+    sent: list[dict] = []
+    monkeypatch.setattr(
+        reporter, "post", lambda url, token, body: sent.append(body) or {"ok": True}
+    )
+    args = argparse.Namespace(
+        node_id="node-a",
+        dashboard="https://gateway.example.org",
+        token="t",
+        skip_gpu=True,
+        skip_sglang=False,
+        once=True,
+    )
+    scraped = reporter.scrape(args, [_EMBED])["sglang"]
+    assert scraped == {"node-a-embed": {"target": _EMBED, "idle": True}}
+
+    prev = reporter.flush(args, {"id": "node-a"}, [], scraped, None, {}, 1.0, True)
+    # Its counters start again with it: no reading for the next rates.
+    assert prev == {}
+    (engine,) = sent[-1]["sglang"]
+    assert engine["metrics"] == {}
+    assert engine["server"] == {
+        "id": "node-a-embed",
+        "node_id": "node-a",
+        "name": "bge-m3",
+        "endpoint": "http://node-a:18012",
+        "model_name": "BAAI/bge-m3",
+        "gpu_indexes": "1",
+        "engine": "vllm",
+        "state": "idle",
+    }
+    write = SnapshotWrite(parse_snapshot(json.loads(json.dumps(sent[-1]))), 1_800_000_000_000)
+    assert [row[8] for row in write.engines] == ["idle"]
+    assert write.engine_samples == []

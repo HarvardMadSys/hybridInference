@@ -14,7 +14,9 @@ A reporter posts one body per flush::
 ``ts`` is when the reporter took the snapshot, by its own clock, and may be
 left out. ``sglang`` holds every engine on the host, SGLang and vLLM alike
 (``engine`` says which), and may also be a single object. An engine sends ``metrics``,
-raw ``prometheus`` text, or both. Parsing is lenient, as the dashboard's
+raw ``prometheus`` text, or both; one its proxy stopped for want of requests,
+to start it again on the next, says ``"state": "idle"`` in ``server`` and needs
+neither. Parsing is lenient, as the dashboard's
 original Worker was, so a reporter of any age keeps working: a number may
 arrive as a numeric string, an unknown field is ignored, and a field of the
 wrong type is dropped rather than refused. Only the body's shape is refused
@@ -88,6 +90,9 @@ class ServerIngest:
     endpoint: str | None = None
     gpu_indexes: str | None = None
     engine: str | None = None
+    #: ``"idle"`` while the proxy that starts the engine on demand has stopped
+    #: it; None otherwise, whatever else the reporter sent.
+    state: str | None = None
 
 
 @dataclass(frozen=True)
@@ -206,6 +211,7 @@ def _parse_server(raw: Any) -> ServerIngest:
         endpoint=optional_string(obj.get("endpoint")),
         gpu_indexes=optional_string(obj.get("gpu_indexes")),
         engine=optional_string(obj.get("engine")),
+        state="idle" if optional_string(obj.get("state")) == "idle" else None,
     )
 
 

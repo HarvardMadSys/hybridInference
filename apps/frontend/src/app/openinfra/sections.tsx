@@ -89,6 +89,8 @@ export function statusLabel(status: OpenInfraStatus, f: InfraFormat): string {
       return t('openinfra.status.online', 'online');
     case 'degraded':
       return t('openinfra.status.degraded', 'degraded');
+    case 'idle':
+      return t('openinfra.status.idle', 'idle');
     case 'offline':
       return t('openinfra.status.offline', 'offline');
     default:

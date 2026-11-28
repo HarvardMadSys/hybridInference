@@ -15,8 +15,10 @@ samples' rates over their spacing.
 
 **Status.** A snapshot stores ``online`` or ``degraded`` (a GPU at 85 °C or
 with ECC errors; an engine with more than 2000 queued requests or its SMs at
-95 %). Whatever is silent for :data:`STALE_MS` is read as ``offline``, at the
-moment it is read; nothing has to mark it.
+95 %), or ``idle`` for an engine the proxy that starts it on demand has
+stopped, which the reporter says (``server.state``): such an engine keeps no
+figures and no sample. Whatever is silent for :data:`STALE_MS` is read as
+``offline``, at the moment it is read; nothing has to mark it.
 
 **Rollups.** :func:`refresh_rollups` recomputes, for each grain, the buckets
 from the newest one that has a row (and always the one before it, for a late
@@ -265,11 +267,24 @@ def _engine_rows(engine: EngineIngest) -> list[tuple[ServerIngest, str, dict[str
     one more entry. Entries of the same model merge, a parsed value winning
     over one read from the text. A server that reports more than one model
     gets a row per model, ``<server id>:<model>``; otherwise its row is the
-    server id.
+    server id. An idle engine yields its server id's row, with no figures.
 
     Raises:
-        IngestError: The engine sent neither metrics nor Prometheus text.
+        IngestError: The engine sent neither metrics nor Prometheus text, nor
+            said it is idle.
     """
+    if engine.server.state == "idle":
+        # Its server id's row: an idle engine is one model's, as the reporter's
+        # on-demand targets are. Rows split per model come only from raw
+        # Prometheus text naming several models, which no idle engine sends; a
+        # server reported that way would gain a bare row while idle.
+        return [
+            (
+                engine.server,
+                engine.server.id,
+                {**dict.fromkeys(ENGINE_METRICS), "model_name": engine.server.model_name},
+            )
+        ]
     listed: list[dict[str, Any]] = []
     if engine.prometheus:
         listed.extend(engine_metrics(engine.prometheus))
@@ -392,6 +407,7 @@ class SnapshotWrite:
                 )
 
         for engine in snapshot.engines:
+            idle = engine.server.state == "idle"
             for server, row_id, metrics in _engine_rows(engine):
                 self.engines.append(
                     (
@@ -403,14 +419,17 @@ class SnapshotWrite:
                         server.engine,
                         server.gpu_indexes,
                         server.id,
-                        _engine_status(metrics),
+                        "idle" if idle else _engine_status(metrics),
                         *(metrics.get(name) for name in ENGINE_METRICS),
                         now,
                     )
                 )
-                self.engine_samples.append(
-                    (row_id, bucket, at, *(metrics.get(name) for name in ENGINE_METRICS))
-                )
+                # An idle engine has no figures to keep: its history shows the
+                # gap it always has, and the served totals count nothing for it.
+                if not idle:
+                    self.engine_samples.append(
+                        (row_id, bucket, at, *(metrics.get(name) for name in ENGINE_METRICS))
+                    )
             model = engine.server.model_name or (engine.metrics or {}).get("model_name")
             for event in engine.requests:
                 ts = _request_time(event["ts"], taken, shift)
@@ -439,6 +458,7 @@ class SnapshotWrite:
                 await conn.executemany(_INSERT_GPU_SAMPLE, self.gpu_samples)
             if self.engines:
                 await conn.executemany(_UPSERT_ENGINE, self.engines)
+            if self.engine_samples:
                 await conn.executemany(_INSERT_ENGINE_SAMPLE, self.engine_samples)
             if self.requests:
                 await conn.executemany(_INSERT_REQUEST, self.requests)
