@@ -155,4 +155,3 @@ tracker <https://github.com/HarvardMadSys/hybridInference/issues>`_.
 
    contributing
    translations
-   console-translations

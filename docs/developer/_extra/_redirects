@@ -59,6 +59,10 @@
 /about.html                            /                                 301
 /zh_CN/about                           /zh_CN/                           301
 /zh_CN/about.html                      /zh_CN/                           301
+/console-translations                  /translations                     301
+/console-translations.html             /translations                     301
+/zh_CN/console-translations            /zh_CN/translations               301
+/zh_CN/console-translations.html       /zh_CN/translations               301
 
 # Distribution UI guides consolidated (#1465), now the Site UI Modules page
 /site-ui                               /site-ui-modules                  301
