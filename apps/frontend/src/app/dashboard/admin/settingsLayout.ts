@@ -21,6 +21,7 @@ export type SettingsTabKey =
   | 'common'
   | 'access'
   | 'providers'
+  | 'routewise'
   | 'application'
   | 'batch'
   | 'alerts'
@@ -48,6 +49,7 @@ export type SettingsPanelKey =
   | 'usage-insights'
   | 'signup-policy'
   | 'batch-concurrency'
+  | 'routewise'
   | 'alert-snooze'
   | 'alert-mutes'
   | 'add-variable'
@@ -99,6 +101,13 @@ export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
     label: 'Providers & Routing',
     // Added variables are listed under Providers, so the form that adds one follows it.
     blocks: [config('providers'), panel('add-variable'), config('routing')],
+  },
+  {
+    key: 'routewise',
+    label: 'RouteWise',
+    description:
+      'Per-model RouteWise parameters and probes, for the models whose routing policy is RouteWise. The routes and routing policy themselves are on Admin → Routing.',
+    blocks: [panel('routewise')],
   },
   {
     key: 'application',

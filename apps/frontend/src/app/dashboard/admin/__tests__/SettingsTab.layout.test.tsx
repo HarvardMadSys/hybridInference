@@ -180,6 +180,7 @@ vi.mock('@/lib/api/admin', async () => {
     listSignupAllowedDomains: vi.fn(async () => ({ domains: [] })),
     listModelVisibility: vi.fn(async () => ({ models: [] })),
     listModelConcurrency: vi.fn(async () => ({ models: [] })),
+    listProviderRoutes: vi.fn(async () => ({ provider_options: [], routes: [] })),
     listBatchModelLimits: vi.fn(async () => ({ default_concurrency: 4, models: [] })),
     listRuntimeSettings: vi.fn(async () => ({
       settings: [
@@ -339,6 +340,7 @@ describe('Admin → Settings sub-tabs', () => {
       'Common',
       'Access',
       'Providers & Routing, 1 missing',
+      'RouteWise',
       'Application',
       'Batch',
       'Alerts',
@@ -374,6 +376,10 @@ describe('Admin → Settings sub-tabs', () => {
       await openSettingsTab(new RegExp(`^${tab.replace(/[&]/g, '\\$&')}`));
       expect(sectionsShown(), tab).toEqual(sections);
     }
+
+    // RouteWise has its own sub-tab; with no RouteWise model it shows its empty state.
+    await openSettingsTab('RouteWise');
+    expect(await screen.findByText('No RouteWise models available.')).toBeVisible();
 
     // Each runtime setting is in its topic's group.
     await openSettingsTab('Common');
@@ -612,7 +618,7 @@ describe('Admin → Settings sub-tabs', () => {
       'does not support database-backed configuration',
     );
     // Sub-tabs that only edit the configuration have nothing to show.
-    expectTabs(['Common', 'Access', 'Batch', 'Alerts', 'Setup']);
+    expectTabs(['Common', 'Access', 'RouteWise', 'Batch', 'Alerts', 'Setup']);
     expect(sectionsShown()).toEqual([
       'Access Controls',
       'Per-User Concurrency',

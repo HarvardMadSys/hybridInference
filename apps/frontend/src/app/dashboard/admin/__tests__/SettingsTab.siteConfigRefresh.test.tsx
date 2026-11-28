@@ -20,6 +20,7 @@ vi.mock('@/lib/api/admin', async () => {
     // reach the real gateway (see vitest.setup.ts).
     listModelVisibility: vi.fn(async () => ({ models: [] })),
     listModelConcurrency: vi.fn(async () => ({ models: [] })),
+    listProviderRoutes: vi.fn(async () => ({ provider_options: [], routes: [] })),
     listBatchModelLimits: vi.fn(async () => ({ default_concurrency: 4, models: [] })),
     listRoutewiseSettings: vi.fn(async () => ({ settings: [] })),
     listRouteWeights: vi.fn(async () => []),

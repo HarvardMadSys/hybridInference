@@ -66,6 +66,24 @@ describe('settingsLayout', () => {
     expect(named).not.toContain(MODEL_CATALOG_CATEGORY);
   });
 
+  it('gives RouteWise its own sub-tab, after Providers & Routing', () => {
+    expect(SETTINGS_TABS.map((tab) => tab.key)).toEqual([
+      'common',
+      'access',
+      'providers',
+      'routewise',
+      'application',
+      'batch',
+      'alerts',
+      'setup',
+      'backup',
+    ]);
+    const routewise = SETTINGS_TABS.find((tab) => tab.key === 'routewise');
+    expect(routewise?.label).toBe('RouteWise');
+    expect(routewise?.blocks).toEqual([{ kind: 'panel', panel: 'routewise' }]);
+    expect(settingsTabKey('routewise')).toBe('routewise');
+  });
+
   it('opens on Common, which holds every runtime setting, and keeps Setup and Backup last', () => {
     expect(SETTINGS_TABS[0].key).toBe('common');
     expect(DEFAULT_SETTINGS_TAB).toBe('common');
