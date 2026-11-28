@@ -1,10 +1,21 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
+import {
+  ReauthPassword,
+  useConfirmsWithoutPassword,
+} from '@/components/features/admin/confirm/ReauthPassword';
+import { useSpendAdminSso } from '@/components/features/admin/confirm/adminSsoReauth';
 import { createServiceAccount, type CreateServiceAccountResponse } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 
-/** Create a service account: a key-only account with no browser sign-in. */
+/**
+ * Create a service account: a key-only account with no browser sign-in.
+ *
+ * Issuing its key is a guarded change, confirmed the way every other one is
+ * (`ReauthPassword`): a code from the administrator's authenticator app, a
+ * fresh sign-in at their identity provider, or else their password.
+ */
 export function ServiceAccountCreate({
   onClose,
   onCreated,
@@ -15,7 +26,10 @@ export function ServiceAccountCreate({
   const [name, setName] = useState('');
   const [loginName, setLoginName] = useState('');
   const [role, setRole] = useState<'free' | 'pro' | 'internal'>('free');
-  const [password, setPassword] = useState('');
+  // Kept by ReauthPassword, which owns the field (or shows none at all).
+  const password = useRef('');
+  const withoutPassword = useConfirmsWithoutPassword();
+  const spendSso = useSpendAdminSso();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<CreateServiceAccountResponse | null>(null);
@@ -23,15 +37,23 @@ export function ServiceAccountCreate({
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    const given = password.current;
+    if (!given && !withoutPassword) {
+      setError('Enter your password to create this account.');
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      const result = await createServiceAccount({
-        name: name.trim(),
-        login_name: loginName.trim() || undefined,
-        role,
-        password: password || undefined,
-      });
+      const result = await spendSso(() =>
+        createServiceAccount({
+          name: name.trim(),
+          login_name: loginName.trim() || undefined,
+          role,
+          password: given || undefined,
+        }),
+      );
+      password.current = '';
       setCreated(result);
       onCreated();
     } catch (err) {
@@ -120,16 +142,9 @@ export function ServiceAccountCreate({
                 <option value="internal">internal</option>
               </select>
             </label>
-            <label className="mt-3 block text-[13px] font-medium text-gray-700">
-              Your admin password
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="current-password"
-                className="mt-1 w-full rounded-md border border-gray-300 px-2 py-1.5 text-[13px]"
-              />
-            </label>
+            <div className="mt-3">
+              <ReauthPassword valueRef={password} label="Your admin password" />
+            </div>
             {error && (
               <div className="mt-3 rounded-md border border-red-200 bg-red-50 p-2 text-[13px] text-red-700">
                 {error}

@@ -18,7 +18,7 @@ from serving.auth import sso_accounts
 from serving.auth.two_factor import admin_two_factor_required, has_authenticator
 from serving.config.provider_labels import resolve_display_names
 from serving.config.settings import ROLE_RANK, get_settings
-from serving.exceptions import HardDeleteStateChanged
+from serving.exceptions import HardDeleteStateChanged, LoginNameTakenError
 from serving.model_access import (
     DISABLED_MODELS_PREFERENCE_KEY,
     get_disabled_models_from_preferences,
@@ -72,6 +72,7 @@ from serving.schemas_admin import (
     UsersSummaryResponse,
     UserTurnAverages,
 )
+from serving.schemas_auth import normalize_login_name
 from serving.servers.auth import generate_api_key, hash_api_key, log_admin_action
 from serving.servers.deps import (
     AppServices,
@@ -559,6 +560,30 @@ async def admin_get_user_cost_history(
     )
 
 
+#: What a login name derived from a one- or two-character display name is
+#: padded with to reach the three-character minimum ("CI" becomes "ci-svc").
+_DERIVED_LOGIN_NAME_SUFFIX = "-svc"
+#: The longest login name :func:`normalize_login_name` accepts.
+_LOGIN_NAME_MAX_LENGTH = 32
+
+
+def derive_service_login_name(name: str) -> str | None:
+    """A valid login name made from display name *name*, or None when it has nothing to use.
+
+    Runs of anything but ASCII letters and digits become one ``-``; the result
+    is cut to the 32-character maximum and, below the 3-character minimum,
+    padded with :data:`_DERIVED_LOGIN_NAME_SUFFIX`. None for a name with no
+    ASCII letter or digit at all (the caller asks for a login name then).
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    slug = slug[:_LOGIN_NAME_MAX_LENGTH].rstrip("-")
+    if not slug:
+        return None
+    if len(slug) < 3:
+        slug += _DERIVED_LOGIN_NAME_SUFFIX
+    return normalize_login_name(slug)
+
+
 @router.post("/service-accounts", response_model=CreateServiceAccountResponse, status_code=201)
 async def create_service_account(
     request: Request,
@@ -571,8 +596,15 @@ async def create_service_account(
     A service account is a user row with no email and an unknowable random
     password, flagged ``is_service_account``: browser sign-in refuses it and
     it acts only through its API keys. Minting a lasting credential for a
-    new account needs the signed-in administrator's ``password`` (400 when
-    missing or wrong, 403 for the admin token, as for key creation).
+    new account needs the signed-in administrator to confirm it
+    (:func:`confirm_administrator`: a ``password``, an authenticator code or a
+    fresh single sign-on; 400 when missing or wrong, 403 for the admin token,
+    as for key creation).
+
+    ``login_name`` is checked like every login name (422); without one it is
+    derived from ``name``. 409 when another account holds it, including one
+    created concurrently. The account and its key are written together or
+    not at all.
 
     Returns the plaintext API key ONLY ONCE. Save it immediately.
 
@@ -581,6 +613,19 @@ async def create_service_account(
     if not op_store:
         raise HTTPException(500, "Database not configured")
 
+    # Settled before the administrator is asked to confirm, so a bad or taken
+    # name does not spend a password attempt or a single sign-on confirmation.
+    # The schema has already checked a given login name (normalize_login_name).
+    login_name = payload.login_name or derive_service_login_name(payload.name)
+    if login_name is None:
+        raise HTTPException(
+            422,
+            f"The name '{payload.name.strip()}' has no letters or digits to make a login name "
+            "from; enter a login name (3-32 letters, digits, '.', '_' or '-').",
+        )
+    if await op_store.get_user_by_login_name(login_name):
+        raise HTTPException(409, f"Login name '{login_name}' is already in use")
+
     await confirm_administrator(
         request,
         op_store,
@@ -588,44 +633,31 @@ async def create_service_account(
         action=f"Creating service account {payload.name}",
     )
 
-    login_name = (payload.login_name or "").strip().lower()
-    if not login_name:
-        login_name = re.sub(r"[^a-z0-9]+", "-", payload.name.strip().lower()).strip("-")
-    if not login_name:
-        raise HTTPException(422, "name does not yield a login name; pass login_name")
-    if await op_store.get_user_by_login_name(login_name):
-        raise HTTPException(409, f"Login name '{login_name}' is already in use")
-
     user_id = generate_ulid()
     # Nobody knows this password: it exists only so the row satisfies the
     # same shape as a person's, and sign-in refuses service accounts anyway.
     password_hash = await password_utils.hash_password_async(secrets.token_urlsafe(32))
-    await op_store.create_user(
-        user_id=user_id,
-        email=None,
-        password_hash=password_hash,
-        user_name=payload.name.strip(),
-        login_name=login_name,
-        status="active",
-        is_service_account=True,
-    )
-    if payload.role != "free":
-        await op_store.update_user_fields(user_id, role=payload.role)
-
-    project = await op_store.get_default_project(user_id)
     plaintext_key = generate_api_key()
-    await op_store.create_key(
-        key_hash=hash_api_key(plaintext_key),
-        key_prefix=plaintext_key[:12],
-        user_id=user_id,
-        user_name=payload.name.strip(),
-        quota_daily_cost_usd=payload.quota_daily_cost_usd,
-        quota_monthly_cost_usd=payload.quota_monthly_cost_usd,
-        expires_at=payload.expires_at,
-        notes=payload.notes,
-        project_id=project["id"] if project is not None else None,
-        **native_quota_updates(payload),
-    )
+    # The account, its role, its Default project and its key in one
+    # transaction: a failure leaves nothing to block a retry, and of two
+    # concurrent creates of one name the unique index lets one through.
+    try:
+        await op_store.create_service_account(
+            user_id=user_id,
+            login_name=login_name,
+            password_hash=password_hash,
+            user_name=payload.name.strip(),
+            role=payload.role,
+            key_hash=hash_api_key(plaintext_key),
+            key_prefix=plaintext_key[:12],
+            quota_daily_cost_usd=payload.quota_daily_cost_usd,
+            quota_monthly_cost_usd=payload.quota_monthly_cost_usd,
+            expires_at=payload.expires_at,
+            notes=payload.notes,
+            **native_quota_updates(payload),
+        )
+    except LoginNameTakenError as exc:
+        raise HTTPException(409, f"Login name '{login_name}' is already in use") from exc
 
     await log_admin_action(
         op_store,

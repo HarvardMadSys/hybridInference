@@ -41,6 +41,8 @@ PHONE = "+8613800138000"
 ACCOUNT_INSERTS = {
     "serving.storage.postgres_operational.PostgresOperationalStore.create_user",
     "serving.storage.postgres_operational.PostgresOperationalStore.create_first_admin",
+    # An administrator's service account, written with its first key.
+    "serving.storage.postgres_operational.PostgresOperationalStore.create_service_account",
     "serving.storage.phone_auth.PostgresPhoneAuthMixin.create_phone_user",
     # A first single sign-on creates the account with its identity.
     "serving.storage.sso.PostgresSsoMixin.create_sso_user",

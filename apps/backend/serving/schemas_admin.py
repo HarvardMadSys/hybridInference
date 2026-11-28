@@ -28,7 +28,7 @@ from serving.accounting_api import (
 from serving.adapters.reasoning_effort import stored_effort_map, validate_effort_map
 from serving.config.settings import ROUTE_TYPE_ORDER
 from serving.schemas import CONTENT_BLOCK_MODALITY
-from serving.schemas_auth import SsoIdentity
+from serving.schemas_auth import SsoIdentity, normalize_login_name
 from serving.user_tags import (
     MAX_WINDOW_HOURS as USER_TAG_MAX_WINDOW_HOURS,
     TAG_NAME_PATTERN as USER_TAG_NAME_PATTERN,
@@ -89,9 +89,9 @@ class CreateServiceAccountRequest(MoneyInput):  # type: ignore[no-any-unimported
     )
     login_name: str | None = Field(
         None,
-        min_length=1,
-        max_length=255,
-        description="Unique login slug; derived from the name when omitted",
+        max_length=64,
+        description="Unique login name (3-32 letters, digits, '.', '_' or '-', starting "
+        "with a letter or digit; stored lowercased); derived from the name when omitted",
     )
     role: Literal["free", "pro", "internal"] = Field(
         "free", description="Account role; service accounts never hold the admin role"
@@ -109,6 +109,14 @@ class CreateServiceAccountRequest(MoneyInput):  # type: ignore[no-any-unimported
         description="The signed-in administrator's password: creating an account "
         "with a live credential always needs it (403 for the admin token)",
     )
+
+    @field_validator("login_name")
+    @classmethod
+    def _check_login_name(cls, value: str | None) -> str | None:
+        """The same rule as every other login name; blank means "derive it"."""
+        if value is None or not value.strip():
+            return None
+        return normalize_login_name(value)
 
 
 class CreateServiceAccountResponse(MoneyResponse):  # type: ignore[no-any-unimported]

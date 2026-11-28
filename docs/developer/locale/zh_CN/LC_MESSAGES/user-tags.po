@@ -183,6 +183,12 @@ msgstr "一个请求就是 `api_logs` 中归属于该账号的一行。批量任
 
 #: ../developer/user-tags.md:63
 msgid ""
+"Service accounts are never matched: they are unattended by design. To put"
+" a tag's limits on one, add the tag to it by hand."
+msgstr "服务账号从不被匹配：它们本来就是无人值守的。若要让某个标签的限制作用于服务账号，请手动给它加上该标签。"
+
+#: ../developer/user-tags.md:65
+msgid ""
 "`unattended` defaults to *every one of the last 12 hours* (12 of 12). Use"
 " *Preview matches* in the editor to see who a different rule would match "
 "before saving it. For example, *20 of 24* catches fewer heavy human "
@@ -192,7 +198,7 @@ msgstr ""
 "matches* 查看另一条规则会匹配哪些账号。例如，*24 中取 20* 会少误伤一些重度使用的真人，*6 中取 1* "
 "会给最近六小时内活跃过的所有账号打上标签。"
 
-#: ../developer/user-tags.md:67
+#: ../developer/user-tags.md:69
 msgid ""
 "One run happens at a time across all replicas: the job holds a PostgreSQL"
 " advisory lock, and a replica that can't take it skips its turn. **Run "
@@ -201,11 +207,11 @@ msgstr ""
 "所有副本中同一时间只有一次运行：任务持有一个 PostgreSQL advisory lock，拿不到锁的副本跳过这一轮。控制台中的 **Run "
 "rule now** 会立即运行一个标签的规则。"
 
-#: ../developer/user-tags.md:71
+#: ../developer/user-tags.md:73
 msgid "An automatic tag stays until an administrator removes it"
 msgstr "自动标签会一直保留，直到管理员移除"
 
-#: ../developer/user-tags.md:73
+#: ../developer/user-tags.md:75
 msgid ""
 "The rule only adds members. If it also removed them, a quota or allowlist"
 " on the tag would undo itself: requests refused by the tag's own limits "
@@ -213,7 +219,7 @@ msgid ""
 "lose the tag and its limits, and start again."
 msgstr "规则只添加成员。如果它也移除成员，标签上的配额或白名单就会自我失效：被标签自身限制拒绝的请求不会写入日志，所以被标签拦下的账号很快就不再匹配规则，从而失去标签和它的限制，然后又重新开始。"
 
-#: ../developer/user-tags.md:78
+#: ../developer/user-tags.md:80
 msgid ""
 "When you remove a tag that has a rule, the membership is kept as "
 "**dismissed**. A dismissed membership applies no limits. The rule gives "
@@ -227,11 +233,11 @@ msgstr ""
 "**dismissed**（已撤销）。已撤销的成员关系不施加任何限制。只有账号在*撤销之后*的请求再次匹配规则时，规则才会把标签加回来，所以误判的账号不会被重新打上标签，除非这种行为再次出现。再移除这个撤销标记（带删除线标签上的"
 " ×）会忘掉这次撤销。手动添加标签会把任何成员关系变成手动的。"
 
-#: ../developer/user-tags.md:85
+#: ../developer/user-tags.md:87
 msgid "Admin API"
 msgstr "管理 API"
 
-#: ../developer/user-tags.md:87
+#: ../developer/user-tags.md:89
 msgid ""
 "All endpoints require admin authentication (a console session or "
 "`ADMIN_TOKEN`). Every write is recorded in the audit log under a "
@@ -338,7 +344,7 @@ msgstr "`POST /admin/user-tags/{name}/detect`"
 msgid "Run a tag's rule now (409 when the rule is off)."
 msgstr "立即运行标签的规则（规则关闭时返回 409）。"
 
-#: ../developer/user-tags.md:103
+#: ../developer/user-tags.md:105
 msgid ""
 "The tag fields are `quota_daily_cost`, `quota_monthly_cost` (with "
 "`currency`), `max_concurrent_requests`, `allowed_models` (canonical model"
@@ -350,7 +356,7 @@ msgstr ""
 "id；别名会存为它所指向的模型）、`auto_enabled`、`auto_window_hours` 和 "
 "`auto_min_active_hours`。"
 
-#: ../developer/user-tags.md:108
+#: ../developer/user-tags.md:110
 #, python-brace-format
 msgid ""
 "`GET /admin/users` accepts `tag=<name>` to list only the users a tag "
@@ -362,21 +368,21 @@ msgstr ""
 "/admin/users/{id}/detail` 返回账号的 `tag_memberships`（含已撤销的）和 "
 "`tag_limits`，即其生效标签合并后的限制。"
 
-#: ../developer/user-tags.md:113
+#: ../developer/user-tags.md:115
 msgid "Storage"
 msgstr "存储"
 
-#: ../developer/user-tags.md:115
+#: ../developer/user-tags.md:117
 msgid "Migration `0023_user_tags` adds two tables and seeds `unattended`:"
 msgstr "迁移 `0023_user_tags` 新增两张表，并预置 `unattended`："
 
-#: ../developer/user-tags.md:117
+#: ../developer/user-tags.md:119
 msgid ""
 "`user_tags`: one row per tag with its limits (`NULL` sets none) and rule;"
 " `system` marks a built-in tag."
 msgstr "`user_tags`：每个标签一行，包含它的限制（`NULL` 表示不设）和规则；`system` 标记内置标签。"
 
-#: ../developer/user-tags.md:119
+#: ../developer/user-tags.md:121
 msgid ""
 "`user_tag_members`: `(user_id, tag)` with `source` (`manual`, `auto` or "
 "`dismissed`), `assigned_at` and `assigned_by` (the administrator's user "
@@ -387,7 +393,7 @@ msgstr ""
 "`dismissed`）、`assigned_at` 和 `assigned_by`（管理员的用户 id；由规则添加时为 "
 "`NULL`）。账号或标签被删除时，相应的成员关系随之删除。"
 
-#: ../developer/user-tags.md:123
+#: ../developer/user-tags.md:125
 msgid ""
 "The auth lookups join an account's applied tags in the same query and "
 "fold their limits into the row "
@@ -396,3 +402,4 @@ msgid ""
 msgstr ""
 "认证查询在同一条 SQL "
 "中关联账号的生效标签，并把它们的限制合并进结果行（[`serving.user_tags`](https://github.com/HarvardMadSys/hybridInference/blob/dev/apps/backend/serving/user_tags.py)）。对没有标签的账号，代价是一次主键探查。"
+
