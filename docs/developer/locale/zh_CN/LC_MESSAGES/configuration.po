@@ -530,6 +530,16 @@ msgstr ""
 
 #: ../developer/configuration.md:226
 msgid ""
+"Saving a route whose base URL would send the provider's stored keys to a "
+"host, port or scheme none of its routes uses asks you to confirm first, "
+"with a code, your password or a new single sign-on, as for the other "
+"guarded changes. See [Routing](routing.md#api-endpoints)."
+msgstr ""
+"如果保存路由时，其 base URL 会把提供方保存的密钥发送到该提供方的路由都未使用过的主机、端口或协议，控制台会先请你确认：用验证码、密码或重新单点登录，与其他受保护的修改相同。见[路由](routing.md#api-"
+"endpoints)。"
+
+#: ../developer/configuration.md:226
+msgid ""
 "The **Reasoning effort levels** summary shows the route's client choices "
 "and where they come from. **Advanced mapping** changes what each public "
 "level sends upstream, and **Use default effort settings** clears the "

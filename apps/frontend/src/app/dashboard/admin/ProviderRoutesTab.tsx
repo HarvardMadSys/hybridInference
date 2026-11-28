@@ -3,7 +3,7 @@
 import { useRouter } from 'next/navigation';
 
 import { useMoney } from '@/lib/hooks/useMoney';
-import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import {
   OffloadRoute,
@@ -47,6 +47,11 @@ import {
 } from '@/lib/api/admin';
 import type { Change } from '@/components/features/admin/confirm/ChangeList';
 import { EditBar } from '@/components/features/admin/confirm/EditBar';
+import {
+  ReauthPassword,
+  useConfirmsWithoutPassword,
+} from '@/components/features/admin/confirm/ReauthPassword';
+import { useSpendAdminSso } from '@/components/features/admin/confirm/adminSsoReauth';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { writeEach } from '@/components/features/admin/confirm/writeEach';
 import { APIError, getErrorMessage } from '@/lib/utils/errors';
@@ -182,6 +187,15 @@ const MODEL_ROLE_OPTIONS: Array<{ value: Role; label: string }> = [
 // edit, disable or delete was refused.
 function routeErrorMessage(err: unknown) {
   return err instanceof APIError && err.message ? err.message : getErrorMessage(err);
+}
+
+/**
+ * Whether the gateway asks the administrator to confirm a route save: it would
+ * send the provider's stored keys to a host, port or scheme none of the
+ * provider's routes uses.
+ */
+function asksForConfirmation(err: unknown) {
+  return err instanceof APIError && err.code === 'ADMIN_CONFIRMATION_REQUIRED';
 }
 
 function routeKey(route: Pick<ProviderRoute, 'model_id' | 'route_id'>) {
@@ -716,6 +730,11 @@ export function ProviderRoutesTab() {
   const [keysLoading, setKeysLoading] = useState(false);
   const [createKeysLoading, setCreateKeysLoading] = useState(false);
   const confirmation = useConfirmAction();
+  // A save that sends a provider's keys to a new host is confirmed in a
+  // dialog; the password typed there, if any.
+  const savePassword = useRef('');
+  const confirmsWithoutPassword = useConfirmsWithoutPassword();
+  const spendSso = useSpendAdminSso();
   // Fixed weights, the routing policy and a concurrency limit are edited in
   // place; Save writes their drafts.
   const [weightsError, setWeightsError] = useState<string | null>(null);
@@ -1697,6 +1716,63 @@ export function ProviderRoutesTab() {
     setEditingRoute(null);
   };
 
+  /**
+   * Save a route, with `save(password)` making the write. When the gateway asks
+   * the administrator to confirm -- the route would send the provider's stored
+   * keys to a host, port or scheme none of its routes uses -- the dialog asks
+   * for the password, or the code or single sign-on the account confirms with,
+   * and saves again with the answer; its failures stay in the dialog. Resolves
+   * to why the first save failed otherwise, as `confirmation.perform` does.
+   */
+  const performRouteSave = async (
+    save: (password?: string) => Promise<void>,
+    baseUrl: string,
+  ): Promise<string | null> => {
+    let asked = false;
+    const failure = await confirmation.perform({
+      run: async () => {
+        try {
+          await save();
+        } catch (err) {
+          if (!asksForConfirmation(err)) throw new Error(routeErrorMessage(err));
+          asked = true;
+        }
+      },
+    });
+    if (!asked) return failure;
+    savePassword.current = '';
+    confirmation.request({
+      title: "Send the provider's keys to a new address?",
+      confirmLabel: 'Save route',
+      busyLabel: 'Saving…',
+      body: (
+        <div className="space-y-2">
+          <p>
+            Saving checks the route at <code className="text-[12px]">{baseUrl}</code>, which sends
+            the provider&apos;s stored API keys to a host, port or scheme none of its routes uses
+            yet.
+            {confirmsWithoutPassword ? null : ' Confirm with your password.'}
+          </p>
+          <ReauthPassword valueRef={savePassword} label="Your password" />
+        </div>
+      ),
+      run: async () => {
+        const given = savePassword.current;
+        if (!given && !confirmsWithoutPassword) {
+          throw new Error('Enter your password to save this route.');
+        }
+        try {
+          // An empty password: a code or a fresh single sign-on confirms instead.
+          await spendSso(() => save(given));
+        } catch (err) {
+          throw new Error(routeErrorMessage(err));
+        }
+        savePassword.current = '';
+      },
+    });
+    return null;
+  };
+
   const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!editingRoute || !editRoutePayload) return;
@@ -1725,34 +1801,33 @@ export function ProviderRoutesTab() {
     // One request saves everything: a target edit carries the capability
     // change, and the gateway restores both if either fails. The editor closes once
     // the route is saved; a failure keeps it, and its drafts, open.
-    const failure = await confirmation.perform({
-      run: async () => {
-        let updated: ProviderRoute;
-        try {
-          if (connectionChanged) {
-            const body = { ...payload, ...capabilitySave };
-            updated =
-              target.source === 'runtime'
-                ? await updateProviderRouteCandidate(target.model_id, target.route_id, body)
-                : await updateProviderRoute(target.model_id, target.route_id, body);
-          } else if (capabilitySave && 'capabilities' in capabilitySave) {
-            updated = await updateProviderRouteCapabilities(
-              target.model_id,
-              target.route_id,
-              capabilitySave.capabilities,
-            );
-          } else {
-            updated = await resetProviderRouteCapabilities(target.model_id, target.route_id);
-          }
-        } catch (err) {
-          throw new Error(routeErrorMessage(err));
-        }
-        if (updated.endpoint_id !== target.endpoint_id) refreshAfterRouteChange();
-        updateRoute(updated);
-        setEditingRoute(null);
-        toast.success('Provider route updated');
-      },
-    });
+    const save = async (password?: string) => {
+      let updated: ProviderRoute;
+      if (connectionChanged) {
+        const body = {
+          ...payload,
+          ...capabilitySave,
+          ...(password === undefined ? {} : { password }),
+        };
+        updated =
+          target.source === 'runtime'
+            ? await updateProviderRouteCandidate(target.model_id, target.route_id, body)
+            : await updateProviderRoute(target.model_id, target.route_id, body);
+      } else if (capabilitySave && 'capabilities' in capabilitySave) {
+        updated = await updateProviderRouteCapabilities(
+          target.model_id,
+          target.route_id,
+          capabilitySave.capabilities,
+        );
+      } else {
+        updated = await resetProviderRouteCapabilities(target.model_id, target.route_id);
+      }
+      if (updated.endpoint_id !== target.endpoint_id) refreshAfterRouteChange();
+      updateRoute(updated);
+      setEditingRoute(null);
+      toast.success('Provider route updated');
+    };
+    const failure = await performRouteSave(save, payload.base_url);
     if (failure) setRouteEditError(failure);
   };
 
@@ -1795,23 +1870,23 @@ export function ProviderRoutesTab() {
     const targetModel = selectedModel;
     setCreateError(null);
     // The form closes once the model or route exists; a failure keeps it, and its values, open.
-    const failure = await confirmation.perform({
-      run: async () => {
-        const created = modelPayload
-          ? await createProviderRouteModel(modelPayload)
-          : await createProviderRouteCandidate(targetModel, routePayload);
-        setRoutes((current) => [...current, created]);
-        if (model) {
-          router.refresh();
-          setSelectedModel(created.model_id);
-          resetInlineDrafts();
-        }
-        setAddingRoute(false);
-        setCreatingModel(false);
-        setVerifiedCreateSignature(null);
-        toast.success(model ? 'Model created' : 'Provider route added');
-      },
-    });
+    const save = async (password?: string) => {
+      const confirmed = password === undefined ? {} : { password };
+      const created = modelPayload
+        ? await createProviderRouteModel({ ...modelPayload, ...confirmed })
+        : await createProviderRouteCandidate(targetModel, { ...routePayload, ...confirmed });
+      setRoutes((current) => [...current, created]);
+      if (model) {
+        router.refresh();
+        setSelectedModel(created.model_id);
+        resetInlineDrafts();
+      }
+      setAddingRoute(false);
+      setCreatingModel(false);
+      setVerifiedCreateSignature(null);
+      toast.success(model ? 'Model created' : 'Provider route added');
+    };
+    const failure = await performRouteSave(save, routePayload.base_url);
     if (failure) setCreateError(failure);
   };
 

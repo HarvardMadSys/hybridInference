@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import quote, urlparse, urlsplit, urlunsplit
 
 import aiohttp
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from routing.endpoints import endpoint_id_for_adapter, route_id_for_adapter
 from routing.model_router_registry import StaleRouterStrategyChangeError
@@ -44,6 +44,7 @@ from serving.config.settings import (
     get_settings,
     parse_provider_route_types,
 )
+from serving.exceptions import AdminConfirmationRequiredError
 from serving.http import UpstreamRedirectRefused, probe_session
 from serving.model_effort_capabilities import adapter_effort_domain
 from serving.schemas_admin import (
@@ -73,12 +74,14 @@ from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
     AppServices,
     get_admin_audit_actor,
+    get_admin_user_id,
     get_operational_store,
     get_services,
     model_router_transition_lock,
     verify_admin_access,
 )
 from serving.servers.registry import _make_adapter, _make_provider_id, parse_openrouter_kind
+from serving.servers.routers.admin.reauthentication import confirm_administrator
 from serving.servers.routewise_compat import (
     EnvelopeNotCalibratedError,
     RouteWiseRouter,
@@ -3970,36 +3973,127 @@ async def _verify_provider_route(update: PreparedRouteUpdate | PreparedRouteCand
         raise HTTPException(status_code=400, detail=detail) from exc
 
 
-def _url_host(url: str | None) -> str | None:
-    """The lower-cased host of *url*, without a trailing dot; None when it names none."""
+#: The port a base URL's scheme connects to when it names none.
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+#: Where a request goes: its scheme, lower-cased host and port.
+_Origin = tuple[str, str, int]
+
+
+def _url_origin(url: str | None) -> _Origin | None:
+    """Where *url* sends a request: its scheme, its host and the port it connects to.
+
+    The host is lower-cased, without a trailing dot, and the port is the
+    scheme's own when *url* names none. A URL without a scheme is taken as
+    https, as a saved base URL is (:func:`_normalize_base_url`). None when
+    *url* names no host, a malformed port or another scheme.
+    """
     if not url:
         return None
     try:
-        host = urlparse(url if "://" in url else f"https://{url.lstrip('/')}").hostname
+        parsed = urlparse(url if "://" in url else f"https://{url.lstrip('/')}")
+        port = parsed.port
     except ValueError:
         return None
-    return host.rstrip(".").lower() if host else None
+    default_port = _DEFAULT_PORTS.get(parsed.scheme)
+    if not parsed.hostname or default_port is None:
+        return None
+    return (
+        parsed.scheme,
+        parsed.hostname.rstrip(".").lower(),
+        default_port if port is None else port,
+    )
 
 
-def _hosts_given_keys(prepared: PreparedRouteUpdate | PreparedRouteCandidate) -> set[str]:
-    """The hosts the gateway already sends *prepared*'s keys to.
+def _origin_text(origin: _Origin) -> str:
+    """*origin* as a URL prefix, its port left out when it is the scheme's own."""
+    scheme, host, port = origin
+    shown = f"[{host}]" if ":" in host else host
+    return f"{scheme}://{shown}" if port == _DEFAULT_PORTS[scheme] else f"{scheme}://{shown}:{port}"
 
-    The provider's own host, its default base URL (which a deployment's
-    ``*_BASE_URL`` setting or a custom provider's definition sets), and the host
-    of every live route that draws on the same provider's keys.
+
+def _origins_given_keys(prepared: PreparedRouteUpdate | PreparedRouteCandidate) -> set[_Origin]:
+    """Where the gateway already sends *prepared*'s keys: scheme, host and port.
+
+    The provider's own default base URL (which a deployment's ``*_BASE_URL``
+    setting or a custom provider's definition sets), and the base URL of every
+    live route that draws on the same provider's keys. The scheme and the port
+    count as well as the host: plain http to the provider's host would send the
+    keys unencrypted, and another port on it is another server.
     """
-    hosts = {
-        host
+    origins = {
+        origin
         for url in dynamic_keys.get_registered_base_urls(prepared.key_provider)
-        if (host := _url_host(url)) is not None
+        if (origin := _url_origin(url)) is not None
     }
     try:
-        own_host = _url_host(_target_for_provider(prepared.upstream_provider).default_base_url)
+        own = _url_origin(_target_for_provider(prepared.upstream_provider).default_base_url)
     except HTTPException:
-        own_host = None
-    if own_host is not None:
-        hosts.add(own_host)
-    return hosts
+        own = None
+    if own is not None:
+        origins.add(own)
+    return origins
+
+
+def _keys_go_to(prepared: PreparedRouteUpdate | PreparedRouteCandidate) -> bool:
+    """Whether the gateway already sends *prepared*'s keys where its base URL points."""
+    origin = _url_origin(prepared.base_url)
+    return origin is not None and origin in _origins_given_keys(prepared)
+
+
+async def _audit_check(
+    op_store,
+    actor: AuditActor,
+    *,
+    model_id: str,
+    route_id: str | None,
+    prepared: PreparedRouteUpdate | PreparedRouteCandidate,
+    error: str | None = None,
+) -> None:
+    """Record one upstream check of *prepared*, or its refusal, and where it points."""
+    details: dict[str, Any] = {
+        "model_id": model_id,
+        "route_id": route_id,
+        "upstream_provider": prepared.upstream_provider,
+        "base_url": prepared.base_url,
+        "api_key_id": prepared.api_key_id,
+    }
+    await log_admin_action(
+        op_store,
+        action="routing.provider_routes.verify",
+        actor=actor,
+        target=AuditTarget.model(model_id),
+        details=details if error is None else {**details, "error": error},
+        success=error is None,
+    )
+
+
+async def _audited_check(
+    op_store,
+    actor: AuditActor,
+    *,
+    model_id: str,
+    route_id: str | None,
+    prepared: PreparedRouteUpdate | PreparedRouteCandidate,
+) -> None:
+    """Check *prepared* against its upstream, and audit the check whatever it answers.
+
+    Raises:
+        HTTPException: 400 when the upstream refuses the check.
+    """
+    try:
+        await _verify_provider_route(prepared)
+    except HTTPException as exc:
+        await _audit_check(
+            op_store,
+            actor,
+            model_id=model_id,
+            route_id=route_id,
+            prepared=prepared,
+            error=str(exc.detail),
+        )
+        raise
+    await _audit_check(op_store, actor, model_id=model_id, route_id=route_id, prepared=prepared)
 
 
 async def _verify_dry_run(
@@ -4015,47 +4109,91 @@ async def _verify_dry_run(
     A check sends the provider's stored key -- the one named, or the provider's
     own -- to the route's base URL. Saving nothing, it left nothing to see, so a
     base URL of anyone's choosing collected the key unnoticed. A check now goes
-    only where those keys already go: the provider's own host, or the host of a
-    live route that sends them. Saving a route checks its upstream the same way,
-    and the audit log records where it points.
+    only where those keys already go (:func:`_origins_given_keys`): the scheme,
+    host and port of the provider's own base URL, or of a live route that sends
+    them. Saving a route elsewhere asks the signed-in administrator to confirm
+    first (:func:`_verify_for_save`), and is audited the same way.
 
     Raises:
-        HTTPException: 422 for a host the keys do not go to; 400 when the
-            upstream refuses the check.
+        HTTPException: 422 for a scheme, host or port the keys do not go to;
+            400 when the upstream refuses the check.
     """
-    details: dict[str, Any] = {
-        "model_id": model_id,
-        "route_id": route_id,
-        "upstream_provider": prepared.upstream_provider,
-        "base_url": prepared.base_url,
-        "api_key_id": prepared.api_key_id,
-    }
-
-    async def audit(error: str | None = None) -> None:
-        await log_admin_action(
+    if not _keys_go_to(prepared):
+        await _audit_check(
             op_store,
-            action="routing.provider_routes.verify",
-            actor=actor,
-            target=AuditTarget.model(model_id),
-            details=details if error is None else {**details, "error": error},
-            success=error is None,
+            actor,
+            model_id=model_id,
+            route_id=route_id,
+            prepared=prepared,
+            error="the provider's keys do not go to this scheme, host and port",
         )
-
-    host = _url_host(prepared.base_url)
-    if host is None or host not in _hosts_given_keys(prepared):
-        await audit("the provider's keys do not go to this host")
+        origin = _url_origin(prepared.base_url)
         raise HTTPException(
             status_code=422,
-            detail=f"Verify would send {prepared.key_provider}'s stored API keys to {host}, "
-            "where no route of that provider sends them. Save the route instead: saving checks "
-            "it against the upstream the same way, and the audit log records where it points.",
+            detail=f"Verify would send {prepared.key_provider}'s stored API keys to "
+            f"{_origin_text(origin) if origin else prepared.base_url}, where no route of that "
+            "provider sends them. Save the route instead: saving asks you to confirm, checks it "
+            "against the upstream the same way, and the audit log records where it points.",
         )
-    try:
-        await _verify_provider_route(prepared)
-    except HTTPException as exc:
-        await audit(str(exc.detail))
-        raise
-    await audit()
+    await _audited_check(op_store, actor, model_id=model_id, route_id=route_id, prepared=prepared)
+
+
+async def _verify_for_save(
+    request: Request,
+    op_store,
+    actor: AuditActor,
+    *,
+    model_id: str,
+    route_id: str | None,
+    prepared: PreparedRouteUpdate | PreparedRouteCandidate,
+    password: str | None,
+) -> None:
+    """Check the route a save writes against its upstream before anything is saved.
+
+    The check sends the provider's stored key to the route's base URL. Where
+    the provider's keys already go -- the same scheme, host and port
+    (:func:`_origins_given_keys`) -- it runs at once, so an ordinary edit is
+    unchanged. Anywhere else, plain http or another port on the provider's own
+    host included, the signed-in administrator confirms first
+    (:func:`confirm_administrator`), so neither a copied console session alone
+    nor ``ADMIN_TOKEN``, which has no account to confirm, can point the keys at
+    a server of its choosing. A signed-in administrator who sent no
+    ``password`` is asked for it before any proof is checked, which costs no
+    sign-in attempt; an empty one confirms with an authenticator code or a
+    fresh single sign-on instead. Every check is audited as Verify's
+    (``routing.provider_routes.verify``), a failed one too, and so is a refused
+    confirmation, without the password. Asking for one --
+    ``ADMIN_CONFIRMATION_REQUIRED``, or a code the session owes -- is the
+    console's ordinary way to a confirmed save and is not audited.
+
+    Raises:
+        AdminConfirmationRequiredError: 403, asking the signed-in administrator
+            to confirm.
+        HTTPException: 403 for the admin token and 400 or 429 for a refused
+            confirmation; 400 when the upstream refuses the check.
+        TwoFactorRequiredError: 403 when the session owes a code.
+    """
+    if not _keys_go_to(prepared):
+        # No provider name or host in it: the console tells this refusal by its
+        # error code, which a message matching another code's words would hide.
+        action = "Sending the provider's stored API keys where none of its routes sends them"
+        if password is None and get_admin_user_id(request) is not None:
+            raise AdminConfirmationRequiredError(action)
+        try:
+            await confirm_administrator(request, op_store, password or None, action=action)
+        except HTTPException as exc:
+            # The admin token, a wrong password, too many attempts: nothing was
+            # sent, but the attempt to send the keys somewhere new is on record.
+            await _audit_check(
+                op_store,
+                actor,
+                model_id=model_id,
+                route_id=route_id,
+                prepared=prepared,
+                error=f"the confirmation was refused (HTTP {exc.status_code})",
+            )
+            raise
+    await _audited_check(op_store, actor, model_id=model_id, route_id=route_id, prepared=prepared)
 
 
 async def _prepare_candidate_from_payload(
@@ -4920,13 +5058,17 @@ async def update_provider_route_strategy(
 
 @router.post("/routing/provider-route-models", response_model=ProviderRouteItem)
 async def create_provider_route_model(
+    request: Request,
     payload: CreateProviderRouteModelRequest,
     admin_id: str = Depends(verify_admin_access),
     actor: AuditActor = Depends(get_admin_audit_actor),
     services: AppServices = Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ProviderRouteItem:
-    """Create a DB-backed runtime model with its first provider route."""
+    """Create a DB-backed runtime model with its first provider route.
+
+    Its route is checked against the upstream first (:func:`_verify_for_save`).
+    """
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
     if payload.strategy != "fixed" and services.model_router_registry is None:
@@ -4937,9 +5079,17 @@ async def create_provider_route_model(
         op_store,
         payload=payload,
     )
-    await _verify_provider_route(candidate)
-
     model_id = candidate.adapter.config.id
+    await _verify_for_save(
+        request,
+        op_store,
+        actor,
+        model_id=model_id,
+        route_id=candidate.route_id,
+        prepared=candidate,
+        password=payload.password,
+    )
+
     installed = False
     persisted_candidate = False
     persisted_setting_keys: list[str] = []
@@ -5169,6 +5319,7 @@ async def verify_provider_route_model(
 
 @router.post("/routing/provider-route-candidates/{model_id:path}", response_model=ProviderRouteItem)
 async def create_provider_route_candidate(
+    request: Request,
     model_id: str,
     payload: CreateProviderRouteRequest,
     admin_id: str = Depends(verify_admin_access),
@@ -5176,7 +5327,10 @@ async def create_provider_route_candidate(
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ProviderRouteItem:
-    """Add a DB-backed runtime provider route candidate for one model."""
+    """Add a DB-backed runtime provider route candidate for one model.
+
+    The route is checked against the upstream first (:func:`_verify_for_save`).
+    """
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
 
@@ -5186,7 +5340,15 @@ async def create_provider_route_candidate(
         model_id=model_id,
         payload=payload,
     )
-    await _verify_provider_route(candidate)
+    await _verify_for_save(
+        request,
+        op_store,
+        actor,
+        model_id=candidate.adapter.config.id,
+        route_id=candidate.route_id,
+        prepared=candidate,
+        password=payload.password,
+    )
     canonical_model_id = _raw_route_entries(candidate.route)[0][0].config.id
     async with model_router_transition_lock(services, canonical_model_id):
         current_route = _validate_canonical_route(services, canonical_model_id)
@@ -5442,6 +5604,7 @@ def _runtime_route_adapter(route, route_id: str) -> Any | None:
     response_model=ProviderRouteItem,
 )
 async def update_provider_route_candidate(
+    request: Request,
     model_route_path: str,
     payload: UpdateProviderRouteCandidateRequest,
     admin_id: str = Depends(verify_admin_access),
@@ -5452,7 +5615,8 @@ async def update_provider_route_candidate(
     """Edit a DB-backed runtime provider route candidate in place.
 
     The route keeps its route id, type and weight. A change to where requests
-    go is checked against the upstream before anything is saved; the row is
+    go is checked against the upstream before anything is saved
+    (:func:`_verify_for_save`); the row is
     updated in place (compare-and-swap on ``updated_at``) and the live route
     swapped under the model's transition lock, and a failed swap restores the
     row, so the database and the serving route never disagree. A limit-only
@@ -5472,7 +5636,15 @@ async def update_provider_route_candidate(
         edit=_candidate_edit_from_patch(payload),
     )
     if edit.target_changed:
-        await _verify_provider_route(edit.candidate)
+        await _verify_for_save(
+            request,
+            op_store,
+            actor,
+            model_id=model_id,
+            route_id=route_id,
+            prepared=edit.candidate,
+            password=payload.password,
+        )
     candidate = edit.candidate
 
     async with model_router_transition_lock(services, model_id):
@@ -5924,6 +6096,7 @@ async def reset_provider_route_capabilities(
 
 @router.put("/routing/provider-routes/{model_route_path:path}", response_model=ProviderRouteItem)
 async def update_provider_route(
+    request: Request,
     model_route_path: str,
     payload: UpdateProviderRouteRequest,
     admin_id: str = Depends(verify_admin_access),
@@ -5933,8 +6106,10 @@ async def update_provider_route(
 ) -> ProviderRouteItem:
     """Update the provider/base URL/key target for one route candidate.
 
-    A body with ``capabilities`` or ``reset_capabilities`` saves that change in
-    the same request: a failure in either restores both.
+    The new target is checked against the upstream first
+    (:func:`_verify_for_save`). A body with ``capabilities`` or
+    ``reset_capabilities`` saves that change in the same request: a failure in
+    either restores both.
     """
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
@@ -5948,7 +6123,15 @@ async def update_provider_route(
     model_id = context.model_id
     route_id = context.route_id
     update = context.update
-    await _verify_provider_route(update)
+    await _verify_for_save(
+        request,
+        op_store,
+        actor,
+        model_id=model_id,
+        route_id=route_id,
+        prepared=update,
+        password=payload.password,
+    )
     async with model_router_transition_lock(services, model_id):
         current_route = _validate_canonical_route(services, model_id)
         current_entries = _raw_route_entries(current_route)

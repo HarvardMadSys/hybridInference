@@ -48,9 +48,12 @@ API keys and sign administrator tokens, so protect database access and backups.
   [Configuration](docs/developer/configuration.md#on-the-settings-tab)).
   `ADMIN_TOKEN` cannot confirm, so it can do none of these. On the host,
   `python -m serving.config.manage` can still change any setting.
-- Checking a provider route sends its stored keys only to the provider's own
-  host or to a host its routes already use, and the audit log records every
-  check.
+- Verifying a provider route sends its stored keys only where they already go:
+  the scheme, host and port of the provider's own base URL or of one its routes
+  uses. Saving a route that would send them anywhere else, plain http or another
+  port on the provider's host included, needs the same confirmation first, so
+  `ADMIN_TOKEN` cannot do it. The audit log records every check, Verify's and a
+  save's, a failed one too, and every refused confirmation.
 - Without a database, secrets come from the environment. While user
   authentication is enabled, an empty or whitespace-only secret stops the
   gateway before it opens stores or starts background tasks; only a gateway

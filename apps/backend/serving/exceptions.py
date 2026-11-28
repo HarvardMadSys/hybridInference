@@ -123,6 +123,20 @@ class TwoFactorRequiredError(AuthenticationError):
         super().__init__(f"Two-factor verification required ({reason})")
 
 
+class AdminConfirmationRequiredError(AuthenticationError):
+    """A change needs the signed-in administrator to confirm it, and the request did not.
+
+    Raised before any proof is checked, so asking costs no sign-in attempt. The
+    console then asks for a password, or for the code or fresh single sign-on
+    the account confirms with instead, and sends the request again with it.
+    ``action`` names the change, as the start of a sentence.
+    """
+
+    def __init__(self, action: str):
+        self.action = action
+        super().__init__(f"{action} needs the administrator's confirmation")
+
+
 # User management errors
 class UserNotFoundError(UserFacingError):
     """User not found."""

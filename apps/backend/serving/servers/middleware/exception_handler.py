@@ -35,6 +35,7 @@ from fastapi.responses import JSONResponse
 
 from serving.exceptions import (
     AccountSuspendedError,
+    AdminConfirmationRequiredError,
     APIKeyNotFoundError,
     DuplicateAPIKeyError,
     EmailNotVerifiedError,
@@ -216,6 +217,27 @@ def install_exception_handlers(app: FastAPI) -> None:
                 # Which of the reasons a code answers; fixed words, never
                 # anything about the session that gave the earlier code.
                 "reason": exc.reason,
+                "timestamp": datetime.now(UTC).isoformat(),
+            },
+        )
+
+    @app.exception_handler(AdminConfirmationRequiredError)
+    async def admin_confirmation_required_handler(
+        request: Request, exc: AdminConfirmationRequiredError
+    ):
+        # The console answers this code by asking the administrator to confirm
+        # and sending the request again with the answer.
+        _log_domain_exception(request, exc, "ADMIN_CONFIRMATION_REQUIRED", 403)
+        message = (
+            f"{exc.action} needs your confirmation: your password, or the code or single "
+            "sign-on your account confirms with."
+        )
+        return JSONResponse(
+            status_code=403,
+            content={
+                "error_code": "ADMIN_CONFIRMATION_REQUIRED",
+                "message": message,
+                "detail": message,
                 "timestamp": datetime.now(UTC).isoformat(),
             },
         )
