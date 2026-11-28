@@ -1,7 +1,7 @@
 import type { OpenRouterProviderOption, ProviderRoute, ProviderRouteOption } from '@/lib/api/admin';
 
 /** The OpenRouter provider value for automatic routing. */
-const OPENROUTER_PROVIDER_AUTO = '';
+export const OPENROUTER_PROVIDER_AUTO = '';
 
 export function routePrimaryProvider(route: ProviderRoute) {
   if (route.provider === route.upstream_provider && route.key_provider === 'openrouter') {

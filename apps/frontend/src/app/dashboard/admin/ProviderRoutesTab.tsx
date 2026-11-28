@@ -71,6 +71,7 @@ import {
 import type { OffloadQueueInfo } from './OffloadRoutePanel';
 import { RoutewiseDecisionsPanel } from './RoutewiseDecisionsPanel';
 import {
+  OPENROUTER_PROVIDER_AUTO,
   openRouterProviderLabel,
   providerLabel,
   routeOpenRouterProvider,
@@ -142,7 +143,6 @@ const emptyCreateForm: CreateRouteForm = {
   ...emptyCapabilityDraft,
 };
 
-const OPENROUTER_PROVIDER_AUTO = '';
 const OPENROUTER_PROVIDER_CUSTOM = '__custom__';
 const OPENROUTER_ROUTING_AUTO = 'auto';
 const OPENROUTER_ROUTING_SORT_PREFIX = 'sort:';
