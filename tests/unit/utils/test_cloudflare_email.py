@@ -301,6 +301,24 @@ def test_an_undocumented_refusal_is_explained_by_its_status(configured, post, st
     assert "19999" in sent.reason
 
 
+def test_cloudflares_generic_authentication_error_is_read_as_a_refused_token(configured, post):
+    # What api.cloudflare.com answered a token it did not accept: its generic
+    # "Authentication error", 10000, with 401 -- the send endpoint's table has
+    # 10000 only as a 404, "not found".
+    post.return_value = _answer(
+        401,
+        success=False,
+        errors=[{"code": 10000, "message": "Authentication error"}],
+        result=None,
+    )
+
+    sent = cloudflare_email.deliver(_message())
+
+    assert "did not accept the API token" in sent.reason
+    assert "account ID" not in sent.reason.split("(")[0]
+    assert "HTTP 401" in sent.reason
+
+
 def test_a_refusal_never_repeats_the_token_even_as_a_bare_identifier(configured, post, caplog):
     # TOKEN looks like an identifier, so only the withholding keeps it out.
     post.return_value = _answer(

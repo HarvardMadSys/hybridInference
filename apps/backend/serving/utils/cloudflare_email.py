@@ -43,39 +43,50 @@ _ERRORS_LOGGED = 3
 #: dotted identifiers (``email.sending.error.throttled``); anything else could
 #: echo the request, so it is not repeated.
 _SAFE_ERROR_TEXT = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
+_TOKEN_REFUSED = (
+    "Cloudflare did not accept the API token. Check that it was copied whole and has not "
+    "been revoked or expired."
+)
+_RATE_LIMITED = "Cloudflare is rate-limiting this account. Wait a minute and try again."
+_NO_ACCOUNT = "Cloudflare found nothing to send with at this account ID. Check the account ID."
 #: Where to look for an expired token, a missing permission or a domain that
 #: is not onboarded, by the error code the send endpoint documents
-#: (https://developers.cloudflare.com/email-service/api/send-emails/rest-api/).
-_ADVICE_BY_CODE: dict[int, str] = {
-    10000: "Cloudflare found nothing to send with at this account ID. Check the account ID.",
-    10001: "Cloudflare refused the request as malformed. Check the sender address.",
-    10002: "Cloudflare had an internal error. Try again in a few minutes.",
-    10003: "Cloudflare does not support this request.",
-    10004: "Cloudflare is rate-limiting this account. Wait a minute and try again.",
-    10100: "Cloudflare's authentication service is unavailable. Try again in a few minutes.",
-    10101: (
-        "Cloudflare did not accept the API token. Check that it was copied whole and has "
-        "not been revoked or expired."
-    ),
+#: (https://developers.cloudflare.com/email-service/api/send-emails/rest-api/),
+#: with the HTTP status it documents the code under. A code is read only with
+#: that status: Cloudflare's API also answers 10000, its generic
+#: "Authentication error", with 401 for a token it does not accept, where the
+#: send endpoint's table has 10000 only as a 404.
+_ADVICE_BY_CODE: dict[int, tuple[int, str]] = {
+    10000: (404, _NO_ACCOUNT),
+    10001: (400, "Cloudflare refused the request as malformed. Check the sender address."),
+    10002: (500, "Cloudflare had an internal error. Try again in a few minutes."),
+    10003: (500, "Cloudflare does not support this request."),
+    10004: (429, _RATE_LIMITED),
+    10100: (503, "Cloudflare's authentication service is unavailable. Try again in a few minutes."),
+    10101: (401, _TOKEN_REFUSED),
     10102: (
+        403,
         "The API token may not send email for this account. Give it the Email Sending: Edit "
-        "permission on the account whose ID is configured."
+        "permission on the account whose ID is configured.",
     ),
     10103: (
+        401,
         "This kind of Cloudflare token cannot send email. Create an API token with the "
-        "Email Sending: Edit permission."
+        "Email Sending: Edit permission.",
     ),
-    10105: "This Cloudflare account is not entitled to Email Sending.",
-    10200: "The message is larger than Cloudflare accepts.",
+    10105: (403, "This Cloudflare account is not entitled to Email Sending."),
+    10200: (400, "The message is larger than Cloudflare accepts."),
     10202: (
+        400,
         "Cloudflare refused the message as invalid. Check that the sender address is on a "
-        "domain onboarded under Email Service > Email Sending."
+        "domain onboarded under Email Service > Email Sending.",
     ),
-    10203: "Email Sending is turned off for this domain or account in Cloudflare.",
-    10207: "Email Sending is paused for this Cloudflare account.",
+    10203: (403, "Email Sending is turned off for this domain or account in Cloudflare."),
+    10207: (403, "Email Sending is paused for this Cloudflare account."),
     10208: (
+        403,
         "This Cloudflare plan sends only to verified destination addresses. Verify the "
-        "recipient in Cloudflare first."
+        "recipient in Cloudflare first.",
     ),
 }
 
@@ -118,16 +129,17 @@ def _describe_errors(errors: Any, *, withhold: tuple[str, ...] = ()) -> str:
 
 def _advice_by_status(status: int) -> str:
     if status == 401:
-        return _ADVICE_BY_CODE[10101]
+        return _TOKEN_REFUSED
     if status == 403:
         return (
-            "Cloudflare refused to send. Check that the API token has the Email Sending: Edit "
-            "permission and that the sender's domain is onboarded for Email Sending."
+            "Cloudflare refused to send. Check the account ID, that the API token has the "
+            "Email Sending: Edit permission on that account, and that the sender's domain is "
+            "onboarded for Email Sending."
         )
     if status == 404:
-        return _ADVICE_BY_CODE[10000]
+        return _NO_ACCOUNT
     if status == 429:
-        return _ADVICE_BY_CODE[10004]
+        return _RATE_LIMITED
     if status >= 500:
         return "Cloudflare could not send the message just now. Try again in a few minutes."
     if status < 400:
@@ -139,7 +151,11 @@ def _advice_by_status(status: int) -> str:
 
 
 def _refusal_reason(status: int, errors: Any, described: str) -> str:
-    """Say what to fix: the first documented code's advice, else the status's, then the codes."""
+    """Say what to fix, then name the codes.
+
+    The advice is the first error code's documented for this status, else
+    the status's own.
+    """
     codes = (
         [error.get("code") for error in errors if isinstance(error, dict)]
         if isinstance(errors, list)
@@ -147,9 +163,11 @@ def _refusal_reason(status: int, errors: Any, described: str) -> str:
     )
     advice = next(
         (
-            _ADVICE_BY_CODE[code]
+            _ADVICE_BY_CODE[code][1]
             for code in codes
-            if isinstance(code, int) and code in _ADVICE_BY_CODE
+            if isinstance(code, int)
+            and code in _ADVICE_BY_CODE
+            and _ADVICE_BY_CODE[code][0] == status
         ),
         None,
     ) or _advice_by_status(status)
