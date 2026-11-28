@@ -37,7 +37,9 @@ This router owns admission and the HTTP shapes:
   ``Idempotency-Key`` replays are answered before that, the quota and the caps
   (``serving.batch.admission``);
 - a batch belongs to its owner, whichever of the owner's keys asks; an
-  administrator may read, cancel and delete anyone's. Listing shows the
+  administrator may read, cancel and delete anyone's, and each such access to
+  another owner's batch is audited against that owner
+  (:func:`~serving.servers.routers.files.audit_other_owner`). Listing shows the
   caller's own batches, every target and input alike -- including those the
   retired Message Batches API (``/v1/messages/batches``) stored, which are
   read, cancelled, deleted and downloaded here like any other.
@@ -93,10 +95,15 @@ from serving.servers.deps import (
     get_batch_file_store,
     get_batch_store,
     get_model_visibility_resolver,
+    get_operational_store,
     get_router,
     get_services,
 )
-from serving.servers.routers.files import content_disposition, jsonl_download
+from serving.servers.routers.files import (
+    audit_other_owner,
+    content_disposition,
+    jsonl_download,
+)
 from serving.storage.batch_store import (
     PHASE_SEALED,
     PHASE_VALIDATING,
@@ -679,22 +686,34 @@ async def list_batches(
 @router.get("/v1/batches/{batch_id}", response_model=BatchObject)
 async def retrieve_batch(
     batch_id: str,
+    request: Request,
     user_ctx: dict = Depends(verify_batch_management_identity),
     store=Depends(get_batch_store),
+    op_store=Depends(get_operational_store),
 ) -> BatchObject:
     """Return a batch: its status and request counts."""
     store, config = _surface(store)
     row = await store.get_batch(batch_id, user_id=_lookup_scope(user_ctx))
     if row is None:
         raise _not_found(batch_id)
+    await audit_other_owner(
+        request,
+        op_store,
+        user_ctx,
+        row["user_id"],
+        action="batch.jobs.read",
+        details={"batch_id": batch_id},
+    )
     return batch_object(row, config)
 
 
 @router.post("/v1/batches/{batch_id}/cancel", response_model=BatchObject)
 async def cancel_batch(
     batch_id: str,
+    request: Request,
     user_ctx: dict = Depends(verify_batch_management_identity),
     store=Depends(get_batch_store),
+    op_store=Depends(get_operational_store),
 ) -> BatchObject:
     """Stop a batch: queued requests are cancelled, running ones finish.
 
@@ -706,6 +725,15 @@ async def cancel_batch(
     row = await store.cancel_batch(batch_id, user_id=_lookup_scope(user_ctx))
     if row is None:
         raise _not_found(batch_id)
+    # The action the admin console's cancel records, by the same administrator.
+    await audit_other_owner(
+        request,
+        op_store,
+        user_ctx,
+        row["user_id"],
+        action="batch.jobs.cancel",
+        details={"batch_id": batch_id},
+    )
     return batch_object(row, config)
 
 
@@ -779,13 +807,18 @@ async def retry_failed_batch(
 @router.delete("/v1/batches/{batch_id}", response_model=BatchDeleted)
 async def delete_batch(
     batch_id: str,
+    request: Request,
     user_ctx: dict = Depends(verify_batch_management_identity),
     store=Depends(get_batch_store),
+    op_store=Depends(get_operational_store),
 ) -> BatchDeleted:
     """Delete a batch unless one of its requests still holds a live lease."""
     store, _config = _surface(store)
+    scope = _lookup_scope(user_ctx)
+    # Whose batch it is, for the audit of an administrator deleting another's.
+    found = await store.get_batch(batch_id) if scope is None else None
     try:
-        deleted = await store.delete_batch(batch_id, user_id=_lookup_scope(user_ctx))
+        deleted = await store.delete_batch(batch_id, user_id=scope)
     except BatchDeleteInProgress:
         raise HTTPException(
             409,
@@ -794,16 +827,27 @@ async def delete_batch(
         ) from None
     if not deleted:
         raise _not_found(batch_id)
+    if found is not None:
+        await audit_other_owner(
+            request,
+            op_store,
+            user_ctx,
+            found["user_id"],
+            action="batch.jobs.delete",
+            details={"batch_id": batch_id},
+        )
     return BatchDeleted(id=batch_id)
 
 
 @router.get("/v1/batches/{batch_id}/results", response_model=BatchResultsPage)
 async def list_batch_results(
     batch_id: str,
+    request: Request,
     after: str | None = Query(None, description="Id of the last result of the previous page"),
     limit: int = Query(100, ge=1, le=1000),
     user_ctx: dict = Depends(verify_batch_management_identity),
     store=Depends(get_batch_store),
+    op_store=Depends(get_operational_store),
 ) -> BatchResultsPage:
     """Page through a batch's requests in submission order, with their outcomes.
 
@@ -813,7 +857,8 @@ async def list_batch_results(
     """
     store, _config = _surface(store)
     cursor = _results_cursor(after)
-    if await store.get_batch(batch_id, user_id=_lookup_scope(user_ctx)) is None:
+    batch = await store.get_batch(batch_id, user_id=_lookup_scope(user_ctx))
+    if batch is None:
         raise _not_found(batch_id)
     rows, more = await store.result_page(
         batch_id, after=cursor or 0, limit=limit, max_bytes=RESULTS_PAGE_BYTES
@@ -826,6 +871,23 @@ async def list_batch_results(
         if decoded >= _RESULTS_YIELD_BYTES:
             decoded = 0
             await asyncio.sleep(0)
+    if page:
+        # As the admin console audits a page of prompts: each page that
+        # returns results, naming the results it returned.
+        await audit_other_owner(
+            request,
+            op_store,
+            user_ctx,
+            batch["user_id"],
+            action="batch.results.read",
+            details={
+                "batch_id": batch_id,
+                "after": after,
+                "first_id": page[0].id,
+                "last_id": page[-1].id,
+                "results": len(page),
+            },
+        )
     return BatchResultsPage(
         data=page,
         has_more=more,
@@ -847,6 +909,7 @@ async def export_batch_results(
     request: Request,
     user_ctx: dict = Depends(verify_batch_management_identity),
     store=Depends(get_batch_store),
+    op_store=Depends(get_operational_store),
 ) -> StreamingResponse:
     """Download every result of a finished batch as JSONL (the OpenAI output-line shape)."""
     store, _config = _surface(store)
@@ -855,6 +918,14 @@ async def export_batch_results(
         raise _not_found(batch_id)
     if not results_final(row):
         raise HTTPException(409, f"Batch '{batch_id}' has not finished; its results are not final")
+    await audit_other_owner(
+        request,
+        op_store,
+        user_ctx,
+        row["user_id"],
+        action="batch.results.download",
+        details={"batch_id": batch_id},
+    )
     return jsonl_download(
         request,
         stream_lines(store=store, batch_id=batch_id, kind="all"),

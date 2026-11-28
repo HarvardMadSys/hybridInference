@@ -38,6 +38,7 @@ from serving.servers.deps import (
     model_router_transition_lock,
     verify_admin_access,
 )
+from serving.servers.routers.files import require_prompts_readable
 
 router = APIRouter(prefix="/admin")
 
@@ -263,14 +264,7 @@ async def admin_batch_requests(
     """
     if batch_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
-    if not getattr(log_store, "store_full_prompts", False):
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "This gateway does not keep prompts for administrators to read "
-                "(db_store_full_content is off)."
-            ),
-        )
+    require_prompts_readable(log_store)
     batch = await batch_store.get_batch(batch_id)
     if batch is None:
         raise HTTPException(status_code=404, detail=f"Batch '{batch_id}' not found")

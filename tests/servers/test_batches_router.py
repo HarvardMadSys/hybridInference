@@ -25,7 +25,7 @@ from serving.batch import admission, config as batch_config_module, targets
 from serving.servers.auth import verify_api_key, verify_batch_management_identity
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
-from serving.servers.routers import batches
+from serving.servers.routers import batches, files
 from serving.storage.batch_store import (
     TERMINAL_BATCH_STATUSES,
     BatchDeleteInProgress,
@@ -1571,6 +1571,97 @@ async def test_an_admin_may_read_cancel_and_delete_any_batch(client, store):
     assert listed.json()["data"] == []
     assert deleted.status_code == 200
     assert batch["id"] not in store.batches
+
+
+@pytest.fixture
+def audits(monkeypatch) -> list[dict[str, Any]]:
+    """The audit rows the batch and file routes write, one dict of arguments each."""
+    rows: list[dict[str, Any]] = []
+
+    async def record(_op_store: Any, **kwargs: Any) -> None:
+        rows.append(kwargs)
+
+    monkeypatch.setattr(files, "log_admin_action", record)
+    return rows
+
+
+async def _one_result_line(**_kwargs: Any):
+    yield b'{"custom_id": "req-0"}\n'
+
+
+async def test_an_admin_reaching_another_owners_batch_is_audited_against_the_owner(
+    client, store, audits, monkeypatch
+):
+    monkeypatch.setattr(batches, "stream_lines", _one_result_line)
+    batch = await _create(client, "key-alice")
+    path = f"/v1/batches/{batch['id']}"
+    root = _auth("key-root")
+
+    assert (await client.get(path, headers=root)).status_code == 200
+    results = await client.get(f"{path}/results", headers=root)
+    assert (await client.post(f"{path}/cancel", headers=root)).status_code == 200
+    store.batches[batch["id"]]["phase"] = "sealed"
+    assert (await client.get(f"{path}/output.jsonl", headers=root)).status_code == 200
+    assert (await client.delete(path, headers=root)).status_code == 200
+
+    assert [row["action"] for row in audits] == [
+        "batch.jobs.read",
+        "batch.results.read",
+        "batch.jobs.cancel",
+        "batch.results.download",
+        "batch.jobs.delete",
+    ]
+    for row in audits:
+        assert (row["actor"].type, row["actor"].id) == ("admin", "root")
+        assert (row["target"].type, row["target"].id) == ("user", "alice")
+        assert row["details"]["batch_id"] == batch["id"]
+    # A page of results names what it returned.
+    (result,) = results.json()["data"]
+    assert audits[1]["details"] == {
+        "batch_id": batch["id"],
+        "after": None,
+        "first_id": result["id"],
+        "last_id": result["id"],
+        "results": 1,
+        "api_key_id": None,
+    }
+
+
+async def test_reaching_ones_own_batch_is_not_audited(client, store, audits, monkeypatch):
+    monkeypatch.setattr(batches, "stream_lines", _one_result_line)
+    for key in ("key-alice", "key-root"):
+        batch = await _create(client, key)
+        path = f"/v1/batches/{batch['id']}"
+        await client.get(path, headers=_auth(key))
+        await client.get(f"{path}/results", headers=_auth(key))
+        await client.post(f"{path}/cancel", headers=_auth(key))
+        store.batches[batch["id"]]["phase"] = "sealed"
+        assert (await client.get(f"{path}/output.jsonl", headers=_auth(key))).status_code == 200
+        assert (await client.delete(path, headers=_auth(key))).status_code == 200
+
+    assert audits == []
+
+
+async def test_another_owners_results_are_not_returned_when_the_audit_fails(
+    app, store, monkeypatch
+):
+    batch = await _create_with(app, "key-alice")
+
+    async def unwritable(_op_store: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("the audit log is unavailable")
+
+    monkeypatch.setattr(files, "log_admin_action", unwritable)
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        response = await ac.get(f"/v1/batches/{batch['id']}/results", headers=_auth("key-root"))
+
+    assert response.status_code == 500
+    assert "req-0" not in response.text
+
+
+async def _create_with(app, key: str) -> dict[str, Any]:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        return await _create(ac, key)
 
 
 async def test_the_anonymous_caller_of_an_auth_disabled_gateway_reaches_only_its_own(
