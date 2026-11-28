@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PublicStats } from '@/lib/api/publicStats';
 
-import StatsPage from './page';
+import StatsPage, { generateMetadata } from './page';
 import { LocaleProvider } from '@/components/providers/LocaleProvider';
 import type { Catalog } from '@/lib/i18n/translate';
 import zhCN from '@/lib/i18n/messages/zh-CN.json';
@@ -17,6 +17,15 @@ vi.mock('next/dynamic', () => ({
 
 vi.mock('@/components/providers/SiteConfigProvider', () => ({
   useBranding: () => ({ appName: 'Example Inference' }),
+}));
+
+// The page's metadata is computed on the server, from the request's language
+// and the runtime site configuration; neither exists here.
+vi.mock('@/lib/i18n/request.server', () => ({
+  requestTranslator: async () => (_slot: string, fallback: string) => fallback,
+}));
+vi.mock('@/config/site-config.server', () => ({
+  loadRuntimeSiteConfig: async () => ({ branding: { appName: 'Runtime Example' } }),
 }));
 
 const weeks = ['2026-07-27', '2026-08-03'];
@@ -263,5 +272,15 @@ describe('StatsPage, for a reader who chose Chinese', () => {
       }
     }
     expect(english).toEqual([]);
+  });
+});
+
+describe('StatsPage metadata', () => {
+  it('names the site as the deployment configures it, not as the image was built', async () => {
+    const meta = await generateMetadata();
+    expect(meta.title).toBe('Usage stats | Runtime Example');
+    expect(meta.description).toBe(
+      'Tokens served, countries, languages and agents on Runtime Example, refreshed daily.',
+    );
   });
 });

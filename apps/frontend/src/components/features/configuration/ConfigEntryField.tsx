@@ -17,7 +17,9 @@ import {
   type ConfigDraft,
 } from './configDrafts';
 import { DocumentEditor } from './DocumentEditor';
+import { ModelCatalogEditor } from './ModelCatalogEditor';
 import { NOT_A_LOGIN_FIELD } from './notALoginField';
+import { RoutingPolicyEditor } from './RoutingPolicyEditor';
 
 // Exported from here too, where the settings' other editors import it.
 export { NOT_A_LOGIN_FIELD };
@@ -100,6 +102,7 @@ const LINK_BUTTON_CLASS =
 export function ConfigEntryField({
   entry,
   label = entry.key,
+  showKey = false,
   allowSecretClear = true,
   presentation = 'default',
   layout = 'stacked',
@@ -114,6 +117,11 @@ export function ConfigEntryField({
 }: {
   entry: ConfigEntry;
   label?: string;
+  /**
+   * Show the variable's name beside a friendly `label`, for the administrator
+   * who sets it in `.env` or reads it in the docs.
+   */
+  showKey?: boolean;
   allowSecretClear?: boolean;
   /** Compact cards supply their own privacy and restart notes. */
   presentation?: 'default' | 'compact';
@@ -269,8 +277,16 @@ export function ConfigEntryField({
       />
     );
     // A JSON document is edited one value at a time; the text is its JSON view.
+    // The model catalog has an editor of its own: models as cards, routes as rows.
+    // So does the routing policy: one card, each value under a readable name.
+    const Editor =
+      entry.key === 'MODEL_CATALOG'
+        ? ModelCatalogEditor
+        : entry.key === 'ROUTING_POLICY'
+          ? RoutingPolicyEditor
+          : DocumentEditor;
     control = entry.document ? (
-      <DocumentEditor
+      <Editor
         entry={entry}
         draft={draft}
         onChange={onChange}
@@ -336,10 +352,14 @@ export function ConfigEntryField({
               // A document's fields have no one control to point at: they and
               // its JSON view name themselves after this label instead.
               htmlFor={documentEditor ? undefined : controlId}
-              className={`break-all text-[13px] font-medium text-gray-900 ${compact ? '' : 'font-mono'}`}
+              // A variable's name is set in mono; a friendly label is not.
+              className={`break-all text-[13px] font-medium text-gray-900 ${compact || label !== entry.key ? '' : 'font-mono'}`}
             >
               {label}
             </label>
+            {showKey && label !== entry.key ? (
+              <span className="break-all font-mono text-[11px] text-gray-400">{entry.key}</span>
+            ) : null}
             {badges.map((badge) => (
               <span
                 key={badge.label}

@@ -72,6 +72,14 @@ describe('consoleWidthFor', () => {
     expect(consoleWidthFor('/dashboard/playground')).toBe('max-w-none');
     expect(consoleWidthFor('/login')).toBe('max-w-5xl');
   });
+
+  it('lays the OpenInfra page out at the admin width, and no other public page', () => {
+    expect(consoleWidthFor('/openinfra')).toBe('max-w-[1440px]');
+    expect(consoleWidthFor('/openinfra/')).toBe('max-w-[1440px]');
+    expect(consoleWidthFor('/stats')).toBe('max-w-5xl');
+    expect(consoleWidthFor('/openinfra-old')).toBe('max-w-5xl');
+    expect(consoleFrameFor('/openinfra')).toEqual({ bar: false, shell: false, workspace: false });
+  });
 });
 
 describe('consoleFrameFor', () => {

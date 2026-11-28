@@ -10,7 +10,7 @@ from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 
-from serving.utils.email import send_email
+from serving.utils.email import deliver_email
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -227,7 +227,7 @@ async def execute_broadcast(broadcast_id: str) -> None:
     for i in range(0, len(recipients), BATCH_SIZE):
         batch = recipients[i : i + BATCH_SIZE]
 
-        # SMTP is sync; offload to a thread so it doesn't block the event loop.
+        # Delivery is sync; offload to a thread so it doesn't block the event loop.
         sent_user_ids: list[str] = []
         # (user_id, error_message) pairs so we can persist real diagnostics.
         failed_results: list[tuple[str, str]] = []
@@ -236,13 +236,16 @@ async def execute_broadcast(broadcast_id: str) -> None:
             email = recipient["email"]
             error_msg: str | None = None
             try:
-                ok = await asyncio.to_thread(send_email, email, subject, body_html, body_text)
+                delivery = await asyncio.to_thread(
+                    deliver_email, email, subject, body_html, body_text
+                )
+                ok = delivery.sent
                 if not ok:
-                    error_msg = "send_email returned False (SMTP send unsuccessful)"
+                    error_msg = (delivery.reason or "The message was not sent.")[:500]
             except Exception as exc:
                 ok = False
                 error_msg = f"{type(exc).__name__}: {exc}"[:500]
-                logger.warning(f"send_email raised for {email}: {exc}")
+                logger.warning(f"deliver_email raised for {email}: {exc}")
             if ok:
                 sent_user_ids.append(user_id)
             else:

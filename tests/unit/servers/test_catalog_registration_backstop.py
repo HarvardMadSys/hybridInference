@@ -109,3 +109,67 @@ async def test_a_skipped_model_keeps_the_others_and_their_routewise_settings(mon
         "routewise-before": "routewise",
         "valid-after": "fixed",
     }
+
+
+# --- a route a cleared key setting leaves with no key is not served ------------
+
+
+def _clear_zai_api_key(monkeypatch) -> None:
+    """The environment still holds the key; a stored empty row clears it."""
+    from serving.config import app_config
+    from serving.config.app_config_store import ConfigRow
+
+    monkeypatch.setenv("ZAI_API_KEY", "removed-but-still-in-env")
+    for index in range(1, 21):
+        monkeypatch.delenv(f"ZAI_API_KEY{index}", raising=False)
+    row = ConfigRow(key="ZAI_API_KEY", value="", secret=True, source="admin", updated_by="a")
+    app_config._STATE.effective["ZAI_API_KEY"] = row
+    app_config._STATE.generation += 1
+
+
+def _zai_model() -> dict:
+    return {
+        "id": "glm-cleared",
+        "name": "glm-cleared",
+        "provider": "zai",
+        "route": [
+            {
+                "kind": "zai",
+                "weight": 1.0,
+                "base_url": "https://api.z.example/v1",
+                "api_key": "${ZAI_API_KEY}",
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("shared", "served"),
+    [(frozenset({"zai"}), True), (frozenset(), False), (None, True)],
+    ids=["keys-tab-key", "no-key-anywhere", "unknown"],
+)
+async def test_startup_serves_a_cleared_route_only_when_boot_gives_it_a_key(
+    monkeypatch, shared, served
+):
+    _clear_zai_api_key(monkeypatch)
+    _serve(monkeypatch, {"models": [_model("valid-before"), _zai_model()]})
+    router = FixedRouter()
+
+    await bootstrap._init_router_and_models(router, shared_db_key_providers=shared)
+
+    assert "valid-before" in router.routes
+    assert ("glm-cleared" in router.routes) is served
+
+
+async def test_shared_db_key_providers_without_a_database_is_empty():
+    assert await bootstrap._shared_db_key_providers(None) == frozenset()
+
+
+async def test_shared_db_key_providers_is_unknown_when_the_read_fails(monkeypatch, caplog):
+    async def fail(store):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr("serving.adapters.dynamic_keys.providers_with_shared_db_keys", fail)
+
+    assert await bootstrap._shared_db_key_providers(object()) is None
+    assert "database unavailable" in caplog.text

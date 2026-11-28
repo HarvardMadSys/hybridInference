@@ -174,7 +174,7 @@ export function AnalyticsTab() {
     return (
       <AdminEmptyState title="All Analytics overview sections are disabled.">
         <Link
-          href="/dashboard/admin/settings?tab=common#settings-analytics"
+          href="/dashboard/admin/settings?tab=operations#settings-analytics"
           className="font-medium text-gray-700 underline hover:text-gray-900"
         >
           Open Settings to enable a section

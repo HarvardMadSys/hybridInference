@@ -41,6 +41,8 @@ PHONE = "+8613800138000"
 ACCOUNT_INSERTS = {
     "serving.storage.postgres_operational.PostgresOperationalStore.create_user",
     "serving.storage.postgres_operational.PostgresOperationalStore.create_first_admin",
+    # An administrator's service account, written with its first key.
+    "serving.storage.postgres_operational.PostgresOperationalStore.create_service_account",
     "serving.storage.phone_auth.PostgresPhoneAuthMixin.create_phone_user",
     # A first single sign-on creates the account with its identity.
     "serving.storage.sso.PostgresSsoMixin.create_sso_user",
@@ -61,6 +63,11 @@ ACCOUNT_CREATORS: dict[str, str | None] = {
     # and so does everything before it: a sign-in cannot be started at all, which
     # is what POST /auth/sso/discover shows below.
     "serving.auth.sso_accounts._resolve": None,
+    # Admin-only account creation: POST /admin/service-accounts behind
+    # verify_admin_access plus administrator reauthentication. Not a public
+    # registration route, so it cannot be driven by a stranger while setup
+    # is pending (tests/servers/test_admin_service_accounts.py).
+    "serving.servers.routers.admin.users.create_service_account": None,
 }
 
 # A request each public registration route would otherwise accept. The phone

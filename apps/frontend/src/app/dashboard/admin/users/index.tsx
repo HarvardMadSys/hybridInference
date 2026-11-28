@@ -22,6 +22,7 @@ import { UserTagsPanel } from './UserTagsPanel';
 import { SavedViews } from './SavedViews';
 import { FilterBar } from './FilterBar';
 import { UserTable } from './UserTable';
+import { ServiceAccountCreate } from './ServiceAccountCreate';
 import { Pagination, PAGE_SIZE_OPTIONS } from './Pagination';
 import { useUsers, USERS_LIST_QUERY_KEY } from './hooks/useUsers';
 import { useBulkUsageTotals, USAGE_TOTALS_QUERY_KEY } from './hooks/useUserUsageTotals';
@@ -30,7 +31,7 @@ import { useBulkTurnAverages } from './hooks/useUserTurnAverages';
 import { useBulkAskQuestionFractions } from './hooks/useUserAskQuestionFractions';
 import { useBulkAutomationScores } from './hooks/useUserAutomationScores';
 import { compareByScore } from './lib/automation';
-import { filterStateFromUrl, filterStateToUrl } from './lib/filterTypes';
+import { DEFAULT_FILTER_STATE, filterStateFromUrl, filterStateToUrl } from './lib/filterTypes';
 import { OPEN_USER_PARAM } from './lib/userLink';
 import { getViewById } from './lib/views';
 import { parseHiddenColumns, type ColumnId } from './lib/columns';
@@ -57,6 +58,7 @@ export default function UsersTab() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const [showServiceAccountCreate, setShowServiceAccountCreate] = useState(false);
   const [filterState, setFilterState] = useState<FilterState>(() =>
     filterStateFromUrl(searchParams, currency),
   );
@@ -90,9 +92,17 @@ export default function UsersTab() {
 
   const applyFilterState = useCallback(
     (next: FilterState) => {
-      setFilterState(next);
+      // A view saved before tiers existed has no role. Fill every missing key
+      // from the default so the address and the table agree.
+      const normalized: FilterState = {
+        ...DEFAULT_FILTER_STATE,
+        ...next,
+        role: next.role ?? null,
+        serviceAccount: next.serviceAccount ?? null,
+      };
+      setFilterState(normalized);
       setPage(0);
-      const qs = filterStateToUrl(next, currency);
+      const qs = filterStateToUrl(normalized, currency);
       router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
     },
     [pathname, router, currency],
@@ -364,11 +374,29 @@ export default function UsersTab() {
         onShowMembers={(tag) => applyFilterState({ ...filterState, tag, view: null })}
       />
 
+      {showServiceAccountCreate && (
+        <ServiceAccountCreate
+          onClose={() => setShowServiceAccountCreate(false)}
+          onCreated={() => {
+            void queryClient.invalidateQueries({ queryKey: USERS_LIST_QUERY_KEY });
+          }}
+        />
+      )}
+
       {/* Keep toolbar popovers visible even when the table has few or no rows.
           UserTable owns the horizontal scrolling; only its content is clipped. */}
       <div className="rounded-lg border border-gray-200 bg-white">
         <div className="space-y-3 rounded-t-lg border-b border-gray-200 bg-gray-50/50 p-3">
-          <SavedViews current={filterState} onApply={applyFilterState} />
+          <div className="flex items-center justify-between gap-2">
+            <SavedViews current={filterState} onApply={applyFilterState} />
+            <button
+              type="button"
+              onClick={() => setShowServiceAccountCreate(true)}
+              className="shrink-0 rounded-md bg-gray-900 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-gray-700"
+            >
+              New service account
+            </button>
+          </div>
           <FilterBar
             state={filterState}
             onChange={applyFilterState}
@@ -376,6 +404,8 @@ export default function UsersTab() {
             onDensityChange={setDensity}
             hiddenColumns={hiddenColumns}
             onHiddenColumnsChange={setHiddenColumns}
+            roleCounts={usersQuery.data?.role_counts}
+            serviceAccountCount={usersQuery.data?.service_account_count}
           />
         </div>
 

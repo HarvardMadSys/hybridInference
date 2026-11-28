@@ -14,16 +14,17 @@ configuration paths.
 
 | Configuration | Owner |
 |---|---|
-| Application settings and documents | `app_config`, edited in Admin Settings, the model catalog in Admin Providers → Models |
+| Application settings and documents | `app_config`, edited in Admin Settings, the model catalog in Admin Routing → Models |
 | Providers, credentials, live routes and overrides | Admin Providers and Routing |
 | Database connection, host ports and container networking | `.env` and Compose |
 | Persistent lifecycle options | `.ops.env`, copied from `.ops.env.example` |
 
 ### Application documents
 
-**Admin → Providers → Models** edits `MODEL_CATALOG`, with each model's runtime
-role and concurrency overrides beside it; **Admin → Settings → Application**
-edits the other documents. All of them are validated JSON and use the same conditional
+**Admin → Routing → Models** edits `MODEL_CATALOG`, with each model's runtime
+role and concurrency overrides beside it;
+**Admin → Settings → Site & Setup → Advanced settings → Application** edits the
+other documents. All of them are validated JSON and use the same conditional
 saves, audit, security confirmation and backup controls as other settings. No
 JSON file is a runtime fallback either.
 
@@ -159,6 +160,8 @@ Admin when deployment-wide policy is needed. Per-model `router` and
 `router_params` remain in the catalog; runtime strategy changes belong in Admin
 Routing. Fixed and RouteWise retain their existing selection and accounting.
 
+In the console, **Admin > Settings > Site & Setup > Application** shows `ROUTING_POLICY` as one card, with each value under a readable name and its key beside it. An empty field leaves the key out, so the default applies: the **Router** (`default_router`) for every model that names none, Fixed by default; the **Local share** (`routing_parameter.local_fraction`) and the **Local deployments** and **Remote deployments** it splits between; and the local deployments' **Health checks** (`health_check`, `timeout`). The card says what the policy does, keeps any key it does not edit, and switches to JSON for a policy it cannot show exactly. Two of these values do less than their names suggest. The local/remote split is applied once, at startup, and only on a gateway without a database; with one, route weights come from Admin Routing and the split has no effect. A health check is logged and shown on `GET /routing`, but never changes where a request goes. Every change applies after a backend restart.
+
 ## Settings that currently have no effect
 
 The retired model/routing/alert path variables and distribution active/dark modes
@@ -177,7 +180,7 @@ and the files, once no earlier release will run.
 
 Provider/key changes and ordinary route edits are persisted in the operational
 store. Backend processes observe committed changes and converge on their scoped
-model transitions, normally within ten seconds. **Admin → Providers → Models**
+model transitions, normally within ten seconds. **Admin → Routing → Models**
 shows **Applied in each backend process** beside the model catalog, including failed,
 stale or unsupported processes. A stale process is never counted as successfully
 updated. Compare the registered process count with your deployment inventory.
@@ -228,8 +231,9 @@ only when the upstream answered in the OpenAI error format. Other response
 bodies, redirect targets and connection details are not shown.
 
 A deployment whose gateway must not reach its own network can set
-`ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0` (Settings → Network). Base URLs
-saved or probed in Admin, and the model queue status address, must then
+`ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0` (Settings → Site & Setup → Advanced
+settings → Network). Base URLs saved or probed in Admin, and the model queue
+status address, must then
 resolve to public addresses. This is checked when the URL is validated and
 again for every connection the probe opens. Routes saved earlier keep serving:
 the switch governs what Admin accepts and probes, not existing inference
@@ -460,6 +464,8 @@ The smoke is explicit real inference and consumes the usual quota.
 ## Email and SMS delivery providers
 
 `EMAIL_PROVIDER` defaults to `smtp`; `SMS_PROVIDER` defaults to `none`. The gateway sends mail itself in two ways: `smtp`, through an SMTP server the deployment names, and `cloudflare`, through Cloudflare Email Sending. Neither comes configured. The first-run setup step offers the choice, and it and **Admin > Configuration** show only the selected transport's settings. Every other provider is an optional module that a deployment loads explicitly. A gateway that does not load a provider neither offers it nor lists its settings. Without an SMS provider, it does not list `SMS_PROVIDER` either, which would have only one value to choose, or any of the phone settings. Selecting an unavailable provider is a configuration error; delivery never silently falls back to another provider.
+
+In the console, **Admin > Settings > Site & Setup > Email** shows email as one card: choose the delivery service, then fill in that service's settings, listed under readable names with the variable beside each. **Send test email** sends a fixed test message through the saved settings, to an address you enter or to your own account's address. When it is not sent, the console says why: the settings still missing, an SMTP server that refused the login or the TLS connection, or what Cloudflare's error code means, such as a token without the Email Sending: Edit permission. The reason never includes a credential. Broadcasts record the same reason for each recipient that was not sent to.
 
 ### SMTP
 

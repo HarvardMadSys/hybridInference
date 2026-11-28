@@ -5,7 +5,7 @@ import { ProvidersSectionNav } from '../../ProvidersSectionNav';
 /**
  * Every Providers page shares the section control, and the provider Keys
  * shows: the layout stays mounted between its pages, so a provider chosen on
- * Overview or Keys is still chosen on the way back.
+ * Overview is still chosen on the way back from Performance.
  */
 export default function ProvidersLayout({ children }: { children: React.ReactNode }) {
   return (

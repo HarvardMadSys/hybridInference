@@ -96,14 +96,83 @@ describe('fieldValue', () => {
     }
   });
 
-  it('takes what is typed into a value never set as text, unless it is empty or null', () => {
-    expect(fieldValue('null', '')).toEqual({ value: null });
-    expect(fieldValue('null', ' null ')).toEqual({ value: null });
-    // Nothing says it is a number: a year or a version stays text.
-    expect(fieldValue('null', '2024')).toEqual({ value: '2024' });
-    expect(fieldValue('null', '1.10')).toEqual({ value: '1.10' });
-    expect(fieldValue('null', 'true')).toEqual({ value: 'true' });
+  it('refuses a number JavaScript cannot hold as written, which a save would change', () => {
+    expect(fieldValue('number', '9007199254740991')).toEqual({ value: 9007199254740991 });
+    expect(fieldValue('number', '9007199254740993')).toEqual({
+      error: 'Too long an integer to keep exactly. Set it in JSON.',
+    });
+    expect(fieldValue('number', '1e400')).toEqual({ error: 'Too large a number. Set it in JSON.' });
+    // A decimal or an exponent is a double for the gateway too.
+    expect(fieldValue('number', '1e20')).toEqual({ value: 1e20 });
+  });
+
+  it('leaves a value never set unset when it is left empty or null', () => {
+    for (const text of ['', '  ', 'null', ' null ', 'NULL']) {
+      expect(fieldValue('null', text)).toEqual({ value: null });
+    }
+  });
+
+  it('reads true or false typed into a value never set as a switch', () => {
+    expect(fieldValue('null', 'true')).toEqual({ value: true });
+    expect(fieldValue('null', ' False ')).toEqual({ value: false });
+    expect(fieldValue('null', 'TRUE')).toEqual({ value: true });
+  });
+
+  it('reads a JSON number typed into a value never set as a number', () => {
+    expect(fieldValue('null', '131072')).toEqual({ value: 131072 });
+    expect(fieldValue('null', ' -2.5 ')).toEqual({ value: -2.5 });
+    expect(fieldValue('null', '1e3')).toEqual({ value: 1000 });
+    expect(fieldValue('null', '0')).toEqual({ value: 0 });
+    expect(fieldValue('null', '9007199254740991')).toEqual({ value: 9007199254740991 });
+  });
+
+  it('reads anything that is no JSON number as text, which JavaScript would take', () => {
+    for (const text of [
+      '0x10',
+      '1e',
+      ' 1e',
+      'Infinity',
+      '-Infinity',
+      'NaN',
+      '1.',
+      '.5',
+      '01',
+      '+1',
+      '1,5',
+      '1_000',
+    ]) {
+      expect(fieldValue('null', text)).toEqual({ value: text });
+    }
     expect(fieldValue('null', 'eu-west')).toEqual({ value: 'eu-west' });
+    expect(fieldValue('null', 'yes')).toEqual({ value: 'yes' });
+  });
+
+  it('refuses a number in a value never set that JavaScript would change, not taking it as text', () => {
+    expect(fieldValue('null', '9007199254740993')).toEqual({
+      error: 'Too long an integer to keep exactly. Set it in JSON.',
+    });
+    expect(fieldValue('null', '1e400')).toEqual({ error: 'Too large a number. Set it in JSON.' });
+  });
+
+  it('takes a quoted text typed into a value never set as the text it quotes', () => {
+    expect(fieldValue('null', '"123"')).toEqual({ value: '123' });
+    expect(fieldValue('null', ' "true" ')).toEqual({ value: 'true' });
+    expect(fieldValue('null', '"null"')).toEqual({ value: 'null' });
+    expect(fieldValue('null', '""')).toEqual({ value: '' });
+    expect(fieldValue('null', '"a \\"b\\""')).toEqual({ value: 'a "b"' });
+    // Not one JSON string: kept as typed.
+    expect(fieldValue('null', '"')).toEqual({ value: '"' });
+    expect(fieldValue('null', '"a" and "b"')).toEqual({ value: '"a" and "b"' });
+  });
+
+  it('shows what a value never set became as text that reads back as the same value', () => {
+    for (const text of ['', 'null', 'true', 'false', '131072', '-2.5', '1e3', 'eu-west', '"123"']) {
+      const typed = fieldValue('null', text);
+      if (typed.error !== undefined) throw new Error(typed.error);
+      // Saved and read again, the field takes the kind of its new value.
+      const [field] = documentFields({ value: typed.value });
+      expect(fieldValue(field.kind, field.text)).toEqual({ value: typed.value });
+    }
   });
 });
 
@@ -156,6 +225,33 @@ describe('withFieldTexts', () => {
 
     expect(errors).toEqual({ [id('models[0].context_length')]: 'Enter a number.' });
     expect(sameJson(document, CATALOG)).toBe(true);
+  });
+
+  it('saves what is typed into a never-set context_length or admin_only as its type', () => {
+    const unset: JsonObject = {
+      models: [{ id: 'example-chat', context_length: null, admin_only: null }],
+    };
+    const own = documentFields(unset);
+    const ownId = (label: string) => own.find((field) => field.label === label)!.id;
+    expect(own.map((field) => field.kind)).toEqual(['string', 'null', 'null']);
+
+    const { document, errors } = withFieldTexts(unset, own, {
+      [ownId('models[0].context_length')]: '131072',
+      [ownId('models[0].admin_only')]: 'false',
+    });
+
+    expect(errors).toEqual({});
+    // Not "131072", which the gateway refuses, nor "false", which it reads as true.
+    expect(document).toEqual({
+      models: [{ id: 'example-chat', context_length: 131072, admin_only: false }],
+    });
+    expect(JSON.parse(documentText(document))).toEqual(document);
+    // Read again, the fields are a number and a switch.
+    expect(summary(document)).toEqual([
+      'models[0].id string example-chat',
+      'models[0].context_length number 131072',
+      'models[0].admin_only boolean false',
+    ]);
   });
 
   it('keeps a key named __proto__ a key of the document', () => {

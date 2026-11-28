@@ -26,6 +26,7 @@ from urllib.parse import quote
 import httpx
 
 from serving.config.settings import settings
+from serving.utils.delivery import EmailDelivery
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -42,6 +43,52 @@ _ERRORS_LOGGED = 3
 #: dotted identifiers (``email.sending.error.throttled``); anything else could
 #: echo the request, so it is not repeated.
 _SAFE_ERROR_TEXT = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
+_TOKEN_REFUSED = (
+    "Cloudflare did not accept the API token. Check that it was copied whole and has not "
+    "been revoked or expired."
+)
+_RATE_LIMITED = "Cloudflare is rate-limiting this account. Wait a minute and try again."
+_NO_ACCOUNT = "Cloudflare found nothing to send with at this account ID. Check the account ID."
+#: Where to look for an expired token, a missing permission or a domain that
+#: is not onboarded, by the error code the send endpoint documents
+#: (https://developers.cloudflare.com/email-service/api/send-emails/rest-api/),
+#: with the HTTP status it documents the code under. A code is read only with
+#: that status: Cloudflare's API also answers 10000, its generic
+#: "Authentication error", with 401 for a token it does not accept, where the
+#: send endpoint's table has 10000 only as a 404.
+_ADVICE_BY_CODE: dict[int, tuple[int, str]] = {
+    10000: (404, _NO_ACCOUNT),
+    10001: (400, "Cloudflare refused the request as malformed. Check the sender address."),
+    10002: (500, "Cloudflare had an internal error. Try again in a few minutes."),
+    10003: (500, "Cloudflare does not support this request."),
+    10004: (429, _RATE_LIMITED),
+    10100: (503, "Cloudflare's authentication service is unavailable. Try again in a few minutes."),
+    10101: (401, _TOKEN_REFUSED),
+    10102: (
+        403,
+        "The API token may not send email for this account. Give it the Email Sending: Edit "
+        "permission on the account whose ID is configured.",
+    ),
+    10103: (
+        401,
+        "This kind of Cloudflare token cannot send email. Create an API token with the "
+        "Email Sending: Edit permission.",
+    ),
+    10105: (403, "This Cloudflare account is not entitled to Email Sending."),
+    10200: (400, "The message is larger than Cloudflare accepts."),
+    10202: (
+        400,
+        "Cloudflare refused the message as invalid. Check that the sender address is on a "
+        "domain onboarded under Email Service > Email Sending.",
+    ),
+    10203: (403, "Email Sending is turned off for this domain or account in Cloudflare."),
+    10207: (403, "Email Sending is paused for this Cloudflare account."),
+    10208: (
+        403,
+        "This Cloudflare plan sends only to verified destination addresses. Verify the "
+        "recipient in Cloudflare first.",
+    ),
+}
 
 
 def _credentials() -> tuple[str, str]:
@@ -56,8 +103,13 @@ def is_configured() -> bool:
     return all(_credentials())
 
 
-def _describe_errors(errors: Any) -> str:
-    """Name a refusal's error codes, never text that could carry the request."""
+def _describe_errors(errors: Any, *, withhold: tuple[str, ...] = ()) -> str:
+    """Name a refusal's error codes, never text that could carry the request.
+
+    A part containing one of *withhold* (the API token) is left out even when
+    it looks like an identifier: the reason reaches the admin console, which
+    never shows a saved secret.
+    """
     described: list[str] = []
     if isinstance(errors, list):
         for error in errors[:_ERRORS_LOGGED]:
@@ -66,25 +118,77 @@ def _describe_errors(errors: Any) -> str:
             parts = [
                 str(part)
                 for part in (error.get("code"), error.get("message"))
-                if part is not None and _SAFE_ERROR_TEXT.fullmatch(str(part))
+                if part is not None
+                and _SAFE_ERROR_TEXT.fullmatch(str(part))
+                and not any(secret and secret in str(part) for secret in withhold)
             ]
             if parts:
                 described.append(" ".join(parts))
     return "; ".join(described) or "no error code"
 
 
-def send(message: EmailMessage) -> bool:
-    """Send one rendered message, returning True once Cloudflare delivered or queued it.
+def _advice_by_status(status: int) -> str:
+    if status == 401:
+        return _TOKEN_REFUSED
+    if status == 403:
+        return (
+            "Cloudflare refused to send. Check the account ID, that the API token has the "
+            "Email Sending: Edit permission on that account, and that the sender's domain is "
+            "onboarded for Email Sending."
+        )
+    if status == 404:
+        return _NO_ACCOUNT
+    if status == 429:
+        return _RATE_LIMITED
+    if status >= 500:
+        return "Cloudflare could not send the message just now. Try again in a few minutes."
+    if status < 400:
+        return f"Cloudflare answered in a way its API does not (HTTP {status}). Try again."
+    return (
+        "Cloudflare refused the message. Check the sender address and that its domain is "
+        "onboarded under Email Service > Email Sending."
+    )
 
-    Never raises: a refusal, a bounce, a suppressed recipient or a failed
-    connection is logged and returns False. ``template`` and ``template_data``
-    select a template on template transports; Cloudflare receives the rendered
-    bodies instead, as SMTP does.
+
+def _refusal_reason(status: int, errors: Any, described: str) -> str:
+    """Say what to fix, then name the codes.
+
+    The advice is the first error code's documented for this status, else
+    the status's own.
+    """
+    codes = (
+        [error.get("code") for error in errors if isinstance(error, dict)]
+        if isinstance(errors, list)
+        else []
+    )
+    advice = next(
+        (
+            _ADVICE_BY_CODE[code][1]
+            for code in codes
+            if isinstance(code, int)
+            and code in _ADVICE_BY_CODE
+            and _ADVICE_BY_CODE[code][0] == status
+        ),
+        None,
+    ) or _advice_by_status(status)
+    return f"{advice} (Cloudflare answered HTTP {status}: {described}.)"
+
+
+def deliver(message: EmailMessage) -> EmailDelivery:
+    """Send one rendered message and say what happened.
+
+    Sent means Cloudflare delivered or queued it. Never raises: a refusal, a
+    bounce, a suppressed recipient or a failed connection is logged and comes
+    back unsent, with the reason an administrator can act on.
+    ``template`` and ``template_data`` select a template on template
+    transports; Cloudflare receives the rendered bodies instead, as SMTP does.
     """
     account_id, token = _credentials()
     if not (account_id and token):
         logger.warning("Email not sent: Cloudflare Email Sending is not configured")
-        return False
+        return EmailDelivery(
+            False, "Cloudflare Email Sending needs both an account ID and an API token."
+        )
 
     sender: dict[str, str] = {"address": settings.smtp_from_email}
     if settings.smtp_from_name:
@@ -112,7 +216,11 @@ def send(message: EmailMessage) -> bool:
             message.to_email,
             type(exc).__name__,
         )
-        return False
+        return EmailDelivery(
+            False,
+            f"The gateway could not reach Cloudflare's API ({type(exc).__name__}). Check that "
+            "it can make outbound HTTPS requests to api.cloudflare.com.",
+        )
 
     try:
         envelope = response.json()
@@ -120,26 +228,41 @@ def send(message: EmailMessage) -> bool:
         envelope = None
     if not isinstance(envelope, dict) or envelope.get("success") is not True:
         errors = envelope.get("errors") if isinstance(envelope, dict) else None
+        described = _describe_errors(errors, withhold=(token,))
         logger.error(
             "Cloudflare refused email to %s: HTTP %s, %s",
             message.to_email,
             response.status_code,
-            _describe_errors(errors),
+            described,
         )
-        return False
+        return EmailDelivery(False, _refusal_reason(response.status_code, errors, described))
 
     result = envelope.get("result")
     if not isinstance(result, dict):
         result = {}
     if result.get("delivered") or result.get("queued"):
         logger.info("Email sent successfully to %s", message.to_email)
-        return True
+        return EmailDelivery(True)
     # One recipient per request: accepted, but neither delivered nor queued.
     if result.get("permanent_bounces"):
         reason = "the address bounced permanently"
+        advice = "Cloudflare accepted the message, but the recipient address bounced permanently."
     elif result.get("suppressed_recipients"):
         reason = "the address is on the account's suppression list"
+        advice = (
+            "Cloudflare accepted the message, but the recipient address is on the account's "
+            "suppression list."
+        )
     else:
         reason = "Cloudflare reported neither delivery nor queueing"
+        advice = "Cloudflare accepted the message but reported neither delivery nor queueing."
     logger.error("Cloudflare did not deliver email to %s: %s", message.to_email, reason)
-    return False
+    return EmailDelivery(False, advice)
+
+
+def send(message: EmailMessage) -> bool:
+    """Send one rendered message, returning True once Cloudflare delivered or queued it.
+
+    :func:`deliver` also says why a message was not sent.
+    """
+    return deliver(message).sent

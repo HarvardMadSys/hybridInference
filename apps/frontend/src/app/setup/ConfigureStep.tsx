@@ -4,6 +4,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import { ConfigEntryField } from '@/components/features/configuration/ConfigEntryField';
+import { EmailDeliveryFields } from '@/components/features/configuration/EmailDeliveryFields';
+import {
+  EMAIL_CATEGORY,
+  emailProviderEntry,
+} from '@/components/features/configuration/emailDeliveryDrafts';
 import {
   applicableEntries,
   buildPatch,
@@ -47,7 +52,8 @@ type SignupValues = Partial<Record<SignupKey, boolean>>;
  * entry the registry marks for setup, and anything required that has no value.
  * Sign-up comes first on the page and in the save, because it decides whether
  * the email settings are required. The email transport is a choice, SMTP or
- * Cloudflare, and only the chosen one's settings are shown and saved. One
+ * Cloudflare, shown as the same card as on Settings, and only the chosen
+ * one's settings are shown and saved. Settings has the test email. One
  * "Save and continue" writes the sign-up settings, then the configuration batch.
  */
 export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) => void }) {
@@ -108,16 +114,24 @@ export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) =
   // The entries this step offers are fixed when it loads; a save moves on. Of
   // those, it shows the ones that apply to the choices made on it so far: the
   // SMTP settings while SMTP is the email transport, Cloudflare's while it is.
+  const offered = useMemo(
+    () => (config ? config.entries.filter((entry) => entry.setup || entry.missing) : []),
+    [config],
+  );
   const groups = useMemo(() => {
     if (!config) return [];
-    const wanted = new Set(
-      config.entries.filter((entry) => entry.setup || entry.missing).map((entry) => entry.key),
-    );
+    const wanted = new Set(offered.map((entry) => entry.key));
     const shown = applicableEntries(config.entries, drafts).filter((entry) =>
       wanted.has(entry.key),
     );
     return groupEntries(config.categories, shown);
-  }, [config, drafts]);
+  }, [config, drafts, offered]);
+  // The email card chooses among the transports itself, so it is given every
+  // transport's settings this step offers, the ones not chosen included.
+  const emailEntries = useMemo(
+    () => offered.filter((entry) => entry.category === EMAIL_CATEGORY),
+    [offered],
+  );
 
   const onDraftChange = useCallback((key: string, draft: ConfigDraft | undefined) => {
     setDrafts((prev) => {
@@ -314,16 +328,30 @@ export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) =
               <p className="mt-0.5 text-[13px] text-gray-500">{group.description}</p>
             ) : null}
             <div className="mt-1 divide-y divide-gray-100">
-              {group.entries.map((entry) => (
-                <ConfigEntryField
-                  key={entry.key}
-                  entry={entry}
-                  draft={drafts[entry.key]}
-                  onChange={onDraftChange}
-                  serverError={entryErrors[entry.key]}
+              {group.id === EMAIL_CATEGORY && emailProviderEntry(emailEntries) ? (
+                // No status or test here: nothing is saved yet, and the
+                // sign-up switches above say why the settings are required.
+                <EmailDeliveryFields
+                  entries={emailEntries}
+                  drafts={drafts}
+                  onDraftChange={onDraftChange}
+                  errors={entryErrors}
                   disabled={saving}
+                  layout="stacked"
+                  showStatus={false}
                 />
-              ))}
+              ) : (
+                group.entries.map((entry) => (
+                  <ConfigEntryField
+                    key={entry.key}
+                    entry={entry}
+                    draft={drafts[entry.key]}
+                    onChange={onDraftChange}
+                    serverError={entryErrors[entry.key]}
+                    disabled={saving}
+                  />
+                ))
+              )}
             </div>
           </section>
         ))

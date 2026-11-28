@@ -6,11 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RoutingTab } from './RoutingTab';
 
 vi.mock('./ProviderRoutesTab', () => ({
-  ProviderRoutesTab: vi.fn(({ showRoutewiseSettings }: { showRoutewiseSettings?: boolean }) => (
-    <div data-testid="provider-routes-tab">
-      provider routes {showRoutewiseSettings ? 'with routewise settings' : ''}
-    </div>
-  )),
+  ProviderRoutesTab: vi.fn(() => <div data-testid="provider-routes-tab">provider routes</div>),
 }));
 
 describe('RoutingTab', () => {
@@ -22,6 +18,9 @@ describe('RoutingTab', () => {
     render(<RoutingTab />);
 
     expect(screen.getByRole('heading', { level: 2, name: 'Routing' })).toBeInTheDocument();
-    expect(screen.getByTestId('provider-routes-tab')).toHaveTextContent('with routewise settings');
+    expect(screen.getByTestId('provider-routes-tab')).toHaveTextContent('provider routes');
+    expect(
+      screen.getByText(/RouteWise parameters are under Settings → Providers & Routing → Advanced/),
+    ).toBeInTheDocument();
   });
 });

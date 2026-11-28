@@ -110,6 +110,45 @@ def _start_of_month() -> datetime:
     return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
+async def test_role_filter_lists_one_tier_and_counts_every_tier(admin_store):
+    store, pool = admin_store
+    await _user(store, "plain")
+    boss = await _user(store, "boss")
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE users SET role = 'admin' WHERE id = $1", boss)
+
+    total, names = await _listed(store, role="admin")
+    assert (total, names) == (1, ["boss"])
+
+    # Counts cover every account, not the filtered page, and stay present when
+    # the page itself is narrowed to one tier.
+    _total, rows, counts = await store.list_users(search=_DOMAIN, role="free")
+    assert [row["id"] for row in rows] == ["u-adml-plain"]
+    assert all(row["role"] == "free" for row in rows)
+    roles = counts["roles"]
+    assert set(roles) == {"free", "pro", "internal", "admin"}
+    assert roles["admin"] >= 1
+    assert roles["free"] >= 1
+
+
+async def test_service_account_filter_lists_them_and_counts_them(admin_store):
+    store, pool = admin_store
+    await _user(store, "person")
+    bot = await _user(store, "bot")
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET role = 'pro', is_service_account = TRUE WHERE id = $1", bot
+        )
+
+    assert await _listed(store, service_account=True) == (1, ["bot"])
+    assert await _listed(store, service_account=False) == (1, ["person"])
+    # It narrows a tier too, and the count covers every account regardless.
+    assert await _listed(store, role="pro", service_account=True) == (1, ["bot"])
+    _total, _rows, counts = await store.list_users(search=_DOMAIN, role="free")
+    assert counts["service_accounts"] >= 1
+    assert set(counts["roles"]) == {"free", "pro", "internal", "admin"}
+
+
 async def test_quota_state_default_and_custom_read_the_active_key(admin_store):
     store, pool = admin_store
     await _key(pool, await _user(store, "inherits"), None)

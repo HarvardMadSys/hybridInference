@@ -30,20 +30,21 @@ def test_manual_candidate_cannot_be_mistaken_for_lock_input() -> None:
 
     assert "manual-${{ github.sha }}" in tags
     assert "dev-" not in tags
+    assert "sha-" not in tags
     assert "Diagnostic only: upstream.lock never consumes manual-* tags" in summary
-    assert "automatic dev CI multi-arch candidate" in summary
+    assert "multi-arch image CI publishes for a release" in summary
     assert "Deploy Staging by Digest" not in summary
 
 
 def test_no_trigger_is_path_filtered_so_every_sha_gets_a_run() -> None:
     """A path filter here withholds the run itself, not just the jobs.
 
-    Pushes carried a docs-only `paths-ignore` until #1283 made every green dev
-    SHA publish a backend candidate for the distribution repo's bump bot. A
-    filtered push creates no workflow run at all, so nothing downstream can
-    rescue it — not a job-level condition, and not the staging deploy that
-    hangs off this workflow's completion. Cheapness is the per-job change
-    classification's job, which is asserted separately.
+    Pushes carried a docs-only `paths-ignore` until #1283. A filtered push
+    creates no workflow run at all, so nothing downstream can rescue it: a
+    docs-only release would publish no images, and the distribution's bump
+    script, which requires a green run for the commit it pins, would refuse
+    it. Cheapness is the per-job change classification's job, which is
+    asserted separately.
     """
     triggers = _triggers(_workflow("ci.yml"))
 
@@ -82,14 +83,40 @@ def test_publish_gate_survives_skipped_ancestors(job_name: str) -> None:
 
     assert "ci-gate" in job["needs"]
     assert "!cancelled()" in job["if"]
-    assert "github.event_name == 'push'" in job["if"]
-    assert "github.ref == 'refs/heads/dev'" in job["if"]
     assert "needs.ci-gate.result == 'success'" in job["if"]
+
+
+@pytest.mark.parametrize(
+    "job_name",
+    [
+        "publish-backend-precheck",
+        "publish-backend-arm64",
+        "publish-backend-amd64",
+        "publish-backend",
+        "publish-console-precheck",
+        "publish-console-arm64",
+        "publish-console-amd64",
+        "publish-console",
+    ],
+)
+def test_images_are_published_only_for_releases(job_name: str) -> None:
+    """Only main's run publishes: a release is a move of main.
+
+    Dev pushes, pull requests and other branches build images to test them
+    and push nothing. A dispatch on main re-publishes main's commit when its
+    release run did not finish; a dispatch on any other ref publishes nothing.
+    """
+    condition = _workflow("ci.yml")["jobs"][job_name]["if"]
+
+    assert "github.ref == 'refs/heads/main'" in condition
+    assert "refs/heads/dev" not in condition
+    assert "(github.event_name == 'push' || github.event_name == 'workflow_dispatch')" in condition
+    assert "pull_request" not in condition
 
 
 @pytest.mark.parametrize("image", ["backend", "console"])
 def test_publish_stitch_requires_both_native_halves(image: str) -> None:
-    """The dev-<sha> tag is the completeness signal; only the stitch mints it.
+    """The sha-<sha> tag is the completeness signal; only the stitch mints it.
 
     The stitch must gate on BOTH arch results explicitly — with !cancelled()
     suppressing the implicit success(), nothing else stops it from tagging a
@@ -105,6 +132,51 @@ def test_publish_stitch_requires_both_native_halves(image: str) -> None:
     }
     assert f"needs.publish-{image}-arm64.result == 'success'" in job["if"]
     assert f"needs.publish-{image}-amd64.result == 'success'" in job["if"]
+
+
+def test_a_later_release_queues_behind_an_earlier_release_publish() -> None:
+    """A main run publishes a release's images, so nothing may cancel it.
+
+    A dispatch on main publishes only main's current tip, so a release whose
+    run a later main move cancelled could never get images. Other refs keep
+    cancelling superseded runs.
+    """
+    concurrency = _workflow("ci.yml")["concurrency"]
+
+    assert concurrency["cancel-in-progress"] == "${{ github.ref != 'refs/heads/main' }}"
+
+
+def test_restore_drill_orders_releases_by_tag_name() -> None:
+    """Release tags are lightweight; their creatordate is the commit's date.
+
+    The YYYYMMDD[.N] name is the release order, and a version sort puts .10
+    after .9.
+    """
+    steps = _workflow("ci.yml")["jobs"]["tutorial-e2e"]["steps"]
+    drill = next(step for step in steps if step.get("id") == "demo-previous-smoke")["run"]
+
+    assert "--sort=-v:refname" in drill
+    assert "creatordate" not in drill
+    assert "for prefix in sha dev" in drill
+
+
+@pytest.mark.parametrize("image", ["backend", "console"])
+def test_published_images_are_tagged_by_commit_not_branch(image: str) -> None:
+    """Release images carry sha-<sha>; the precheck looks up the same tag.
+
+    The dev-<sha> name belonged to per-dev-push candidates and survives only
+    on images published before releases became the sole trigger.
+    """
+    jobs = _workflow("ci.yml")["jobs"]
+    stitch = next(step for step in jobs[f"publish-{image}"]["steps"] if step.get("id") == "stitch")
+    lookup = next(
+        step for step in jobs[f"publish-{image}-precheck"]["steps"] if step.get("id") == "existing"
+    )
+
+    assert ':sha-${GITHUB_SHA}"' in stitch["run"]
+    assert ':sha-${short}"' in stitch["run"]
+    assert '\\"sha-${GITHUB_SHA}\\"' in lookup["run"]
+    assert "dev-" not in stitch["run"] + lookup["run"]
 
 
 @pytest.mark.parametrize("image", ["backend", "console"])

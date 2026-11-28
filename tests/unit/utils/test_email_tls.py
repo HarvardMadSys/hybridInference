@@ -117,6 +117,10 @@ class _SmtpServer:
 
     pki: _Pki
     implicit_tls: bool = False
+    #: Whether EHLO before TLS offers STARTTLS, as every server this sends to must.
+    offer_starttls: bool = True
+    #: The answer to AUTH: accepted, unless a test wants the password refused.
+    auth_reply: bytes = b"235 accepted\r\n"
     commands: list[str] = field(default_factory=list)
     messages: list[bytes] = field(default_factory=list)
     handshake_completed: bool = False
@@ -163,7 +167,7 @@ class _SmtpServer:
                 self.commands.append(command.split(" ", 1)[0].upper())
                 verb = self.commands[-1]
                 if verb in {"EHLO", "HELO"}:
-                    extension = "AUTH PLAIN" if tls else "STARTTLS"
+                    extension = "AUTH PLAIN" if tls or not self.offer_starttls else "STARTTLS"
                     conn.sendall(f"250-smtp.test\r\n250 {extension}\r\n".encode())
                 elif verb == "STARTTLS":
                     conn.sendall(b"220 go ahead\r\n")
@@ -173,7 +177,7 @@ class _SmtpServer:
                     conn, tls = wrapped, True
                     reader = conn.makefile("rb")
                 elif verb == "AUTH":
-                    conn.sendall(b"235 accepted\r\n")
+                    conn.sendall(self.auth_reply)
                 elif verb == "DATA":
                     conn.sendall(b"354 go ahead\r\n")
                     body = bytearray()
@@ -276,3 +280,76 @@ def test_port_465_speaks_tls_from_the_first_byte(tmp_path, smtp_settings, monkey
     assert "STARTTLS" not in server.commands
     assert ("AUTH" in server.commands) is trusted
     assert len(server.messages) == int(trusted)
+
+
+# --- what a failed send tells the administrator ---------------------------------
+
+
+def _deliver() -> email_mod.EmailDelivery:
+    return email_mod.deliver_email("owner@example.com", "Reset", "<p>link</p>", "link")
+
+
+def test_an_untrusted_certificate_is_reported_with_the_way_out(tmp_path, smtp_settings):
+    server = _SmtpServer(_issue(tmp_path, dns_names=("localhost",), ip="127.0.0.1"))
+    smtp_settings(server.port)
+
+    delivery = _deliver()
+    server.join()
+
+    assert delivery.sent is False
+    assert f"localhost:{server.port}" in delivery.reason
+    assert "did not present a certificate this host trusts" in delivery.reason
+    assert "SSL_CERT_FILE" in delivery.reason
+
+
+def test_a_refused_password_is_reported_without_the_password(tmp_path, smtp_settings, monkeypatch):
+    pki = _issue(tmp_path, dns_names=("localhost",), ip="127.0.0.1")
+    server = _SmtpServer(pki, auth_reply=b"535 5.7.8 credentials invalid\r\n")
+    smtp_settings(server.port)
+    monkeypatch.setenv("SSL_CERT_FILE", str(pki.ca_file))
+
+    delivery = _deliver()
+    server.join()
+
+    assert delivery.sent is False
+    assert "rejected the username or password (SMTP 535)" in delivery.reason
+    assert "the-smtp-password" not in delivery.reason
+    assert "credentials invalid" not in delivery.reason  # the server's own words stay in the log
+    assert server.messages == []
+
+
+def test_a_server_without_starttls_is_reported_with_the_port_to_use(tmp_path, smtp_settings):
+    server = _SmtpServer(_issue(tmp_path, dns_names=("localhost",)), offer_starttls=False)
+    smtp_settings(server.port)
+
+    delivery = _deliver()
+    server.join()
+
+    assert delivery.sent is False
+    assert "does not offer STARTTLS" in delivery.reason
+    assert "465" in delivery.reason
+    # Nothing went over the plain connection: no login, no message.
+    assert "AUTH" not in server.commands
+    assert server.messages == []
+
+
+def test_a_closed_port_is_reported_as_a_refused_connection(smtp_settings):
+    with socket.create_server(("127.0.0.1", 0)) as probe:
+        port = probe.getsockname()[1]
+    smtp_settings(port)  # nothing listens there any more
+
+    delivery = _deliver()
+
+    assert delivery.sent is False
+    assert f"localhost:{port}" in delivery.reason
+    assert "refused the connection" in delivery.reason
+
+
+def test_a_delivered_message_has_no_reason(tmp_path, smtp_settings, monkeypatch):
+    pki = _issue(tmp_path, dns_names=("localhost",), ip="127.0.0.1")
+    server = _SmtpServer(pki)
+    smtp_settings(server.port)
+    monkeypatch.setenv("SSL_CERT_FILE", str(pki.ca_file))
+
+    assert _deliver() == email_mod.EmailDelivery(True)
+    server.join()

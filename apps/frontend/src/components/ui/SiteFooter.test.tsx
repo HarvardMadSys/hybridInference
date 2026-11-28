@@ -24,10 +24,11 @@ const configuredBranding = {
 
 let brandingOverride: Record<string, unknown> = configuredBranding;
 let publicStats = false;
+let openinfra = false;
 
 vi.mock('@/components/providers/SiteConfigProvider', () => ({
   useBranding: () => brandingOverride,
-  useSiteConfig: () => ({ features: { publicStats } }),
+  useSiteConfig: () => ({ features: { publicStats, openinfra } }),
 }));
 
 describe('SiteFooter', () => {
@@ -35,6 +36,7 @@ describe('SiteFooter', () => {
     cleanup();
     brandingOverride = configuredBranding;
     publicStats = false;
+    openinfra = false;
   });
 
   it('links the public stats page only when the deployment enables it', () => {
@@ -45,6 +47,16 @@ describe('SiteFooter', () => {
     publicStats = true;
     render(<SiteFooter />);
     expect(screen.getByRole('link', { name: 'Stats' })).toHaveAttribute('href', '/stats');
+  });
+
+  it('links the OpenInfra page only when the deployment enables it', () => {
+    render(<SiteFooter />);
+    expect(screen.queryByRole('link', { name: 'OpenInfra' })).not.toBeInTheDocument();
+    cleanup();
+
+    openinfra = true;
+    render(<SiteFooter />);
+    expect(screen.getByRole('link', { name: 'OpenInfra' })).toHaveAttribute('href', '/openinfra');
   });
 
   it('includes an external status link', () => {

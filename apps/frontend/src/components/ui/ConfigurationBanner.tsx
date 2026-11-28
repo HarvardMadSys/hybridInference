@@ -22,7 +22,7 @@ import { useT } from '@/components/providers/useT';
  * and Admin → Settings, which list the missing settings themselves.
  *
  * The flag is the server-rendered site configuration's, so a save on the
- * Settings tab or on Providers → Models calls `router.refresh()` to update it.
+ * Settings tab or on Routing → Models calls `router.refresh()` to update it.
  */
 export function ConfigurationBanner(): JSX.Element | null {
   const { setup, configuration } = useSiteConfig();
@@ -64,18 +64,18 @@ function MissingConfigurationNotice({ onModels }: { onModels: boolean }): JSX.El
           <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
             <span className="font-semibold">Ask admin to configure</span>
             {/* Filtered to the required settings that have no value, on every
-                sub-tab; clearing the filter lands on Application, where a site
+                tab; clearing the filter lands on Site & Setup, where a site
                 document that does not validate is corrected. */}
             <Link
-              href={`${ADMIN_SETTINGS_PATH}?tab=application&missing=1`}
+              href={`${ADMIN_SETTINGS_PATH}?tab=setup&missing=1`}
               prefetch={false}
               className="font-medium underline underline-offset-2"
             >
               Open Settings
             </Link>
-            {/* The other way to be incomplete: no model at all. Providers →
-                Models holds the catalog, and points to Routing, where a model
-                is created. */}
+            {/* The other way to be incomplete: no model at all. Routing →
+                Models holds the catalog, and points to Routes beside it, where
+                a model is created. */}
             {onModels ? null : (
               <Link
                 href={ADMIN_MODELS_PATH}

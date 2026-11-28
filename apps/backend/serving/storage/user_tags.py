@@ -10,7 +10,9 @@ automatic rule's query (:func:`detect_members`).
 it sent at least one request, and gives the tag to every active account with
 at least ``min_active_hours`` of them. A request is a row of ``api_logs``
 attributed to the account; the rows a batch job wrote are left out, since the
-gateway sends those itself, at its own pace, whoever is watching. A
+gateway sends those itself, at its own pace, whoever is watching. A service
+account (``users.is_service_account``) is never matched: it is unattended by
+design, and an administrator who wants one to carry a tag gives it by hand. A
 ``dismissed`` membership counts only the requests sent after it was
 dismissed.
 
@@ -124,7 +126,7 @@ WITH activity AS (
 matched AS (
     SELECT a.user_id, a.active_hours
     FROM activity a
-    JOIN users u ON u.id = a.user_id AND u.status = 'active'
+    JOIN users u ON u.id = a.user_id AND u.status = 'active' AND NOT u.is_service_account
 )
 """
 

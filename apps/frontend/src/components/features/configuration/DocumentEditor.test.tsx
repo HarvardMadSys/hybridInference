@@ -23,7 +23,7 @@ const CATALOG = JSON.stringify({
 
 function documentEntry(overrides: Partial<ConfigEntry> = {}): ConfigEntry {
   return {
-    key: 'MODEL_CATALOG',
+    key: 'ALERT_RULES',
     category: 'models',
     description: 'Model catalog as JSON.',
     type: 'text',
@@ -102,7 +102,7 @@ describe('a JSON document as fields', () => {
   it('shows one field per value, each a simple string, under the setting', () => {
     renderDocument();
 
-    const fields = within(screen.getByRole('group', { name: 'MODEL_CATALOG' }));
+    const fields = within(screen.getByRole('group', { name: 'ALERT_RULES' }));
     expect(fields.getAllByRole('textbox')).toHaveLength(6);
     expect(field('models[0].id')).toHaveValue('example-chat');
     expect(field('models[0].context_length')).toHaveValue('4096');
@@ -114,7 +114,7 @@ describe('a JSON document as fields', () => {
     expect(field('models[0].supports_tools')).toHaveAccessibleDescription('true or false');
     expect(field('models[0].supported_params')).toHaveAccessibleDescription('comma-separated');
     expect(screen.getByRole('button', { name: 'Fields' })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.queryByRole('textbox', { name: 'MODEL_CATALOG' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'ALERT_RULES' })).not.toBeInTheDocument();
   });
 
   it('saves the whole document, each value as its type, and an edit put back is no edit', () => {
@@ -136,7 +136,7 @@ describe('a JSON document as fields', () => {
     });
     // Saved indented, which the JSON view then shows.
     expect(latest).toMatchObject({ kind: 'value', value: expect.stringContaining('\n  "models"') });
-    expect(buildPatch([documentEntry()], { MODEL_CATALOG: latest! }).errors).toEqual({});
+    expect(buildPatch([documentEntry()], { ALERT_RULES: latest! }).errors).toEqual({});
 
     type('models[0].context_length', '4096');
     type('models[0].supports_tools', 'false');
@@ -155,9 +155,9 @@ describe('a JSON document as fields', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(
       'models[0].context_length: Enter a number.',
     );
-    expect(buildPatch([documentEntry()], { MODEL_CATALOG: latest! })).toEqual({
+    expect(buildPatch([documentEntry()], { ALERT_RULES: latest! })).toEqual({
       values: {},
-      errors: { MODEL_CATALOG: 'models[0].context_length: Enter a number.' },
+      errors: { ALERT_RULES: 'models[0].context_length: Enter a number.' },
     });
 
     // Another field still goes into the document meanwhile.
@@ -187,7 +187,7 @@ describe('a JSON document as fields', () => {
     type('models[0].id', 'renamed');
 
     fireEvent.click(screen.getByRole('button', { name: 'JSON' }));
-    const json = screen.getByRole('textbox', { name: 'MODEL_CATALOG' });
+    const json = screen.getByRole('textbox', { name: 'ALERT_RULES' });
     // The fields' edit, as the document the JSON view edits.
     expect(JSON.parse((json as HTMLTextAreaElement).value).models[0].id).toBe('renamed');
     fireEvent.change(json, {
@@ -214,7 +214,7 @@ describe('a JSON document as fields', () => {
   it('shows no fields for text that is not a JSON object', () => {
     renderDocument();
     fireEvent.click(screen.getByRole('button', { name: 'JSON' }));
-    fireEvent.change(screen.getByRole('textbox', { name: 'MODEL_CATALOG' }), {
+    fireEvent.change(screen.getByRole('textbox', { name: 'ALERT_RULES' }), {
       target: { value: '{"models": [' },
     });
 
@@ -226,7 +226,7 @@ describe('a JSON document as fields', () => {
     renderDocument(documentEntry({ value: '', is_set: false, source: 'default' }));
 
     expect(screen.getByRole('button', { name: 'JSON' })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByRole('textbox', { name: 'MODEL_CATALOG' })).toHaveValue('');
+    expect(screen.getByRole('textbox', { name: 'ALERT_RULES' })).toHaveValue('');
     fireEvent.click(screen.getByRole('button', { name: 'Fields' }));
     expect(screen.getByText('No values yet. Add them in JSON.')).toBeInTheDocument();
   });
@@ -234,7 +234,7 @@ describe('a JSON document as fields', () => {
   it('marks the field the reason for a refused save names', () => {
     renderDocument(
       documentEntry(),
-      'MODEL_CATALOG: /models/0/route/0/base_url must start with http:// or https://',
+      'ALERT_RULES: /models/0/route/0/base_url must start with http:// or https://',
     );
 
     expect(field('models[0].route[0].base_url')).toHaveAttribute('aria-invalid', 'true');
@@ -247,11 +247,11 @@ describe('a JSON document as fields', () => {
     );
     renderDocument(documentEntry({ value: JSON.stringify(settings) }));
 
-    fireEvent.change(screen.getByRole('searchbox', { name: 'Filter MODEL_CATALOG fields' }), {
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Filter ALERT_RULES fields' }), {
       target: { value: 'value 13' },
     });
 
-    const shown = within(screen.getByRole('group', { name: 'MODEL_CATALOG' })).getAllByRole(
+    const shown = within(screen.getByRole('group', { name: 'ALERT_RULES' })).getAllByRole(
       'textbox',
     );
     expect(shown).toHaveLength(1);
@@ -265,31 +265,37 @@ describe('a JSON document as fields', () => {
     expect(screen.getByRole('button', { name: 'JSON' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', { name: 'Fields' })).toBeDisabled();
     expect(screen.getByText(/a number too large to edit as fields/)).toBeInTheDocument();
-    expect(screen.getByRole('textbox', { name: 'MODEL_CATALOG' })).toHaveValue(big);
+    expect(screen.getByRole('textbox', { name: 'ALERT_RULES' })).toHaveValue(big);
   });
 
-  it('shows an empty list without a field to type into, and saves a never-set value as text', () => {
+  it('shows an empty list without a field to type into, and saves a never-set value as its type', () => {
     renderDocument(
       documentEntry({ value: JSON.stringify({ local_deployment: [], release: null, name: 'x' }) }),
     );
 
-    const fields = within(screen.getByRole('group', { name: 'MODEL_CATALOG' }));
+    const fields = within(screen.getByRole('group', { name: 'ALERT_RULES' }));
     expect(fields.getByText('An empty list. Add its items in JSON.')).toBeInTheDocument();
     expect(fields.getAllByRole('textbox')).toHaveLength(2);
     expect(field('release')).toHaveAttribute('placeholder', 'null');
+    expect(field('release')).toHaveAccessibleDescription('"quote" to keep as text');
 
     type('release', '2024');
+    expect(draftDocument()).toEqual({ local_deployment: [], release: 2024, name: 'x' });
+    // Edited again, the field still reads what is typed by its own shape.
+    type('release', 'false');
+    expect(draftDocument()).toEqual({ local_deployment: [], release: false, name: 'x' });
+    type('release', '"2024"');
     expect(draftDocument()).toEqual({ local_deployment: [], release: '2024', name: 'x' });
   });
 
   it("labels the fields and the JSON view with the setting's name, and points at neither", () => {
     renderDocument();
-    const label = screen.getByText('MODEL_CATALOG', { selector: 'label' });
+    const label = screen.getByText('ALERT_RULES', { selector: 'label' });
     expect(label).not.toHaveAttribute('for');
-    expect(screen.getByRole('group', { name: 'MODEL_CATALOG' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'ALERT_RULES' })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'JSON' }));
-    expect(screen.getByRole('textbox', { name: 'MODEL_CATALOG' })).toHaveAttribute(
+    expect(screen.getByRole('textbox', { name: 'ALERT_RULES' })).toHaveAttribute(
       'aria-labelledby',
       label.id,
     );
@@ -298,7 +304,7 @@ describe('a JSON document as fields', () => {
   it('is plain text on a backend that does not say it is a document', () => {
     renderDocument(documentEntry({ document: undefined }));
 
-    expect(screen.getByRole('textbox', { name: 'MODEL_CATALOG' })).toHaveValue(CATALOG);
+    expect(screen.getByRole('textbox', { name: 'ALERT_RULES' })).toHaveValue(CATALOG);
     expect(screen.queryByRole('button', { name: 'Fields' })).not.toBeInTheDocument();
   });
 });

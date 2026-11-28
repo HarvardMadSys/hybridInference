@@ -11,7 +11,7 @@ import { chooseOption } from '@/test-utils/select';
 const navigateToMock = vi.fn();
 
 vi.mock('next/navigation', () => ({
-  usePathname: () => '/dashboard/admin/providers/models',
+  usePathname: () => '/dashboard/admin/routing/models',
   useRouter: () => ({ replace: vi.fn(), refresh: vi.fn() }),
 }));
 
@@ -102,7 +102,7 @@ function entry(overrides: Partial<ConfigEntry>): ConfigEntry {
 }
 
 const CATALOG =
-  '{"models": [{"id": "gpt-4o-mini", "name": "GPT-4o mini", "context_length": 128000}]}';
+  '{"models": [{"id": "gpt-4o-mini", "name": "GPT-4o mini", "provider": "openai_compat", "context_length": 128000}]}';
 const v = (revision: number) => ({ epoch: 'e1', revision });
 
 /** The catalog in its category, beside categories Settings shows, one of them missing a value. */
@@ -193,7 +193,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('Admin → Providers → Models', () => {
+describe('Admin → Routing → Models', () => {
   it('holds the model catalog and the per-model overrides, and nothing else of the configuration', async () => {
     await renderModels();
 
@@ -203,21 +203,18 @@ describe('Admin → Providers → Models', () => {
       'Model Visibility',
       'Model Concurrency Limit',
     ]);
-    // The catalog, one field per value.
+    // The catalog, a card per model with its fields laid out as a form.
     const catalog = within(screen.getByRole('group', { name: 'MODEL_CATALOG' }));
-    expect(
-      catalog.getAllByRole('textbox').map((field) => (field as HTMLInputElement).value),
-    ).toEqual(['gpt-4o-mini', 'GPT-4o mini', '128000']);
-    expect(catalog.getByRole('textbox', { name: 'models[0].context_length' })).toHaveValue(
-      '128000',
-    );
+    expect(catalog.getByRole('textbox', { name: /Model id/ })).toHaveValue('gpt-4o-mini');
+    expect(catalog.getByRole('textbox', { name: 'Display name' })).toHaveValue('GPT-4o mini');
+    expect(catalog.getByRole('textbox', { name: 'Context length' })).toHaveValue('128000');
     // Settings' categories, and its list of missing settings, stay on Settings.
     expect(screen.queryByLabelText('SITE_BRANDING')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('SMTP_HOST')).not.toBeInTheDocument();
     expect(screen.queryByText(/required setting is missing/)).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Search settings')).not.toBeInTheDocument();
     // Models are created, and their routes changed, on Routing.
-    expect(screen.getByRole('link', { name: 'Routing' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Routes' })).toHaveAttribute(
       'href',
       '/dashboard/admin/routing',
     );
@@ -241,12 +238,21 @@ describe('Admin → Providers → Models', () => {
     const catalog = await screen.findByRole('region', { name: 'Model catalog' });
     // The document saved whole, indented, with the field's new value as its type.
     const edited = JSON.stringify(
-      { models: [{ id: 'gpt-4o-mini', name: 'GPT-4o mini', context_length: 64000 }] },
+      {
+        models: [
+          {
+            id: 'gpt-4o-mini',
+            name: 'GPT-4o mini',
+            provider: 'openai_compat',
+            context_length: 64000,
+          },
+        ],
+      },
       null,
       2,
     );
 
-    fireEvent.change(within(catalog).getByRole('textbox', { name: 'models[0].context_length' }), {
+    fireEvent.change(within(catalog).getByRole('textbox', { name: 'Context length' }), {
       target: { value: '64000' },
     });
     fireEvent.click(within(catalog).getByRole('button', { name: 'Save changes to Model catalog' }));
@@ -286,7 +292,7 @@ describe('Admin → Providers → Models', () => {
     );
 
     await waitFor(() =>
-      expect(navigateToMock).toHaveBeenCalledWith('/dashboard/admin/providers/models'),
+      expect(navigateToMock).toHaveBeenCalledWith('/dashboard/admin/routing/models'),
     );
     expect(restartBackend).toHaveBeenCalledTimes(1);
   });
@@ -333,27 +339,27 @@ describe('Admin → Providers → Models', () => {
 
   it('asks before leaving with an unsaved change, in the catalog or an override', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
-    window.history.replaceState(null, '', '/dashboard/admin/providers/models');
+    window.history.replaceState(null, '', '/dashboard/admin/routing/models');
     await renderModels();
-    const routing = screen.getByRole('link', { name: 'Routing' });
+    const routing = screen.getByRole('link', { name: 'Routes' });
 
     // Nothing unsaved: no question.
     fireEvent.click(routing);
     expect(confirm).not.toHaveBeenCalled();
 
-    fireEvent.change(screen.getByRole('textbox', { name: 'models[0].context_length' }), {
+    fireEvent.change(screen.getByRole('textbox', { name: 'Context length' }), {
       target: { value: '64000' },
     });
     expect(fireEvent.click(routing)).toBe(false);
     expect(confirm).toHaveBeenCalledWith(LEAVE_MESSAGE);
-    // Another Providers section is a page of its own as well.
+    // Another tab is a page of its own as well.
     const keys = document.body.appendChild(document.createElement('a'));
-    keys.href = '/dashboard/admin/providers/keys';
+    keys.href = '/dashboard/admin/providers';
     expect(fireEvent.click(keys)).toBe(false);
     keys.remove();
 
     // Back to the saved value, then an override left unsaved.
-    fireEvent.change(screen.getByRole('textbox', { name: 'models[0].context_length' }), {
+    fireEvent.change(screen.getByRole('textbox', { name: 'Context length' }), {
       target: { value: '128000' },
     });
     confirm.mockClear();
@@ -377,10 +383,10 @@ describe('Admin → Providers → Models', () => {
     await renderModels();
 
     expect(await screen.findByText(/This backend lists the model catalog/)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Settings → Application' })).toHaveAttribute(
-      'href',
-      '/dashboard/admin/settings?tab=application',
-    );
+    // The link lands on the documents, opening the Advanced they sit under.
+    expect(
+      screen.getByRole('link', { name: 'Settings → Site & Setup → Advanced' }),
+    ).toHaveAttribute('href', '/dashboard/admin/settings?tab=setup#config-application');
     expect(screen.queryByRole('region', { name: 'Model catalog' })).not.toBeInTheDocument();
   });
 });

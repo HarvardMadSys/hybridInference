@@ -9,7 +9,9 @@ name: Release
 #   git fetch origin && git push origin origin/dev:main
 #
 # and this workflow tags that commit and publishes the release with generated
-# notes. It used to push `main` itself and no longer does: the workflow token
+# notes. The same push starts CI on main, whose green run builds and publishes
+# the release's backend and console images (sha-<full-sha>); that is the only
+# place images are published. If it does not finish, dispatch CI on main. It used to push `main` itself and no longer does: the workflow token
 # cannot update a protected branch, and a credential that could would let
 # anyone able to start a workflow here move `main`.
 
@@ -33,7 +35,7 @@ jobs:
   release:
     name: Release main
     # GitHub-hosted: the self-hosted runners were retired after the
-    # 2026-11-22 incident. A release only tags a commit; it deploys nothing.
+    # 2026-11-22 incident. This job only tags a commit; it deploys nothing.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

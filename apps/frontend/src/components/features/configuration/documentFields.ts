@@ -5,9 +5,10 @@
 // document is still saved whole, as JSON.
 //
 // A field keeps the type of the value it came from: a number stays a number,
-// `true` a boolean, and a value never set (`null`) takes what is typed as
-// text. An array of strings is one field, its items separated by commas; any
-// other array is a field per item. An empty list or object shows, but holds
+// `true` a boolean. A value never set (`null`) takes the type of what is
+// typed: a number, `true` or `false`, or else text -- `"123"`, quoted, is the
+// text 123. An array of strings is one field, its items separated by commas;
+// any other array is a field per item. An empty list or object shows, but holds
 // nothing to type into: what it should hold is not known. Adding or removing
 // a key or an item changes the document's shape, which the JSON view does.
 
@@ -163,6 +164,34 @@ export function documentFields(document: JsonObject): DocumentField[] {
 
 // A JSON number, as the gateway reads one: no hex, no `Infinity`, no blank.
 const JSON_NUMBER = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
+const JSON_INTEGER = /^-?(?:0|[1-9]\d*)$/;
+
+/**
+ * The number `trimmed` is written as JSON: `undefined` when it is no JSON
+ * number, an error when it is one JavaScript cannot hold as written -- out of
+ * range, or an integer beyond 2^53, which it would round (see
+ * `keepsItsValues`).
+ */
+function jsonNumber(trimmed: string): { value: number } | { error: string } | undefined {
+  if (!JSON_NUMBER.test(trimmed)) return undefined;
+  const value = Number(trimmed);
+  if (!Number.isFinite(value)) return { error: 'Too large a number. Set it in JSON.' };
+  if (JSON_INTEGER.test(trimmed) && !Number.isSafeInteger(value)) {
+    return { error: 'Too long an integer to keep exactly. Set it in JSON.' };
+  }
+  return { value };
+}
+
+/** The string a JSON-quoted `trimmed` stands for, or `undefined` when it is not one. */
+function quotedString(trimmed: string): string | undefined {
+  if (trimmed.length < 2 || !trimmed.startsWith('"') || !trimmed.endsWith('"')) return undefined;
+  try {
+    const value: unknown = JSON.parse(trimmed);
+    return typeof value === 'string' ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** The value `text` stands for in a field of `kind`, or why it cannot be one. */
 export function fieldValue(
@@ -170,6 +199,7 @@ export function fieldValue(
   text: string,
 ): { value: JsonValue; error?: undefined } | { error: string } {
   const trimmed = text.trim();
+  const lower = trimmed.toLowerCase();
   switch (kind) {
     case 'string':
       return { value: text };
@@ -181,18 +211,26 @@ export function fieldValue(
           .filter(Boolean),
       };
     case 'number':
-      return JSON_NUMBER.test(trimmed) && Number.isFinite(Number(trimmed))
-        ? { value: Number(trimmed) }
-        : { error: 'Enter a number.' };
+      return jsonNumber(trimmed) ?? { error: 'Enter a number.' };
     case 'boolean':
-      if (trimmed.toLowerCase() === 'true') return { value: true };
-      if (trimmed.toLowerCase() === 'false') return { value: false };
+      if (lower === 'true') return { value: true };
+      if (lower === 'false') return { value: false };
       return { error: 'Enter true or false.' };
-    case 'null':
-      // Nothing was ever set, so nothing says what this holds: what is typed
-      // is text -- `2024` stays "2024" -- unless it is left empty or `null`.
-      if (trimmed === '' || trimmed === 'null') return { value: null };
-      return { value: text };
+    case 'null': {
+      // Nothing was ever set, so what is typed says what it holds: empty or
+      // `null` leaves it unset, `true` or `false` is a switch, a JSON number
+      // a number (`131072`), and anything else text. Text that would read as
+      // one of those is typed quoted: `"2024"` is the text 2024. The field
+      // keeps this kind until the document is read again, so each edit is
+      // read this way, and what it shows reads back as the same value.
+      if (trimmed === '' || lower === 'null') return { value: null };
+      if (lower === 'true') return { value: true };
+      if (lower === 'false') return { value: false };
+      const number = jsonNumber(trimmed);
+      if (number !== undefined) return number;
+      const quoted = quotedString(trimmed);
+      return { value: quoted ?? text };
+    }
     case 'empty':
       return { error: 'Add to it in JSON.' };
   }

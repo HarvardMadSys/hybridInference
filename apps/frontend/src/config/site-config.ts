@@ -151,6 +151,8 @@ const featuresSchema = z
     // The gateway only sends this key when the deployment enables public
     // stats, so a document without it means "off".
     public_stats: z.boolean().nullable().optional(),
+    // Likewise for the public OpenInfra page (/openinfra).
+    openinfra: z.boolean().nullable().optional(),
   })
   .strict();
 
@@ -206,6 +208,12 @@ export interface RuntimeSiteConfig {
   accounting?: { currency: 'USD' | 'CNY'; usd_to_currency_rate?: string };
   branding: Branding;
   agentsUrl: string;
+  /**
+   * Another deployment's OpenInfra page, when this one links there instead of
+   * publishing its own (a staging site pointing at production's fleet). Empty
+   * means the local `/openinfra`. Only the server-side loader sets it.
+   */
+  openinfraUrl: string;
   distribution: {
     id: string;
     release: string;
@@ -216,6 +224,8 @@ export interface RuntimeSiteConfig {
     rag: boolean;
     agents: boolean;
     publicStats: boolean;
+    /** The public OpenInfra page: live metrics of the deployment's own servers. */
+    openinfra: boolean;
   };
   /** First-run setup: while required, every route but `/setup` redirects there. */
   setup: {
@@ -242,8 +252,16 @@ export const buildTimeSiteConfig: RuntimeSiteConfig = {
   branding: buildTimeBranding,
   accounting: { currency: 'USD' },
   agentsUrl: '',
+  openinfraUrl: '',
   distribution: { id: 'legacy', release: '' },
-  features: { publicSignup: true, phoneAuth: false, rag: true, agents: false, publicStats: false },
+  features: {
+    publicSignup: true,
+    phoneAuth: false,
+    rag: true,
+    agents: false,
+    publicStats: false,
+    openinfra: false,
+  },
   setup: { required: false },
   configuration: { incomplete: false },
   sso: { enabled: false },
@@ -320,6 +338,7 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
     branding,
     accounting: document.accounting ?? { currency: 'USD' },
     agentsUrl: '',
+    openinfraUrl: '',
     distribution: {
       id: document.distribution.id,
       release: document.distribution.release,
@@ -333,6 +352,8 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
       agents: false,
       // Opt-in only: publishing usage stats needs an explicit true.
       publicStats: document.features.public_stats === true,
+      // Opt-in only, the same way: publishing server metrics needs an explicit true.
+      openinfra: document.features.openinfra === true,
     },
     setup: { required: document.setup?.required === true },
     configuration: { incomplete: document.configuration?.incomplete === true },
@@ -346,5 +367,22 @@ export function withAgentsUrl(siteConfig: RuntimeSiteConfig, agentsUrl: string):
     ...siteConfig,
     agentsUrl,
     features: { ...siteConfig.features, agents: Boolean(agentsUrl) },
+  };
+}
+
+/**
+ * Link OpenInfra to another deployment's page. A non-empty URL turns the header
+ * and footer links on and sends `/openinfra` there, whatever this deployment's
+ * own `features.openinfra` says.
+ */
+export function withOpenInfraUrl(
+  siteConfig: RuntimeSiteConfig,
+  openinfraUrl: string,
+): RuntimeSiteConfig {
+  if (!openinfraUrl) return siteConfig;
+  return {
+    ...siteConfig,
+    openinfraUrl,
+    features: { ...siteConfig.features, openinfra: true },
   };
 }

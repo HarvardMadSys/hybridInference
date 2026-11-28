@@ -258,8 +258,13 @@ export function ModelQueueTab() {
       <AdminSection title="Model queue" actions={refresh}>
         <AdminEmptyState title="No model queue is configured">
           Set <code>MODEL_QUEUE_STATUS_URL</code> under{' '}
-          <Link href="/dashboard/admin/settings" prefetch={false} className="underline">
-            Settings → Providers
+          {/* The link lands on the setting, opening the Advanced it sits under. */}
+          <Link
+            href="/dashboard/admin/settings?tab=providers#MODEL_QUEUE_STATUS_URL"
+            prefetch={false}
+            className="underline"
+          >
+            Settings → Providers & Routing → Advanced
           </Link>{' '}
           to the queue status address of an on-demand model host, such as an HPC cluster’s on-demand
           proxy, and this page shows its jobs and the batch requests waiting for them.

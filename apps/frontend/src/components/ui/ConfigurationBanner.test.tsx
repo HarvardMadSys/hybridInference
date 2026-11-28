@@ -69,17 +69,17 @@ describe('ConfigurationBanner', () => {
     // The missing settings, on every sub-tab, then the site documents.
     expect(screen.getByRole('link', { name: 'Open Settings' })).toHaveAttribute(
       'href',
-      '/dashboard/admin/settings?tab=application&missing=1',
+      '/dashboard/admin/settings?tab=setup&missing=1',
     );
     // A deployment with no model at all.
     expect(screen.getByRole('link', { name: 'Open Models' })).toHaveAttribute(
       'href',
-      '/dashboard/admin/providers/models',
+      '/dashboard/admin/routing/models',
     );
   });
 
-  it('does not offer Models on Providers → Models', () => {
-    renderBanner({ pathname: '/dashboard/admin/providers/models' });
+  it('does not offer Models on Routing → Models', () => {
+    renderBanner({ pathname: '/dashboard/admin/routing/models' });
 
     expect(screen.getByRole('status')).toHaveTextContent('Ask admin to configure');
     expect(screen.getByRole('link', { name: 'Open Settings' })).toBeInTheDocument();

@@ -1,8 +1,10 @@
 import type { Currency } from '@/lib/utils/money';
-import type { FilterState, QuotaStateFilter, SortBy, UserStatus } from '../types';
+import type { FilterState, QuotaStateFilter, SortBy, UserRole, UserStatus } from '../types';
 
 export const DEFAULT_FILTER_STATE: FilterState = {
   status: null,
+  role: null,
+  serviceAccount: null,
   search: '',
   sortBy: 'created',
   minCostToday: null,
@@ -22,6 +24,8 @@ const VALID_STATUS: ReadonlyArray<UserStatus> = [
   'rejected',
   'deleted',
 ];
+
+const VALID_ROLE: ReadonlyArray<UserRole> = ['free', 'pro', 'internal', 'admin'];
 
 const VALID_SORT: ReadonlyArray<SortBy> = [
   'created',
@@ -47,12 +51,15 @@ export function filterStateFromUrl(
 ): FilterState {
   const matchesCurrency = (params.get('currency') ?? 'USD') === currency;
   const status = params.get('status');
+  const role = params.get('role');
   const sortBy = params.get('sort_by');
   const quotaState = params.get('quota_state');
   const anomalyRaw = params.get('anomaly');
   const anomaly = anomalyRaw === 'true' ? true : anomalyRaw === 'false' ? false : null;
   return {
     status: VALID_STATUS.includes(status as UserStatus) ? (status as UserStatus) : null,
+    role: VALID_ROLE.includes(role as UserRole) ? (role as UserRole) : null,
+    serviceAccount: params.get('service_account') === 'true' ? true : null,
     search: params.get('q') ?? '',
     sortBy: VALID_SORT.includes(sortBy as SortBy) ? (sortBy as SortBy) : 'created',
     minCostToday: matchesCurrency ? parseNumber(params.get('min_cost_today')) : null,
@@ -72,6 +79,8 @@ export function filterStateToUrl(state: FilterState, currency: Currency = 'USD')
   const out = new URLSearchParams();
   if (state.minCostToday !== null || state.minCostMonth !== null) out.set('currency', currency);
   if (state.status) out.set('status', state.status);
+  if (state.role) out.set('role', state.role);
+  if (state.serviceAccount) out.set('service_account', 'true');
   if (state.search) out.set('q', state.search);
   if (state.sortBy !== 'created') out.set('sort_by', state.sortBy);
   if (state.minCostToday !== null) out.set('min_cost_today', String(state.minCostToday));

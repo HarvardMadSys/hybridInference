@@ -42,7 +42,7 @@ export function Header() {
   const consoleWidth = useConsoleWidth();
   const { bar, shell } = useConsoleFrame();
   const { state } = useAuth();
-  const { branding, features } = useSiteConfig();
+  const { branding, features, openinfraUrl } = useSiteConfig();
   const t = useT();
   const pathname = usePathname();
   const menuId = useId();
@@ -73,6 +73,16 @@ export function Header() {
       href: '/stats',
       label: t('chrome.header.stats', 'Stats'),
       external: false,
+      prefetch: false,
+    });
+  }
+  if (features.openinfra) {
+    // Another deployment's page when this one links there (openinfraUrl).
+    links.push({
+      key: 'openinfra',
+      href: openinfraUrl || '/openinfra',
+      label: t('chrome.header.openinfra', 'OpenInfra'),
+      external: Boolean(openinfraUrl),
       prefetch: false,
     });
   }

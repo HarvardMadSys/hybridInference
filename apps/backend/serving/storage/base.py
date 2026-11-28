@@ -335,12 +335,46 @@ class OperationalStore(ABC):
         status: str = "active",
         signup_reason: str | None = None,
         login_name: str | None = None,
+        is_service_account: bool = False,
     ) -> None:
         """Insert a new user row.
 
         ``signup_reason`` captures the free-text use case the user submitted at
         registration; surfaced in the admin user list to aid manual approval.
         ``email`` may be None only for an account that has a ``login_name``.
+        ``is_service_account`` marks an admin-created, API-key-only account
+        (no email, unknowable password); browser sign-in refuses those.
+        """
+
+    @abstractmethod
+    async def create_service_account(
+        self,
+        *,
+        user_id: str,
+        login_name: str,
+        password_hash: str,
+        user_name: str,
+        role: str,
+        key_hash: str,
+        key_prefix: str,
+        quota_daily_cost_usd: Decimal | float = 1000.0,
+        quota_monthly_cost_usd: Decimal | float | None = None,
+        quota_daily_cost_amount: Decimal | float | None = None,
+        quota_monthly_cost_amount: Decimal | float | None = None,
+        expires_at: datetime | None = None,
+        notes: str | None = None,
+    ) -> Row:
+        """Create an active service account and its first API key in one transaction.
+
+        The account has no email, holds *role*, is flagged
+        ``is_service_account`` and gets its Default project; the key is issued
+        on that project with the given quota, which becomes the account's.
+        Nothing is written unless all of it is. Returns the key row (at least
+        ``id`` and ``created_at``).
+
+        Raises:
+            LoginNameTakenError: Another account holds *login_name*
+                (case-insensitively), including one created concurrently.
         """
 
     @abstractmethod
@@ -560,10 +594,17 @@ class OperationalStore(ABC):
         anomaly: bool | None = None,
         include_usage_totals: bool = True,
         tag: str | None = None,
+        role: str | None = None,
+        service_account: bool | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Return ``(total_count, user_rows, status_counts_row)``.
 
         *tag* keeps only the users that tag applies to.
+        *role* keeps only accounts in that tier (``free``, ``pro``,
+        ``internal``, ``admin``).
+        *service_account* keeps only service accounts (``True``) or only the
+        other accounts (``False``); ``status_counts["service_accounts"]``
+        counts them, unfiltered.
 
         *sort_by* values that reference cost (``cost_today``, ``cost_month``,
         ``cost_alltime``) or usage (``requests``, ``tokens``) require joining
@@ -577,7 +618,8 @@ class OperationalStore(ABC):
         uncomputed metrics are ``None``. Sorting still computes its selected metric.
 
         ``status_counts_row`` is a dict with keys ``all``, ``pending_approval``,
-        ``active``, ``suspended``, ``rejected``, ``deleted``.
+        ``active``, ``suspended``, ``rejected``, ``deleted``, plus ``roles``:
+        unfiltered counts for ``free``, ``pro``, ``internal`` and ``admin``.
 
         Additional kw-only filters (all default to ``None`` — no-op):
         - ``min_cost_today`` / ``min_cost_month``: filter to users whose

@@ -6,26 +6,18 @@ import { usePathname } from 'next/navigation';
 
 import {
   PROVIDERS_PATH,
-  PROVIDER_AVAILABILITY_PATH,
-  PROVIDER_KEYS_PATH,
-  PROVIDER_MODELS_PATH,
   PROVIDER_PERFORMANCE_PATH,
-  PROVIDER_QUOTAS_PATH,
 } from '@/components/features/admin/providerRoutes';
 import { useRevealCurrent } from '@/components/ui/useRevealCurrent';
 
 /**
- * The Providers tab's pages, in the order a deployment is set up and then
- * watched: the providers, their keys and the models served through them; then
- * which providers routing may use, their quotas and how they perform. Each has
- * its own address, so a link opens it.
+ * The Providers tab's pages: Overview, where a provider is set up -- the
+ * registry and whether routing may use each provider, the keys, and the
+ * quotas -- and Performance, where it is watched. Each has its own address,
+ * so a link opens it. The model catalog is on the Routing tab.
  */
 const SECTIONS = [
   { href: PROVIDERS_PATH, label: 'Overview' },
-  { href: PROVIDER_KEYS_PATH, label: 'Keys' },
-  { href: PROVIDER_MODELS_PATH, label: 'Models' },
-  { href: PROVIDER_AVAILABILITY_PATH, label: 'Availability' },
-  { href: PROVIDER_QUOTAS_PATH, label: 'Quotas' },
   { href: PROVIDER_PERFORMANCE_PATH, label: 'Performance' },
 ] as const;
 
@@ -34,8 +26,8 @@ export function ProvidersSectionNav() {
   const pathname = usePathname() ?? '';
   const scrollerRef = useRef<HTMLElement>(null);
 
-  // Six sections are wider than a phone: the control scrolls sideways, and
-  // brings the current section into view on load and after every navigation.
+  // On a narrow screen the control scrolls sideways, and brings the current
+  // section into view on load and after every navigation.
   useRevealCurrent(scrollerRef, pathname);
 
   return (

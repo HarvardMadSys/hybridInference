@@ -40,6 +40,7 @@ Use Admin for application settings and a deployment overlay for code and assets.
 | Models, endpoints, aliases, weights and supported router settings | Admin Routing, `MODEL_CATALOG` and `ROUTING_POLICY` | Follow restart markers on documents; ordinary route edits apply online |
 | Public registration and configured RAG policy | `SITE_CONFIGURATION` → `features`, plus each feature's Admin settings | Follow the setting's refresh or restart marker |
 | Existing agent link/proxy integration | Frontend container environment: `AGENT_PUBLIC_URL`, `AGENT_WEB_INTERNAL_URL`, `AGENT_CONTROL_PLANE_INTERNAL_URL` | Recreate the frontend for runtime environment changes; `/agents` is not a Site UI slot |
+| Linking OpenInfra to another deployment's page | Frontend container environment: `OPENINFRA_PUBLIC_URL` | Recreate the frontend for runtime environment changes |
 | Trusted adapters, agent-access rules and quota reporting | Backend environment `BACKEND_EXTENSIONS` plus importable extension `.py` modules using documented hooks | Restart for already-mounted code; rebuild when code is packaged in the backend image |
 | Additional routes, a different console layout, or a new authentication flow | Application source, such as `apps/frontend/src/app/`, in upstream or an explicitly maintained fork | Rebuild affected application images; these are outside Site UI API v1 |
 
@@ -118,6 +119,10 @@ Run it with the backend's environment, `DB_*` and `BACKEND_EXTENSIONS` included
 (for example through `docker compose exec backend`): it reads the stored model
 catalog, and without one its snapshot has no per-model section.
 Router selection still belongs to each model and its router parameters.
+
+`features.openinfra: true` publishes the GPU fleet and engine metrics that
+OpenInfra reporters collect, at `/openinfra`; collecting is the separate
+`OPENINFRA_INGEST_TOKEN` setting (see [OpenInfra](openinfra.md)).
 
 ### When changes take effect
 

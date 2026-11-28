@@ -101,6 +101,11 @@ services:
       TRUST_CLOUDFLARE_HEADERS: ${TRUST_CLOUDFLARE_HEADERS:-0}
       GEOIP_COUNTRY_DB: /app/var/data/geoip/dbip-country-lite.mmdb
       GEOIP_COUNTRY_PROVIDER: dbip-lite
+      # Where OpenInfra archives each ended week of its per-second samples
+      # before deleting them from the database: under var/data, mounted below,
+      # so the files outlive the container. Only a deployment that collects
+      # OpenInfra writes any. Set it empty to delete old samples unarchived.
+      OPENINFRA_ARCHIVE_DIR: ${OPENINFRA_ARCHIVE_DIR-/app/var/data/openinfra-archive}
       # Application documents are stored in Admin/database settings.
       # Optional JSON environment seeds are for explicit local demos only.
       MODEL_CATALOG: ${MODEL_CATALOG-}
@@ -155,7 +160,7 @@ services:
       # Trusted deployment extension code and assets stay outside the neutral
       # image. Application documents are read from the database.
       - ../../distributions:/app/distributions:ro
-      - ../../var/data:/app/var/data          # credentials and downloaded GeoIP data (read-write)
+      - ../../var/data:/app/var/data          # credentials, GeoIP data and OpenInfra archives (read-write)
     ports:
       - "${BACKEND_HOST:-127.0.0.1}:${BACKEND_PORT:-8080}:8080"
     # The gateway runs as root (see Dockerfile.backend for why), so what it may
@@ -246,6 +251,9 @@ services:
       # Optional public entry point for an agent served on its own origin.
       # This enables the dashboard link without enabling the /agents proxy.
       AGENT_PUBLIC_URL: ${AGENT_PUBLIC_URL-}
+      # Optional: another deployment's OpenInfra page. When set, the header and
+      # footer link there and /openinfra redirects there (docs/developer/openinfra.md).
+      OPENINFRA_PUBLIC_URL: ${OPENINFRA_PUBLIC_URL-}
       # Absolute path inside this container to a dedicated, read-only branding
       # image directory. Deployment overlays that use it also bind-mount that
       # directory. A file there wins over one of the same path packaged with the

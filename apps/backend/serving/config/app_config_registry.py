@@ -132,7 +132,7 @@ CATEGORIES: tuple[Category, ...] = (
     Category(
         "integrations",
         "Integrations",
-        "Cloud agent identity, the documentation assistant and Qdrant.",
+        "Cloud agent identity, the documentation assistant, Qdrant and OpenInfra collection.",
         one_time=True,
     ),
     Category("privacy", "Privacy", "Request content storage and account deletion."),
@@ -1002,7 +1002,10 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "routing",
         "Seconds after one caller's counted failure on an endpoint during which its "
         "repeat failures there do not count toward opening the circuit, if the "
-        "endpoint has served another caller since. 0 counts every failure.",
+        "endpoint has served another caller since. Also how recent another "
+        "caller's failure must be, unless it is part of the current run of "
+        "failures, for one caller's failures to open the circuit. 0 stops telling "
+        "callers apart: every failure counts and can open the circuit.",
         type="float",
         default="60",
         restart_required=True,
@@ -1639,6 +1642,48 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         secret=True,
     ),
     ConfigEntry(
+        "OPENINFRA_INGEST_TOKEN",
+        "integrations",
+        "Bearer token the OpenInfra reporters on GPU hosts present to POST "
+        "/internal/openinfra/ingest. Empty turns ingestion off. Publishing what they collect "
+        "at /openinfra is the site configuration's features.openinfra.",
+        secret=True,
+    ),
+    ConfigEntry(
+        "OPENINFRA_ENGINE_ORDER",
+        "integrations",
+        "Engine names, comma-separated, in the order the /openinfra page shows their tabs. "
+        "Engines not listed follow, the one that served the most tokens in the last day first.",
+        type="list",
+    ),
+    ConfigEntry(
+        "OPENINFRA_RETIRED_ENGINES",
+        "integrations",
+        "Engine ids, comma-separated, left out of the /openinfra page, its served totals, "
+        "history and exports. What they reported stays stored.",
+        type="list",
+    ),
+    ConfigEntry(
+        "OPENINFRA_RETENTION_DAYS",
+        "integrations",
+        "Days the per-second OpenInfra samples and request events stay in the database "
+        "once their week is archived to OPENINFRA_ARCHIVE_DIR. Rollups are kept. 0 keeps "
+        "everything.",
+        type="int",
+        default="7",
+        minimum=0,
+    ),
+    ConfigEntry(
+        "OPENINFRA_DELETE_UNARCHIVED",
+        "integrations",
+        "Delete OpenInfra samples and request events past OPENINFRA_RETENTION_DAYS even "
+        "while OPENINFRA_ARCHIVE_DIR is unset, so they are never archived. Off, a gateway "
+        "without an archive directory keeps them all.",
+        type="bool",
+        default="0",
+        flag=True,
+    ),
+    ConfigEntry(
         "RAG_API_KEY",
         "integrations",
         "API key the documentation assistant uses for its own gateway calls. Empty "
@@ -1776,6 +1821,7 @@ ENVIRONMENT_ONLY: Mapping[str, str] = {
     "BACKEND_EXTENSIONS": "process wiring: imports code at boot",
     "GEOIP_COUNTRY_DB": "process wiring",
     "GEOIP_COUNTRY_PROVIDER": "process wiring",
+    "OPENINFRA_ARCHIVE_DIR": "process wiring: a directory on the gateway's filesystem",
     "WEB_CONCURRENCY": "process wiring",
     "UVICORN_WORKERS": "process wiring",
     "GUNICORN_WORKERS": "process wiring",

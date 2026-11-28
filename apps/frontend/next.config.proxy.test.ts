@@ -72,6 +72,8 @@ describe('the rewrites', () => {
       '/site-updates',
       '/site-config',
       '/public-stats',
+      '/public-openinfra',
+      '/public-openinfra/history',
     ]);
   });
 
@@ -90,6 +92,7 @@ describe('the rewrites', () => {
       '/internal/agent-grants',
       '/internal/agent-grants/g1/renew',
       '/internal/alert-history/events',
+      '/internal/openinfra/ingest',
       '/internal/playground/chat',
     ]) {
       expect(

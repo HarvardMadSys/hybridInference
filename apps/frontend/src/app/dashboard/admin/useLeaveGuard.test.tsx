@@ -19,7 +19,7 @@ function Page({ unsaved }: { unsaved: number }) {
       <a href="/dashboard/admin/routing" onClick={follow}>
         Routing
       </a>
-      <a href="/dashboard/admin/providers/models?tab=x" onClick={follow}>
+      <a href="/dashboard/admin/routing/models?tab=x" onClick={follow}>
         Same page
       </a>
       <a href="/dashboard/admin/routing" target="_blank" rel="noreferrer">
@@ -33,7 +33,7 @@ function Page({ unsaved }: { unsaved: number }) {
 const confirm = vi.spyOn(window, 'confirm');
 
 beforeEach(() => {
-  window.history.replaceState(null, '', '/dashboard/admin/providers/models');
+  window.history.replaceState(null, '', '/dashboard/admin/routing/models');
   confirm.mockReset();
   followed.mockReset();
 });

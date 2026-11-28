@@ -68,6 +68,11 @@ const ROUTES: Array<[file: string, mount: string, load: () => Promise<unknown>]>
     '/internal/alert-history/events',
     () => import('@/app/internal/alert-history/events/route'),
   ],
+  [
+    'internal/openinfra/ingest',
+    '/internal/openinfra/ingest',
+    () => import('@/app/internal/openinfra/ingest/route'),
+  ],
 ];
 
 /** The gateway's prefixes, under which every route file must be listed above. */

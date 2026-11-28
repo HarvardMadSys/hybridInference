@@ -18,7 +18,7 @@ models until an administrator configures them. See [Configuration](configuration
 ## Adding a model
 
 For aliases or additional metadata, edit the model catalog in
-**Admin → Providers → Models**. Store credentials as separate secret settings and
+**Admin → Routing → Models**. Store credentials as separate secret settings and
 refer to them as `${NAME}`. The catalog refuses inline credentials. The JSON
 shape follows the field reference below; a small example is in
 [The model registry](configuration.md#the-model-registry).

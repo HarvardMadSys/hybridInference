@@ -68,6 +68,14 @@ class UserAlreadyExistsError(AuthenticationError):
         super().__init__(f"Email {email} already registered")
 
 
+class LoginNameTakenError(UserFacingError):
+    """Another account already holds this login name (compared case-insensitively)."""
+
+    def __init__(self, login_name: str):
+        self.login_name = login_name
+        super().__init__(f"Login name '{login_name}' is already in use")
+
+
 class WeakPasswordError(AuthenticationError):
     """Password doesn't meet security requirements."""
 
