@@ -514,6 +514,29 @@ def _may_create(request: Request, user_ctx: dict[str, Any], config: BatchConfig)
     enforce_daily_quota(request, user_ctx)
 
 
+def _request_digest(payload: BatchCreateRequest, surface: str, version: str | None) -> str:
+    """What an ``Idempotency-Key`` replay must ask for again: the request, never who asks."""
+    # The version is part of what is asked for, so it is part of the digest --
+    # but only where there is one: a non-Messages digest keeps exactly the
+    # parts it had before versions existed, so records written then still replay.
+    versioned = {"anthropic_version": version} if version is not None else {}
+    if payload.input_file_id is not None:
+        return admission.request_digest(
+            surface,
+            input_file_id=payload.input_file_id,
+            endpoint=payload.endpoint,
+            completion_window=payload.completion_window,
+            metadata=payload.metadata,
+            **versioned,
+        )
+    return admission.request_digest(
+        surface,
+        requests=[entry.model_dump(mode="json") for entry in payload.requests or []],
+        metadata=payload.metadata,
+        **versioned,
+    )
+
+
 async def _key_names_a_batch(store: Any, owner: str, key: str) -> bool:
     """Whether the owner already used *key* for a batch, by either input method."""
     for surface in (SURFACE_OPENAI_INLINE, SURFACE_OPENAI_FILE):
@@ -555,32 +578,16 @@ async def create_batch(
     file_mode = payload.input_file_id is not None
     surface = SURFACE_OPENAI_FILE if file_mode else SURFACE_OPENAI_INLINE
     version = _anthropic_version(request, payload)
-    # The version is part of what is asked for, so it is part of the digest --
-    # but only where there is one: a non-Messages digest keeps exactly the
-    # parts it had before versions existed, so records written then still replay.
-    versioned = {"anthropic_version": version} if version is not None else {}
-    if file_mode:
-        digest = admission.request_digest(
-            surface,
-            input_file_id=payload.input_file_id,
-            endpoint=payload.endpoint,
-            completion_window=payload.completion_window,
-            metadata=payload.metadata,
-            **versioned,
-        )
-    else:
-        digest = admission.request_digest(
-            surface,
-            requests=[entry.model_dump(mode="json") for entry in payload.requests or []],
-            metadata=payload.metadata,
-            **versioned,
-        )
-    replay = await admission.find_replay(
-        store, owner=owner, surface=surface, key=key, digest=digest
-    )
-    if replay is not None:
-        return batch_object(replay, config)
+    digest = None
     if key is not None:
+        # Only a create with a key is compared with an earlier one, so only then
+        # is the digest -- a canonical copy of the whole body -- computed.
+        digest = _request_digest(payload, surface, version)
+        replay = await admission.find_replay(
+            store, owner=owner, surface=surface, key=key, digest=digest
+        )
+        if replay is not None:
+            return batch_object(replay, config)
         # The key belongs to the account, not to one input method: a key that
         # already named a batch made the other way is a different request.
         # Answered early here, before the requests are validated; the create

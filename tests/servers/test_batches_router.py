@@ -615,6 +615,58 @@ async def test_a_key_used_for_a_file_batch_conflicts_with_an_inline_batch(client
     assert store.created == []
 
 
+def _count_digests(monkeypatch) -> list[str]:
+    """Record the surface of every request digest the router computes."""
+    computed: list[str] = []
+    real = admission.request_digest
+
+    def counted(surface: str, **parts: Any) -> str:
+        computed.append(surface)
+        return real(surface, **parts)
+
+    monkeypatch.setattr(admission, "request_digest", counted)
+    return computed
+
+
+async def test_a_create_without_an_idempotency_key_computes_no_digest(client, store, monkeypatch):
+    computed = _count_digests(monkeypatch)
+
+    await _create(client, body=_body(count=3))
+
+    assert computed == []
+    assert store.options["idempotency"] is None
+
+
+async def test_a_create_with_an_idempotency_key_still_replays(client, store, monkeypatch):
+    computed = _count_digests(monkeypatch)
+    headers = {**_auth(), "Idempotency-Key": "k"}
+
+    first = await client.post("/v1/batches", json=_body(), headers=headers)
+    assert first.status_code == 200, first.text
+    recorded = store.options["idempotency"]
+    assert recorded["key"] == "k"
+
+    async def find_idempotent(*, owner_id: str, api_surface: str, key: str):
+        if (owner_id, api_surface, key) != ("alice", "openai_inline", "k"):
+            return None
+        return {
+            "batch_id": first.json()["id"],
+            "request_digest": recorded["digest"],
+            "deleted": False,
+        }
+
+    store.find_idempotent = find_idempotent
+
+    replay = await client.post("/v1/batches", json=_body(), headers=headers)
+    changed = await client.post("/v1/batches", json=_body(count=2), headers=headers)
+
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["id"] == first.json()["id"]
+    assert changed.status_code == 409, changed.text
+    assert len(store.created) == 1
+    assert computed == ["openai_inline"] * 3
+
+
 @pytest.mark.parametrize(
     ("method", "path"), [("POST", "/v1/batches"), ("GET", "/v1/batches")], ids=["create", "list"]
 )
