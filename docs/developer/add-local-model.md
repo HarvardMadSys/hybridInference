@@ -412,16 +412,21 @@ than ahead of it:
 
 Priority is derived from the estimated *un-cached* prefill — the prompt size
 minus the prefix this endpoint is expected to have cached. The three tiers
-default to interactive 20, large 15, elephant 0, and clients cannot set their
-own: a `priority` field in a client request body is dropped.
-Both `/v1/chat/completions` and `/v1/messages` stamp it. A model on
-`router: routewise` keeps the upstream's default priority instead, because that
-router has no prefill accounting to compute the discount from — so
-`priority_scheduling: true` is inert there.
+default to interactive 20, large 15, elephant 0
+(`apps/backend/routing/prefill_load.py`), and clients cannot set their own:
+a `priority` field in a client request body is dropped by `validate_params`.
+Both `/v1/chat/completions` and `/v1/messages` stamp it. RouteWise computes a
+priority for an endpoint with `priority_scheduling: true`, taking the prefill
+lease that carries the un-cached estimate the priority is derived from.
+Hedged RouteWise calls compute each dispatched leg's priority from that
+endpoint's own prefill lease, so a backup does not inherit the primary's cache
+estimate. Without `priority_scheduling: true`, RouteWise takes no lease and
+publishes no priority, and skips the prompt fingerprint and anchor work those
+features need.
 
-Set it only on routes pointing at a server launched with the flag. A server
-without it ignores the field, but a remote provider that validates its request
-body strictly would not.
+Set `priority_scheduling: true` only on SGLang routes whose server was launched
+with priority scheduling. Other endpoints keep their default upstream
+priority.
 
 ### Recording a Prefix-Cache Miss on an sglang Route
 
