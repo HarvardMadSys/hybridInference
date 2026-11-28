@@ -2255,6 +2255,15 @@ class RuntimeModelCapabilities(BaseModel):
         return self
 
 
+#: What ``password`` is on a route save (see ``provider_routes._verify_for_save``).
+_ROUTE_SAVE_PASSWORD = (
+    "The signed-in administrator's confirmation, needed only when the route would send the "
+    "provider's stored API keys to a host none of its routes uses: their password, or an "
+    "empty string when the account confirms with an authenticator code or a fresh single "
+    "sign-on instead. Verify ignores it"
+)
+
+
 class CreateProviderRouteRequest(MoneyInput):
     """Request payload for adding one runtime provider route candidate."""
 
@@ -2272,6 +2281,11 @@ class CreateProviderRouteRequest(MoneyInput):
     # Each route declares its own: routes of one model can differ, so a new
     # route never takes the first route's values without the admin saying so.
     capabilities: RuntimeModelCapabilities
+    password: str | None = Field(
+        None,
+        max_length=1024,
+        description=_ROUTE_SAVE_PASSWORD,
+    )
 
 
 class CreateProviderRouteModelRequest(CreateProviderRouteRequest):
@@ -2361,6 +2375,11 @@ class UpdateProviderRouteCandidateRequest(RouteCapabilityEdit):
     provider_model_id: str | None = Field(None, min_length=1, max_length=512)
     quota_limit: int | None = Field(None, ge=1)
     concurrency_limit: int | None = Field(None, ge=1)
+    password: str | None = Field(
+        None,
+        max_length=1024,
+        description=_ROUTE_SAVE_PASSWORD,
+    )
 
 
 class UpdateProviderRouteStateRequest(BaseModel):
@@ -2382,7 +2401,8 @@ class UpdateProviderRouteBatchRequest(BaseModel):
 class UpdateProviderRouteRequest(RouteCapabilityEdit):
     """Request payload for updating one provider route target.
 
-    Verifying an edit reads the same body and ignores its capability fields.
+    Verifying an edit reads the same body and ignores its capability fields and
+    ``password``.
     """
 
     provider: str | None = Field(None, min_length=1, max_length=64)
@@ -2395,6 +2415,11 @@ class UpdateProviderRouteRequest(RouteCapabilityEdit):
     provider_model_id: str | None = Field(None, min_length=1, max_length=512)
     quota_limit: int | None = Field(None, ge=1)
     concurrency_limit: int | None = Field(None, ge=1)
+    password: str | None = Field(
+        None,
+        max_length=1024,
+        description=_ROUTE_SAVE_PASSWORD,
+    )
 
 
 class VerifyProviderRouteResponse(BaseModel):

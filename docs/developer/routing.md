@@ -626,7 +626,19 @@ Admin endpoints for routing, all behind admin authentication:
 | `/admin/routewise/model-settings` | Per-model RouteWise tuning — see [RouteWise](#routewise). |
 
 Each `POST` or `PUT` that changes a route has a `...-verifications` twin that
-tries the upstream without saving. See
+tries the upstream without saving. A save tries it the same way before it
+writes anything, and the audit log records each check as
+`routing.provider_routes.verify`, a failed one too.
+
+A check sends the provider's stored API keys to the route's base URL. Verify
+sends them only to the provider's own host or a host its routes already use.
+A save that would send them to any other host answers `403` with `error_code`
+`ADMIN_CONFIRMATION_REQUIRED` until the body carries the signed-in
+administrator's `password`, or `""` when the account confirms with an
+authenticator code or a fresh single sign-on instead; the console asks for it.
+`ADMIN_TOKEN` cannot confirm, so it cannot point a route at such a host.
+
+See
 [Runtime configuration from the admin console](configuration.md#runtime-configuration-from-the-admin-console)
 for the console tabs behind these endpoints.
 

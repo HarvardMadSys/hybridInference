@@ -12,7 +12,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from httpx import ASGITransport, AsyncClient
 
 from routing.model_router_registry import ModelRouterRegistry, StaleRouterStrategyChangeError
@@ -21,22 +21,25 @@ from routing.routewise.envelope import EnvelopeNotCalibratedError
 from routing.routewise.router import RouteWiseRouter
 from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys, provider_registry
 from serving.adapters.provider_registry import RuntimeProviderDefinition
-from serving.audit import AuditTarget
+from serving.audit import AuditActor, AuditTarget
 from serving.config.batch_routes import BatchRouteResolver
 from serving.config.route_states import RouteState, RouteStateResolver
 from serving.config.routewise_model_settings import model_routewise_setting_keys
 from serving.config.settings import get_settings
 from serving.pricing import PricingSchedule, effective_pricing
 from serving.servers.bootstrap import _EffectiveRouteRefreshState, _reload_effective_route_state
-from serving.servers.deps import AppServices
+from serving.servers.deps import AppServices, verify_admin_access
+from serving.servers.middleware.exception_handler import install_exception_handlers
 from serving.servers.registry import _make_adapter, register_from_models_text
 from serving.servers.routers import admin as admin_router
-from serving.servers.routers.admin import provider_routes
+from serving.servers.routers.admin import provider_routes, reauthentication
 from serving.servers.routers.admin.provider_routes import (
     apply_persisted_provider_route_candidates,
     apply_persisted_provider_route_configs,
 )
 from serving.storage.base import ProviderKeyRow
+from serving.utils import password as password_utils
+from serving.utils.login_rate_limit import reset_login_rate_limit_state
 
 AUTH = {"Authorization": "Bearer test-admin"}
 
@@ -2970,7 +2973,8 @@ async def test_runtime_route_edit_save_failure_leaves_the_live_route(admin_clien
     assert table.row("minimax-fast", MINIMAX_ROUTE_ID) == before_row
     assert route_executor.routes["minimax-fast"].raw_adapters == before_entries
     fake_routewise.refresh_route_table.assert_not_called()
-    provider_routes.log_admin_action.assert_not_awaited()
+    # The upstream check that ran is audited; the edit that failed is not.
+    assert _audited_actions() == ["routing.provider_routes.verify"]
 
 
 @pytest.mark.asyncio
@@ -3007,7 +3011,7 @@ async def test_runtime_route_edit_live_failure_restores_the_row_and_weight(admin
     assert route_executor.routes["minimax-fast"].raw_adapters == before_entries
     assert len(dynamic_keys.get_pools_for_provider("openrouter")) == openrouter_pools
     assert op_store.update_provider_route_candidate.await_count == 2
-    provider_routes.log_admin_action.assert_not_awaited()
+    assert _audited_actions() == ["routing.provider_routes.verify"]
 
 
 @pytest.mark.asyncio
@@ -5066,6 +5070,205 @@ async def test_every_check_is_audited_with_its_outcome(admin_client):
     assert failed["details"]["error"] == "Provider said no"
 
 
+# --- a save checks its upstream as Verify does, and asks first for a new host --
+
+#: A host no route of OpenRouter sends its keys to.
+NEW_HOST_URL = "https://keys.elsewhere.example/v1"
+ADMIN_PASSWORD = "correct-admin-password"
+SAVES = ["add-route", "create-model", "edit-runtime-route", "edit-config-route"]
+#: The store write each save makes once its check passed.
+SAVE_WRITES = {
+    "add-route": "upsert_provider_route_candidate",
+    "create-model": "upsert_provider_route_candidate",
+    "edit-runtime-route": "update_provider_route_candidate",
+    "edit-config-route": "upsert_provider_route_config",
+}
+
+
+async def _prepare_save(client, op_store, save: str) -> None:
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    if save == "edit-runtime-route":
+        _CandidateTable(op_store)
+        await _add_minimax_runtime_route(client, op_store)
+    provider_routes.log_admin_action.reset_mock()
+    provider_routes._verify_provider_route.reset_mock()
+    getattr(op_store, SAVE_WRITES[save]).reset_mock()
+
+
+async def _save(client, save: str, **body: Any):
+    """Save an OpenRouter target through *save*, one of the four paths that check upstream."""
+    target = {**OPENROUTER_PARASAIL_TARGET, **body}
+    if save == "add-route":
+        return await client.post(
+            "/admin/routing/provider-route-candidates/minimax-fast",
+            json={"capabilities": RUNTIME_CAPABILITIES, "route_type": "on_demand", **target},
+            headers=AUTH,
+        )
+    if save == "create-model":
+        return await client.post(
+            "/admin/routing/provider-route-models",
+            json={
+                "capabilities": RUNTIME_CAPABILITIES,
+                "route_type": "on_demand",
+                "model_id": "deepseek-v4-flash",
+                "pricing": RUNTIME_PRICING,
+                **target,
+                "provider_model_id": "deepseek/deepseek-v4-flash",
+            },
+            headers=AUTH,
+        )
+    if save == "edit-runtime-route":
+        return await _patch_candidate(client, MINIMAX_ROUTE_ID, target)
+    return await client.put(
+        f"/admin/routing/provider-routes/{YAML_ROUTE_PATH}",
+        json={**target, "upstream_provider": "parasail", "openrouter_provider": None},
+        headers=AUTH,
+    )
+
+
+@pytest.fixture
+def console_admin(admin_client, monkeypatch):
+    """An administrator signed in to the console with a password and no authenticator."""
+    client, op_store, *_ = admin_client
+    # Before the first request builds the app's middleware.
+    install_exception_handlers(client.app)
+
+    async def console_session(request: Request) -> str:
+        request.state.admin_user_id = "u-admin"
+        request.state.admin_session_id = "sid-1"
+        request.state.audit_actor = AuditActor.admin("u-admin", "127.0.0.1")
+        return "admin@example.com"
+
+    client.app.dependency_overrides[verify_admin_access] = console_session
+    op_store.get_user_by_id = AsyncMock(
+        return_value={
+            "id": "u-admin",
+            "email": "admin@example.com",
+            "password_hash": "stored-hash",
+            "phone": None,
+            "phone_verified": False,
+        }
+    )
+    monkeypatch.setattr(
+        password_utils, "verify_password", lambda plain, _hash: plain == ADMIN_PASSWORD
+    )
+    monkeypatch.setattr(reauthentication, "confirmed_by_two_factor", AsyncMock(return_value=False))
+    reset_login_rate_limit_state()
+    yield admin_client
+    reset_login_rate_limit_state()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("save", SAVES)
+async def test_a_save_audits_its_upstream_check_even_when_it_fails(admin_client, save):
+    client, op_store, _route_executor, _fake_routewise, verify_mock = admin_client
+    await _prepare_save(client, op_store, save)
+    verify_mock.side_effect = HTTPException(status_code=400, detail="Provider said no")
+
+    response = await _save(client, save)
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == "Provider said no"
+    getattr(op_store, SAVE_WRITES[save]).assert_not_awaited()
+    assert _audited_actions() == ["routing.provider_routes.verify"]
+    call = provider_routes.log_admin_action.await_args.kwargs
+    assert call["success"] is False
+    assert call["details"]["error"] == "Provider said no"
+    assert call["details"]["base_url"] == "https://openrouter.ai/api/v1"
+    assert call["details"]["api_key_id"] == "db-openrouter"
+    # A config route's edit names the pinned provider as its own upstream.
+    pinned = "parasail" if save == "edit-config-route" else "openrouter[parasail]"
+    assert call["details"]["upstream_provider"] == pinned
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("save", SAVES)
+async def test_the_admin_token_cannot_send_a_providers_keys_to_a_new_host(admin_client, save):
+    client, op_store, _route_executor, _fake_routewise, verify_mock = admin_client
+    await _prepare_save(client, op_store, save)
+
+    responses = [
+        await _save(client, save, base_url=NEW_HOST_URL),
+        await _save(client, save, base_url=NEW_HOST_URL, password="anything"),
+    ]
+
+    for response in responses:
+        assert response.status_code == 403, response.text
+        assert "admin token cannot confirm" in response.json()["detail"]
+    verify_mock.assert_not_awaited()
+    getattr(op_store, SAVE_WRITES[save]).assert_not_awaited()
+    provider_routes.log_admin_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("save", SAVES)
+async def test_a_new_host_is_confirmed_before_anything_is_sent(console_admin, save):
+    client, op_store, _route_executor, _fake_routewise, verify_mock = console_admin
+    await _prepare_save(client, op_store, save)
+
+    asked = await _save(client, save, base_url=NEW_HOST_URL)
+    wrong = await _save(client, save, base_url=NEW_HOST_URL, password="guess")
+
+    # Asked first, with nothing checked: asking costs no sign-in attempt.
+    assert asked.status_code == 403, asked.text
+    assert asked.json()["error_code"] == "ADMIN_CONFIRMATION_REQUIRED"
+    assert "the provider's stored API keys" in asked.json()["detail"]
+    assert wrong.status_code == 400, wrong.text
+    assert op_store.get_user_by_id.await_count == 1
+    verify_mock.assert_not_awaited()
+    getattr(op_store, SAVE_WRITES[save]).assert_not_awaited()
+    provider_routes.log_admin_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_confirmed_save_to_a_new_host_is_checked_and_audited(console_admin):
+    client, op_store, _route_executor, _fake_routewise, verify_mock = console_admin
+    await _prepare_save(client, op_store, "add-route")
+
+    response = await _save(client, "add-route", base_url=NEW_HOST_URL, password=ADMIN_PASSWORD)
+
+    assert response.status_code == 200, response.text
+    verify_mock.assert_awaited_once()
+    op_store.upsert_provider_route_candidate.assert_awaited_once()
+    assert _audited_actions() == [
+        "routing.provider_routes.verify",
+        "routing.provider_routes.candidate.create",
+    ]
+    check = provider_routes.log_admin_action.await_args_list[0].kwargs
+    assert check["success"] is True
+    assert check["actor"] == AuditActor.admin("u-admin", "127.0.0.1")
+    assert check["details"]["base_url"] == NEW_HOST_URL
+    assert ADMIN_PASSWORD not in repr(provider_routes.log_admin_action.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_an_authenticator_confirms_a_new_host_without_a_password(console_admin, monkeypatch):
+    """An empty password stands for the code the session gave; the password is not checked."""
+    client, op_store, _route_executor, _fake_routewise, verify_mock = console_admin
+    monkeypatch.setattr(reauthentication, "confirmed_by_two_factor", AsyncMock(return_value=True))
+    await _prepare_save(client, op_store, "add-route")
+
+    response = await _save(client, "add-route", base_url=NEW_HOST_URL, password="")
+
+    assert response.status_code == 200, response.text
+    verify_mock.assert_awaited_once()
+    op_store.get_user_by_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("save", SAVES)
+async def test_a_host_the_keys_already_go_to_needs_no_confirmation(console_admin, save):
+    client, op_store, _route_executor, _fake_routewise, verify_mock = console_admin
+    await _prepare_save(client, op_store, save)
+
+    response = await _save(client, save)
+
+    assert response.status_code == 200, response.text
+    verify_mock.assert_awaited_once()
+    op_store.get_user_by_id.assert_not_awaited()
+    assert _audited_actions()[0] == "routing.provider_routes.verify"
+
+
 @pytest.mark.asyncio
 async def test_verify_provider_route_candidate_does_not_add_runtime_route(admin_client):
     client, op_store, route_executor, fake_routewise, verify_mock = admin_client
@@ -6538,7 +6741,6 @@ async def test_candidate_create_cancellation_commits_and_audits_exactly_once(adm
     )
     persist_entered = asyncio.Event()
     release_persist = asyncio.Event()
-    audit = provider_routes.log_admin_action
 
     async def block_candidate_persist(*_args, **_kwargs) -> None:
         persist_entered.set()
@@ -6567,7 +6769,8 @@ async def test_candidate_create_cancellation_commits_and_audits_exactly_once(adm
 
     assert not request.done()
     assert len(route_executor.routes["minimax-fast"].raw_adapters) == 3
-    audit.assert_not_awaited()
+    # Only the upstream check, audited before anything is saved.
+    assert _audited_actions() == ["routing.provider_routes.verify"]
 
     release_persist.set()
     with pytest.raises(asyncio.CancelledError):
@@ -6575,8 +6778,10 @@ async def test_candidate_create_cancellation_commits_and_audits_exactly_once(adm
 
     assert len(route_executor.routes["minimax-fast"].raw_adapters) == 4
     op_store.upsert_provider_route_candidate.assert_awaited_once()
-    audit.assert_awaited_once()
-    assert audit.await_args.kwargs["action"] == "routing.provider_routes.candidate.create"
+    assert _audited_actions() == [
+        "routing.provider_routes.verify",
+        "routing.provider_routes.candidate.create",
+    ]
 
 
 @pytest.mark.asyncio
@@ -8439,8 +8644,9 @@ async def test_config_route_edit_saves_its_capabilities_in_the_same_request(admi
     assert adapter.config.base_url == "https://api.featherless.ai/v2"
     _assert_capabilities_values(adapter, RUNTIME_CAPABILITIES)
     _assert_capabilities_values(_route_adapter(route_executor, CHUTES), DEFAULT_CAPABILITIES)
-    # Each change keeps the audit entry it has on its own.
+    # The check the save made, then each change's own audit entry.
     assert _audited_actions() == [
+        "routing.provider_routes.verify",
         "routing.provider_routes.update",
         "routing.provider_routes.capabilities.update",
     ]
@@ -8475,6 +8681,7 @@ async def test_config_route_edit_can_return_its_capabilities_to_the_baseline(adm
     _assert_capabilities_values(adapter, DEFAULT_CAPABILITIES)
     assert provider_routes._CAPABILITY_BASELINE not in adapter.config.route_metadata
     assert _audited_actions() == [
+        "routing.provider_routes.verify",
         "routing.provider_routes.update",
         "routing.provider_routes.capabilities.reset",
     ]
@@ -8501,7 +8708,10 @@ async def test_config_route_edit_without_capabilities_leaves_them(admin_client):
     assert response.json()["capabilities"] == _served(NARROW_CAPABILITIES)
     op_store.upsert_route_capability_override.assert_not_awaited()
     op_store.delete_route_capability_override.assert_not_awaited()
-    assert _audited_actions() == ["routing.provider_routes.update"]
+    assert _audited_actions() == [
+        "routing.provider_routes.verify",
+        "routing.provider_routes.update",
+    ]
 
 
 @pytest.mark.asyncio
@@ -8534,7 +8744,7 @@ async def test_config_route_edit_failure_restores_target_and_capabilities(admin_
     )
     # The override row the edit wrote was put back, and the target row removed.
     op_store.delete_provider_route_config.assert_awaited_once_with("minimax-fast", FEATHERLESS)
-    provider_routes.log_admin_action.assert_not_awaited()
+    assert _audited_actions() == ["routing.provider_routes.verify"]
 
 
 @pytest.mark.asyncio
@@ -8574,7 +8784,7 @@ async def test_config_route_edit_capability_store_failure_saves_nothing(admin_cl
     _assert_capabilities_values(_route_adapter(route_executor, FEATHERLESS), DEFAULT_CAPABILITIES)
     op_store.delete_provider_route_config.assert_awaited_once_with("minimax-fast", FEATHERLESS)
     fake_routewise.refresh_route_table.assert_not_called()
-    provider_routes.log_admin_action.assert_not_awaited()
+    assert _audited_actions() == ["routing.provider_routes.verify"]
 
 
 @pytest.mark.asyncio
@@ -8624,6 +8834,7 @@ async def test_runtime_route_edit_saves_its_capabilities_in_the_same_request(adm
     assert adapter.config.base_url == "https://openrouter.ai/api/v1"
     _assert_capabilities_values(adapter, NARROW_CAPABILITIES)
     assert _audited_actions() == [
+        "routing.provider_routes.verify",
         "routing.provider_routes.candidate.update",
         "routing.provider_routes.capabilities.update",
     ]
@@ -8683,7 +8894,7 @@ async def test_runtime_route_edit_failure_restores_target_and_capabilities(admin
     ) == (NARROW_CAPABILITIES)
     adapter = _live_entry(route_executor, MINIMAX_ROUTE_ID)[1]
     _assert_capabilities_values(adapter, NARROW_CAPABILITIES)
-    provider_routes.log_admin_action.assert_not_awaited()
+    assert _audited_actions() == ["routing.provider_routes.verify"]
 
 
 @pytest.mark.asyncio

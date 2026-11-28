@@ -223,6 +223,11 @@ source `yaml` (`yaml_weight`). **Models** edits the model catalog and the
 overrides on top of it: each model's required role, and whether it counts
 toward the per-user concurrency limit.
 
+Saving a route whose base URL would send the provider's stored keys to a host
+none of its routes uses asks you to confirm first, with a code, your password
+or a new single sign-on, as for the other guarded changes. See
+[Routing](routing.md#api-endpoints).
+
 The **Reasoning effort levels** summary shows the route's client choices and
 where they come from. **Advanced mapping** changes what each public level sends
 upstream, and **Use default effort settings** clears the effort override while

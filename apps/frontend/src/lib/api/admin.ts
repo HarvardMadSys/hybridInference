@@ -3085,6 +3085,16 @@ type RouteCapabilityEdit =
   | { capabilities: RuntimeModelCapabilities; reset_capabilities?: undefined }
   | { capabilities?: undefined; reset_capabilities: true };
 
+/**
+ * The signed-in administrator's confirmation of a route save that sends the
+ * provider's stored keys to a host none of its routes uses: the password, or
+ * `''` when a code or a fresh single sign-on confirms instead. Sent only once
+ * the gateway asks (`ADMIN_CONFIRMATION_REQUIRED`).
+ */
+interface RouteSaveConfirmation {
+  password?: string;
+}
+
 interface UpdateProviderRoutePayload {
   upstream_provider: string;
   openrouter_provider?: string | null;
@@ -3225,7 +3235,7 @@ export async function updateProviderRouteStrategy(
 }
 
 export async function createProviderRouteModel(
-  payload: CreateProviderRouteModelPayload,
+  payload: CreateProviderRouteModelPayload & RouteSaveConfirmation,
 ): Promise<ProviderRoute> {
   const resp = await fetchWithAuth(API_BASE, '/admin/routing/provider-route-models', {
     method: 'POST',
@@ -3249,7 +3259,7 @@ export async function verifyProviderRouteModel(
 export async function updateProviderRoute(
   modelId: string,
   routeId: string,
-  payload: UpdateProviderRoutePayload & RouteCapabilityEdit,
+  payload: UpdateProviderRoutePayload & RouteCapabilityEdit & RouteSaveConfirmation,
 ): Promise<ProviderRoute> {
   const resp = await fetchWithAuth(
     API_BASE,
@@ -3269,6 +3279,7 @@ export async function updateProviderRoute(
         concurrency_limit: payload.concurrency_limit ?? null,
         ...(payload.capabilities ? { capabilities: payload.capabilities } : {}),
         ...(payload.reset_capabilities ? { reset_capabilities: true } : {}),
+        ...(payload.password !== undefined ? { password: payload.password } : {}),
       }),
     },
   );
@@ -3304,7 +3315,7 @@ export async function verifyProviderRoute(
 
 export async function createProviderRouteCandidate(
   modelId: string,
-  payload: CreateProviderRoutePayload,
+  payload: CreateProviderRoutePayload & RouteSaveConfirmation,
 ): Promise<ProviderRoute> {
   const resp = await fetchWithAuth(
     API_BASE,
@@ -3321,7 +3332,7 @@ export async function createProviderRouteCandidate(
 export async function updateProviderRouteCandidate(
   modelId: string,
   routeId: string,
-  payload: UpdateProviderRouteCandidatePayload & RouteCapabilityEdit,
+  payload: UpdateProviderRouteCandidatePayload & RouteCapabilityEdit & RouteSaveConfirmation,
 ): Promise<ProviderRoute> {
   const resp = await fetchWithAuth(
     API_BASE,

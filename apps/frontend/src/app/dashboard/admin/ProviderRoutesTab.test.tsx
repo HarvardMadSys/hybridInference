@@ -72,6 +72,17 @@ vi.mock('react-hot-toast', () => ({
   },
 }));
 
+/** Whether the signed-in administrator has an authenticator: switched per test. */
+const twoFactor = vi.hoisted(() => ({ enabled: false }));
+vi.mock('@/components/providers/TwoFactorProvider', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/components/providers/TwoFactorProvider')>()),
+  useTwoFactor: () => ({
+    status: { enabled: twoFactor.enabled },
+    isPending: false,
+    refresh: vi.fn(),
+  }),
+}));
+
 import {
   clearRouteWeight,
   createProviderRouteModel,
@@ -4877,6 +4888,168 @@ describe('ProviderRoutesTab', () => {
         ).toBeInTheDocument();
         expect(within(dialog).queryByRole('button', { name: 'Add level' })).toBeNull();
       });
+    });
+  });
+
+  describe('a save that would send the keys to a new host', () => {
+    const newHost = 'https://keys.elsewhere.example/v1';
+    const prompt = "Send the provider's keys to a new host?";
+    const asked = () =>
+      new APIError(
+        'ADMIN_CONFIRMATION_REQUIRED',
+        "Sending the provider's stored API keys to a host none of its routes uses needs your " +
+          'confirmation: your password, or the code or single sign-on your account confirms with.',
+        403,
+      );
+
+    beforeEach(() => {
+      twoFactor.enabled = false;
+      // Answers queued by a test that failed early must not reach the next one.
+      vi.mocked(updateProviderRoute).mockReset();
+      vi.mocked(createProviderRouteCandidate).mockReset();
+      vi.mocked(listProviderRoutes).mockResolvedValue({
+        provider_options: providerOptions,
+        openrouter_provider_options: openRouterProviderOptions,
+        routes: [route],
+      });
+      vi.mocked(listProviderKeys).mockImplementation(async (provider?: string) =>
+        providerKeysResponse(provider),
+      );
+    });
+
+    async function saveNewBaseUrl() {
+      render(<ProviderRoutesTab />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+      fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: newHost } });
+      saveRouteEdit();
+      return screen.findByRole('dialog', { name: prompt });
+    }
+
+    const savedBodies = () => vi.mocked(updateProviderRoute).mock.calls.map((call) => call[2]);
+
+    it('asks for the password, then saves again with it', async () => {
+      vi.mocked(updateProviderRoute)
+        .mockRejectedValueOnce(asked())
+        .mockResolvedValueOnce({ ...route, base_url: newHost, source: 'override' });
+
+      const dialog = await saveNewBaseUrl();
+
+      expect(within(dialog).getByText(newHost)).toBeInTheDocument();
+      fireEvent.change(within(dialog).getByLabelText('Your password'), {
+        target: { value: 'admin-password' },
+      });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save route' }));
+
+      await waitFor(() => expect(updateProviderRoute).toHaveBeenCalledTimes(2));
+      const [first, second] = savedBodies();
+      expect(first).not.toHaveProperty('password');
+      expect(first.base_url).toBe(newHost);
+      expect(second).toEqual({ ...first, password: 'admin-password' });
+      // The confirmation and the editor both close once the route is saved.
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    });
+
+    it('keeps the dialog open with the reason a confirmation was refused', async () => {
+      vi.mocked(updateProviderRoute)
+        .mockRejectedValueOnce(asked())
+        .mockRejectedValueOnce(
+          new APIError('UNKNOWN_ERROR', 'Current password is incorrect.', 400),
+        );
+
+      const dialog = await saveNewBaseUrl();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save route' }));
+      expect(
+        await within(dialog).findByText('Enter your password to save this route.'),
+      ).toBeInTheDocument();
+      expect(updateProviderRoute).toHaveBeenCalledTimes(1);
+
+      fireEvent.change(within(dialog).getByLabelText('Your password'), {
+        target: { value: 'guess' },
+      });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save route' }));
+
+      expect(await within(dialog).findByText('Current password is incorrect.')).toBeInTheDocument();
+      expect(screen.getByRole('dialog', { name: prompt })).toBeInTheDocument();
+      expect(screen.getByRole('dialog', { name: /Edit/ })).toBeInTheDocument();
+    });
+
+    it('lets an authenticator confirm without a password', async () => {
+      twoFactor.enabled = true;
+      vi.mocked(updateProviderRoute)
+        .mockRejectedValueOnce(asked())
+        .mockResolvedValueOnce({ ...route, base_url: newHost, source: 'override' });
+
+      const dialog = await saveNewBaseUrl();
+
+      expect(within(dialog).queryByLabelText('Your password')).not.toBeInTheDocument();
+      expect(
+        within(dialog).getByText(/A code from your authenticator app confirms this/),
+      ).toBeVisible();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save route' }));
+
+      await waitFor(() => expect(updateProviderRoute).toHaveBeenCalledTimes(2));
+      expect(savedBodies()[1]).toEqual({ ...savedBodies()[0], password: '' });
+    });
+
+    it('shows any other refusal in the editor, with nothing to confirm', async () => {
+      vi.mocked(updateProviderRoute).mockRejectedValueOnce(
+        new APIError('UNKNOWN_ERROR', 'Provider verification failed with HTTP 401', 400),
+      );
+      render(<ProviderRoutesTab />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+      fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: newHost } });
+      saveRouteEdit();
+
+      expect(
+        await screen.findByText('Provider verification failed with HTTP 401'),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('dialog', { name: prompt })).not.toBeInTheDocument();
+      expect(updateProviderRoute).toHaveBeenCalledTimes(1);
+    });
+
+    it('asks the same before a new route sends the keys to a new host', async () => {
+      vi.mocked(createProviderRouteCandidate)
+        .mockRejectedValueOnce(asked())
+        .mockResolvedValueOnce({
+          ...route,
+          route_id: 'minimax-fast:openrouter[parasail]-api',
+          route_type: 'concurrency',
+          provider: 'openrouter',
+          upstream_provider: 'openrouter',
+          openrouter_provider: 'parasail',
+          key_provider: 'openrouter',
+          base_url: newHost,
+          api_key_id: 'key-1',
+          provider_model_id: 'minimax/minimax-m2.5',
+          concurrency_limit: 2,
+          endpoint_id: 'minimax-fast:openrouter[parasail]-api',
+          source: 'runtime',
+        });
+      render(<ProviderRoutesTab />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
+      chooseValue(screen.getByLabelText('Route type'), 'concurrency');
+      fireEvent.change(screen.getByLabelText('Provider model ID'), {
+        target: { value: 'minimax/minimax-m2.5' },
+      });
+      chooseValue(screen.getByLabelText('OpenRouter routing'), 'provider:parasail');
+      fireEvent.change(screen.getByLabelText('Concurrency limit'), { target: { value: '2' } });
+      await waitFor(() => expect(listProviderKeys).toHaveBeenCalledWith('openrouter'));
+      chooseValue(screen.getByLabelText('API key'), 'key-1');
+      fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: newHost } });
+      fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+      const dialog = await screen.findByRole('dialog', { name: prompt });
+      fireEvent.change(within(dialog).getByLabelText('Your password'), {
+        target: { value: 'admin-password' },
+      });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save route' }));
+
+      await waitFor(() => expect(createProviderRouteCandidate).toHaveBeenCalledTimes(2));
+      const [first, second] = vi.mocked(createProviderRouteCandidate).mock.calls;
+      expect(first[1]).not.toHaveProperty('password');
+      expect(first[1].base_url).toBe(newHost);
+      expect(second).toEqual(['minimax-fast', { ...first[1], password: 'admin-password' }]);
+      expect(await screen.findByText('Runtime added')).toBeInTheDocument();
     });
   });
 });
