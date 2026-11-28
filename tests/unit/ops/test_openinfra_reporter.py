@@ -494,6 +494,42 @@ def test_no_rate_is_taken_between_two_different_counters():
     assert rates == [900.0, 900.0]
 
 
+def test_a_step_counter_only_the_newer_scrape_has_leaves_prefill_to_the_fallbacks():
+    """Not a blank window: after a missed sibling /metrics, or a series' first scrape."""
+
+    def loads(uncached: float) -> dict:
+        return {"metrics": {"engine": "sglang", "uncached_tokens_total": uncached}}
+
+    def both(uncached: float, computed: float, cached: float) -> dict:
+        step = {"step_computed_total": computed, "step_cached_total": cached}
+        return {"metrics": {**loads(uncached)["metrics"], **step}}
+
+    scrapes = [
+        both(100, 10_000, 4_000),
+        loads(400),
+        both(700, 12_000, 5_000),
+        both(900, 12_600, 5_300),
+    ]
+    windows = [
+        reporter.snapshot_sglang(last, prev, 1.0)["metrics"] for prev, last in pairwise(scrapes)
+    ]
+    assert [w["prefill_tps"] for w in windows] == [300.0, 300.0, 600.0]
+    assert windows[2]["cache_hit_rate"] == pytest.approx(300 / 900, abs=1e-4)
+    # The first scrape with SGLang's realtime counter: its prompt counters give the window.
+    first_seen = _windows(
+        [_sglang(prompt=0, cached=0), _sglang(rt_compute=500, prompt=1000, cached=200)]
+    )[0]
+    assert first_seen["prefill_tps"] == 800.0
+
+
+def test_sglang_speculation_on_its_gauge_alone_clears_when_the_gauge_does():
+    """Without a step counter, SGLang's throughput gauge, which falls to 0, says it is idle."""
+    idle = _windows([_sglang(gauge=0, spec_len=3.1, spec_rate=0.7)] * 2)[0]
+    assert (idle["spec_accept_length"], idle["spec_accept_rate"]) == (None, None)
+    busy = _windows([_sglang(gauge=900, spec_len=3.1, spec_rate=0.7)] * 2)[0]
+    assert (busy["spec_accept_length"], busy["spec_accept_rate"]) == (3.1, 0.7)
+
+
 def test_a_log_read_fills_no_metric_the_counters_measured(monkeypatch):
     """The once-a-minute log read leaves an idle window's measured blanks blank."""
     log_stats = {

@@ -1792,8 +1792,11 @@ def snapshot_sglang(
     # (_sglang_step_counters(); vLLM's prompt counters move that way too).
     # prefill_tps is the UNCACHED rate on every path, and the gateway sums it
     # as is; the hit rate is the cached share of the window's prompt tokens.
-    step_key, step_computed = _shared_rate(src_first, last_m, src_elapsed, "step_computed_total")
-    if step_key is not None:
+    # Only where the step counter gives the window a rate: one only the newer
+    # scrape holds (after a missed sibling /metrics, or in a series' first
+    # scrape) leaves the window to the counters both scrapes share.
+    _, step_computed = _shared_rate(src_first, last_m, src_elapsed, "step_computed_total")
+    if step_computed is not None:
         _, step_cached = _shared_rate(src_first, last_m, src_elapsed, "step_cached_total")
         metrics["prefill_tps"] = step_computed
         metrics["cached_prefill_tps"] = step_cached
@@ -1842,6 +1845,9 @@ def snapshot_sglang(
         and last_req >= first_req
     ):
         metrics["req_per_min"] = round((last_req - first_req) / src_elapsed * 60.0, 1)
+    # SGLang before 0.5.20 counts cache tiers only as requests finish, so on
+    # its realtime counters device and host add up to the cached rate over a
+    # minute rather than in each second.
     for dest, keys in (
         ("device_cached_tps", ("step_device_cached_total", "device_cached_tokens_total")),
         ("host_cached_tps", ("step_host_cached_total", "host_cached_tokens_total")),
@@ -2004,7 +2010,8 @@ def _speculation(
     SGLang's gauge, and vLLM's own mean acceptance length, one more than its
     accepted tokens per draft. The rate is accepted draft tokens over those
     proposed. SGLang's gauges cover its last report and hold through idle
-    time, so a window in which a step counter saw nothing decoded has neither.
+    time, so a window with nothing decoded has neither: a step counter's 0,
+    or SGLang's throughput gauge, which falls to 0 once decoding stops.
     """
     if _number(last_m.get("spec_accepted_total")):
         measured.update(("spec_accept_rate", "spec_accept_length"))
@@ -2018,7 +2025,7 @@ def _speculation(
             *accepted, src_first.get("spec_drafts_total"), last_m.get("spec_drafts_total")
         )
         metrics["spec_accept_length"] = round(1.0 + per_draft, 4) if per_draft is not None else None
-    elif _number(last_m.get("spec_accept_length")) and "gen_throughput" in measured:
+    elif _number(last_m.get("spec_accept_length")):
         measured.update(("spec_accept_rate", "spec_accept_length"))
         if metrics.get("gen_throughput") == 0:
             metrics["spec_accept_length"] = metrics["spec_accept_rate"] = None
