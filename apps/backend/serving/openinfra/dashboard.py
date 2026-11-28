@@ -13,8 +13,8 @@ console's ``/openinfra`` page replaces, so a reader of either knows the other:
   history of the last days, for an administrator to download.
 
 Engines come in the deployment's tab order (``OPENINFRA_ENGINE_ORDER``, by
-name), the unlisted ones after, alphabetically; retired engines are left out
-everywhere.
+name), the unlisted ones after, the busiest first: by the tokens their tab
+served in the last day, then by name. Retired engines are left out everywhere.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 from serving.openinfra import store
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
 
 #: The widest history window, in hours (7 days).
 MAX_HISTORY_HOURS = 24 * 7
@@ -79,16 +79,42 @@ def _parsed(raw: Any) -> Any:
         return []
 
 
-def order_engines(
-    engines: Sequence[dict[str, Any]], order: Sequence[str] = ()
-) -> list[dict[str, Any]]:
-    """*engines* in tab order: those *order* names first, as listed, then the rest by name."""
-    position = {name: i for i, name in enumerate(order)}
+#: The served totals that count as tokens, as the page adds them up: prompt
+#: tokens read from the cache and computed, and generated tokens.
+_TOKEN_KEYS = ("cache_tokens", "prefill_tokens", "decode_tokens")
 
-    def key(engine: dict[str, Any]) -> tuple[int, str, str]:
+
+def served_tokens(served: dict[str, Any], window: str = "day") -> dict[str, float]:
+    """Tokens each engine served in *window* (``hour`` or ``day``), by engine id."""
+    return {
+        server["id"]: float(sum(server[window].get(key) or 0 for key in _TOKEN_KEYS))
+        for server in served.get("servers", ())
+    }
+
+
+def order_engines(
+    engines: Sequence[dict[str, Any]],
+    order: Sequence[str] = (),
+    tokens: Mapping[str, float] | None = None,
+) -> list[dict[str, Any]]:
+    """*engines* in tab order.
+
+    Those *order* names first, as listed; then the rest busiest first, by the
+    *tokens* (by engine id) of every engine sharing their tab, a name; then by
+    name, so a deployment without traffic keeps a stable place.
+    """
+    position = {name: i for i, name in enumerate(order)}
+    tokens = tokens or {}
+    by_tab: dict[str, float] = {}
+    for engine in engines:
+        label = engine.get("name") or engine["id"]
+        by_tab[label] = by_tab.get(label, 0.0) + tokens.get(engine["id"], 0.0)
+
+    def key(engine: dict[str, Any]) -> tuple[int, float, str, str]:
         label = engine.get("name") or engine["id"]
         rank = position.get(label, position.get(engine["id"], len(position)))
-        return rank, str(label).casefold(), engine["id"]
+        busy = 0.0 if rank < len(position) else -by_tab[label]
+        return rank, busy, str(label).casefold(), engine["id"]
 
     return sorted(engines, key=key)
 
@@ -222,8 +248,8 @@ async def build_dashboard(
     """The current state of every host, GPU and engine, with served totals and recent requests."""
     now = now_ms() if now is None else now
     nodes, gpus, engines = await store.load_snapshot(conn, retired=retired, now=now)
-    engines = order_engines(engines, order)
     served = await store.load_served(conn, retired=retired, now=now)
+    engines = order_engines(engines, order, served_tokens(served))
     requests = await store.load_recent_requests(
         conn, [(engine["id"], engine.get("server_id") or engine["id"]) for engine in engines]
     )
@@ -313,8 +339,8 @@ async def build_export(
     whole_days = min(MAX_EXPORT_DAYS, max(1, math.floor(days + 0.5) if math.isfinite(days) else 30))
     hours = whole_days * 24
     nodes, gpus, engines = await store.load_snapshot(conn, retired=retired, now=now)
-    engines = order_engines(engines, order)
     served = await store.load_served(conn, retired=retired, now=now)
+    engines = order_engines(engines, order, served_tokens(served))
     history = await store.load_history(conn, hours, retired=retired, now=now)
     return {
         "exported_at": now,

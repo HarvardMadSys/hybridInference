@@ -11,7 +11,7 @@ import { chooseOption } from '@/test-utils/select';
 const navigateToMock = vi.fn();
 
 vi.mock('next/navigation', () => ({
-  usePathname: () => '/dashboard/admin/providers/models',
+  usePathname: () => '/dashboard/admin/routing/models',
   useRouter: () => ({ replace: vi.fn(), refresh: vi.fn() }),
 }));
 
@@ -193,7 +193,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('Admin → Providers → Models', () => {
+describe('Admin → Routing → Models', () => {
   it('holds the model catalog and the per-model overrides, and nothing else of the configuration', async () => {
     await renderModels();
 
@@ -214,7 +214,7 @@ describe('Admin → Providers → Models', () => {
     expect(screen.queryByText(/required setting is missing/)).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Search settings')).not.toBeInTheDocument();
     // Models are created, and their routes changed, on Routing.
-    expect(screen.getByRole('link', { name: 'Routing' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Routes' })).toHaveAttribute(
       'href',
       '/dashboard/admin/routing',
     );
@@ -292,7 +292,7 @@ describe('Admin → Providers → Models', () => {
     );
 
     await waitFor(() =>
-      expect(navigateToMock).toHaveBeenCalledWith('/dashboard/admin/providers/models'),
+      expect(navigateToMock).toHaveBeenCalledWith('/dashboard/admin/routing/models'),
     );
     expect(restartBackend).toHaveBeenCalledTimes(1);
   });
@@ -339,9 +339,9 @@ describe('Admin → Providers → Models', () => {
 
   it('asks before leaving with an unsaved change, in the catalog or an override', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
-    window.history.replaceState(null, '', '/dashboard/admin/providers/models');
+    window.history.replaceState(null, '', '/dashboard/admin/routing/models');
     await renderModels();
-    const routing = screen.getByRole('link', { name: 'Routing' });
+    const routing = screen.getByRole('link', { name: 'Routes' });
 
     // Nothing unsaved: no question.
     fireEvent.click(routing);
@@ -352,9 +352,9 @@ describe('Admin → Providers → Models', () => {
     });
     expect(fireEvent.click(routing)).toBe(false);
     expect(confirm).toHaveBeenCalledWith(LEAVE_MESSAGE);
-    // Another Providers section is a page of its own as well.
+    // Another tab is a page of its own as well.
     const keys = document.body.appendChild(document.createElement('a'));
-    keys.href = '/dashboard/admin/providers/keys';
+    keys.href = '/dashboard/admin/providers';
     expect(fireEvent.click(keys)).toBe(false);
     keys.remove();
 
@@ -383,10 +383,10 @@ describe('Admin → Providers → Models', () => {
     await renderModels();
 
     expect(await screen.findByText(/This backend lists the model catalog/)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Settings → Site & Setup' })).toHaveAttribute(
-      'href',
-      '/dashboard/admin/settings?tab=setup',
-    );
+    // The link lands on the documents, opening the Advanced they sit under.
+    expect(
+      screen.getByRole('link', { name: 'Settings → Site & Setup → Advanced' }),
+    ).toHaveAttribute('href', '/dashboard/admin/settings?tab=setup#config-application');
     expect(screen.queryByRole('region', { name: 'Model catalog' })).not.toBeInTheDocument();
   });
 });

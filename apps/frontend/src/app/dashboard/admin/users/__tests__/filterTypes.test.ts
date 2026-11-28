@@ -48,6 +48,13 @@ describe('filterStateFromUrl / filterStateToUrl', () => {
     expect(filterStateFromUrl(new URLSearchParams(url)).role).toBe('internal');
     expect(filterStateFromUrl(new URLSearchParams('role=banana')).role).toBeNull();
   });
+
+  it('round-trips the service-account filter', () => {
+    const url = filterStateToUrl({ ...DEFAULT_FILTER_STATE, serviceAccount: true });
+    expect(url).toBe('service_account=true');
+    expect(filterStateFromUrl(new URLSearchParams(url)).serviceAccount).toBe(true);
+    expect(filterStateFromUrl(new URLSearchParams('service_account=no')).serviceAccount).toBeNull();
+  });
 });
 
 describe('currency-bound amount filters', () => {

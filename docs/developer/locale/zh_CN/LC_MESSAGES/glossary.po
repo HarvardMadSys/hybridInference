@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-27 05:51-0400\n"
+"POT-Creation-Date: 2026-11-28 14:27+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -18,359 +18,389 @@ msgstr ""
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=utf-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"Generated-By: Babel 2.18.0\n"
+"Generated-By: Babel 2.19.0\n"
 
 #: ../developer/glossary.md:1
 msgid "Glossary"
 msgstr "术语表"
 
 #: ../developer/glossary.md:3
-msgid ""
-"The words these pages use for the parts of a gateway, in the order you "
-"meet them. When a page uses one of these terms, it means exactly what is "
-"written here."
-msgstr "本文档用来称呼网关各个部分的术语，按阅读时遇到的先后排列。文档里用到这些术语时，含义就以这里写的为准。"
+msgid "The terms these pages use, roughly in the order you meet them."
+msgstr "本站使用的术语，大致按你遇到它们的顺序排列。"
 
-#: ../developer/glossary.md:7
+#: ../developer/glossary.md:5
 msgid "Requests and models"
 msgstr "请求与模型"
 
-#: ../developer/glossary.md:9
+#: ../developer/glossary.md:7
 msgid "Model id"
 msgstr "模型 id"
 
-#: ../developer/glossary.md:10
+#: ../developer/glossary.md:8
 msgid ""
-"The name a client sends in the `model` field, such as `example-chat`. It "
-"is the gateway's public name for a model and is independent of what any "
-"provider calls it."
-msgstr ""
-"客户端在 `model` 字段里填的名字，例如 `example-chat`。它是网关对外公布的模型名，和任何 provider "
-"自己怎么称呼这个模型无关。"
+"The name a client sends in the `model` field, such as `example-chat`: the"
+" gateway's public name for a model, independent of what any provider "
+"calls it."
+msgstr "客户端在 `model` 字段里发送的名称，例如 `example-chat`：它是网关对外的模型名，与任何 provider 自己的叫法无关。"
 
-#: ../developer/glossary.md:14
+#: ../developer/glossary.md:11
 msgid "Alias"
 msgstr "别名（alias）"
 
-#: ../developer/glossary.md:15
-msgid ""
-"Another name that resolves to the same model id. Declared with `aliases:`"
-" on the model."
-msgstr "解析到同一个模型 id 的另一个名字。在模型上用 `aliases:` 声明。"
+#: ../developer/glossary.md:12
+msgid "Another name for the same model id, declared in the model's `aliases`."
+msgstr "同一个模型 id 的另一个名称，在模型的 `aliases` 里声明。"
 
-#: ../developer/glossary.md:18
+#: ../developer/glossary.md:14
 msgid "Model registry"
 msgstr "模型注册表（model registry）"
 
-#: ../developer/glossary.md:19
+#: ../developer/glossary.md:15
 msgid ""
-"The YAML file, usually `models.yaml`, that lists every model id and the "
-"routes behind it. [Configuration](configuration.md) explains how the "
-"gateway finds it."
-msgstr ""
-"一个 YAML 文件，通常叫 `models.yaml`，列出每个模型 id "
-"以及它背后的路由。网关怎么找到这个文件，见[配置](configuration.md)。"
+"The `MODEL_CATALOG` setting: the database document that lists every model"
+" id and its routes. See [Configuration](configuration.md)."
+msgstr "`MODEL_CATALOG` 设置项：列出每个模型 id 及其路由的数据库文档。见[配置](configuration.md)。"
 
-#: ../developer/glossary.md:23
+#: ../developer/glossary.md:18
 msgid "API key and provider key"
 msgstr "API key 与 provider key"
 
-#: ../developer/glossary.md:24
+#: ../developer/glossary.md:19
 msgid ""
-"An API key is what a client presents to the gateway. A provider key is "
+"An API key is what a client presents to the gateway; a provider key is "
 "what the gateway presents to a provider. They are never the same "
 "credential."
-msgstr "API key 是客户端出示给网关的凭据；provider key 是网关出示给 provider 的凭据。两者永远不是同一个。"
+msgstr "API key 是客户端向网关出示的凭据；provider key 是网关向 provider 出示的凭据。两者绝不是同一个凭据。"
 
-#: ../developer/glossary.md:27
+#: ../developer/glossary.md:22
 msgid "Routes and providers"
 msgstr "路由与 provider"
 
-#: ../developer/glossary.md:29
+#: ../developer/glossary.md:24
 msgid "Route"
 msgstr "路由（route）"
 
-#: ../developer/glossary.md:30
+#: ../developer/glossary.md:25
 msgid ""
-"One way of serving a model id: an entry in the model's `route:` list that"
-" names an adapter kind, a base URL, a credential and a weight. A model id"
-" can have several routes, and that is what lets the gateway balance and "
-"fail over between them."
+"One way of serving a model id: an entry in the model's `route` list "
+"naming an adapter kind, a base URL, a credential and a weight. Several "
+"routes let the gateway balance and fail over between them."
 msgstr ""
-"为模型 id 提供服务的一条途径，也就是模型 `route:` 列表里的一项，写明 adapter 的 kind、base "
-"URL、凭据和权重。一个模型 id 可以有多条路由，网关正是靠这一点在多条路由之间做负载均衡和故障切换。"
+"提供某个模型 id 的一种方式：模型 `route` 列表中的一项，写明 adapter kind、base "
+"URL、凭据和权重。有了多条路由，网关就能在它们之间分流和回退。"
 
-#: ../developer/glossary.md:35
+#: ../developer/glossary.md:29
 msgid "Endpoint"
 msgstr "端点（endpoint）"
 
-#: ../developer/glossary.md:36
+#: ../developer/glossary.md:30
 msgid ""
-"The server a route sends requests to. Pages say \"endpoint\" when they "
-"mean the server and \"route\" when they mean the configuration entry."
-msgstr "路由发送请求的目标服务器。文档里说「端点」时指服务器本身，说「路由」时指配置里的那一项。"
+"The server a route sends requests to. \"Endpoint\" means the server, "
+"\"route\" the configuration entry."
+msgstr "路由把请求发往的服务器。“端点”指服务器，“路由”指配置项。"
 
-#: ../developer/glossary.md:39
+#: ../developer/glossary.md:33
 msgid "`endpoint_id`"
 msgstr ""
 
-#: ../developer/glossary.md:40
+#: ../developer/glossary.md:34
 msgid ""
-"The gateway's key for one endpoint of one model, written `<model-"
-"id>:<location>` — `glm-4.6:local-12003` for a server on local port 12003,"
-" `glm-4.6:zai-api` for a hosted API. Circuit breakers, latency profiles "
-"and weight overrides are all keyed on it. The suffix comes from the host "
-"and port or from the adapter kind, so it does not tell you who runs the "
-"server."
+"The key for one endpoint of one model, `<model-id>:<location>`: "
+"`glm-4.6:local-12003` for local port 12003, `glm-4.6:zai-api` for a "
+"hosted API. Circuit breakers, latency profiles and weight overrides are "
+"keyed on it. The suffix comes from the host and port or the adapter kind,"
+" so it does not tell you who runs the server."
 msgstr ""
-"网关用来标识「某个模型的某个端点」的键，写作 `<model-id>:<location>`：本机 12003 端口上的服务器是 "
+"某个模型的某个端点的键，格式为 `<model-id>:<location>`：本地 12003 端口上的服务器是 "
 "`glm-4.6:local-12003`，托管 API 是 `glm-4.6:zai-"
-"api`。熔断器、延迟统计和权重覆盖都以它为键。后缀来自主机和端口，或者来自 adapter 的 kind，所以从它看不出服务器是谁在运行。"
+"api`。熔断器、延迟画像和权重覆盖都以它为键。后缀来自主机和端口或 adapter kind，因此看不出服务器由谁运行。"
 
-#: ../developer/glossary.md:47
+#: ../developer/glossary.md:40
 msgid "Provider"
 msgstr "provider"
 
-#: ../developer/glossary.md:48
+#: ../developer/glossary.md:41
 msgid ""
-"The service behind a route: OpenRouter, DeepSeek, your own vLLM server. "
-"In configuration, a route's `provider:` is the label its traffic is "
-"reported under in logs and dashboards."
-msgstr ""
-"路由背后的服务：OpenRouter、DeepSeek、你自己的 vLLM 服务器。在配置里，路由的 `provider:` "
-"是一个标签，这条路由的流量在日志和仪表盘里都记在这个标签下。"
+"The service behind a route: OpenRouter, DeepSeek, your own vLLM server. A"
+" route's `provider` is the label its traffic is reported under."
+msgstr "路由背后的服务：OpenRouter、DeepSeek，或你自己的 vLLM 服务器。路由的 `provider` 是它的流量在报告中使用的标签。"
 
-#: ../developer/glossary.md:52
+#: ../developer/glossary.md:44
 msgid "Kind"
 msgstr "kind"
 
-#: ../developer/glossary.md:53
+#: ../developer/glossary.md:45
 msgid ""
-"A route's `kind:`, which picks the adapter that talks to the endpoint: "
-"`openai_compat`, `vllm`, `openrouter`, `anthropic` and so on."
+"A route's `kind`, which picks its adapter: `openai_compat`, `vllm`, "
+"`openrouter`, `anthropic` and so on."
 msgstr ""
-"路由的 `kind:`，决定用哪个 adapter "
-"和端点通信：`openai_compat`、`vllm`、`openrouter`、`anthropic` 等。"
+"路由的 `kind`，决定使用哪个 adapter：`openai_compat`、`vllm`、`openrouter`、`anthropic`"
+" 等。"
 
-#: ../developer/glossary.md:56
+#: ../developer/glossary.md:48
 msgid "Adapter"
 msgstr "adapter"
 
-#: ../developer/glossary.md:57
+#: ../developer/glossary.md:49
 msgid ""
-"The code that speaks one provider's API. It builds the request, holds the"
-" provider key and turns the response back into the OpenAI shape. Self-"
-"hosted servers use the generic OpenAI-compatible adapter."
+"The code that speaks one provider's API: it builds the request, holds the"
+" provider key and turns the response into the OpenAI shape. Self-hosted "
+"servers use the generic OpenAI-compatible adapter."
 msgstr ""
-"对接某一家 provider API 的代码。它负责构造请求、持有 provider key，并把响应转换回 OpenAI "
-"的格式。自建服务器用的是通用的 OpenAI 兼容 adapter。"
+"与某个 provider 的 API 对话的代码：它构造请求、持有 provider key，并把响应转换成 OpenAI "
+"格式。自部署的服务器使用通用的 OpenAI 兼容 adapter。"
 
-#: ../developer/glossary.md:61
+#: ../developer/glossary.md:53
 msgid "Upstream"
 msgstr "上游（upstream）"
 
-#: ../developer/glossary.md:62
-msgid "Whatever the gateway calls to produce an answer — the far end of a route."
-msgstr "网关为了得到回答而调用的那一端，也就是路由的另一头。"
+#: ../developer/glossary.md:54
+msgid "Whatever the gateway calls to produce an answer: the far end of a route."
+msgstr "网关为了得到回答而调用的对象：路由的另一端。"
 
-#: ../developer/glossary.md:64
+#: ../developer/glossary.md:56
 msgid "Choosing a route"
 msgstr "选择路由"
 
-#: ../developer/glossary.md:66
+#: ../developer/glossary.md:58
 msgid "Router"
 msgstr "router"
 
-#: ../developer/glossary.md:67
+#: ../developer/glossary.md:59
 msgid ""
-"The per-model logic that picks a route for each request. `fixed` draws a "
-"route at random by weight and falls back to the others on failure; it is "
-"the default. `routewise` trades latency against cost. A model chooses one"
-" with `router:`."
+"The per-model logic, chosen with `router`, that picks a route for each "
+"request. `fixed` (the default) draws a route by weight and falls back to "
+"the others on failure; `routewise` trades latency against cost."
 msgstr ""
-"按模型配置、为每个请求挑选路由的逻辑。`fixed` 按权重随机选一条路由，失败时回退到其他路由，是默认值；`routewise` "
-"在延迟和成本之间做取舍。模型用 `router:` 指定其中一个。"
+"按模型配置、用 `router` "
+"选择的逻辑，为每个请求挑选路由。`fixed`（默认）按权重抽取路由，失败时回退到其他路由；`routewise` 在延迟和成本之间权衡。"
 
-#: ../developer/glossary.md:72
+#: ../developer/glossary.md:63
 msgid "Weight"
 msgstr "权重（weight）"
 
-#: ../developer/glossary.md:73
+#: ../developer/glossary.md:64
 msgid ""
-"A route's relative share of traffic under the `fixed` router. A route "
-"with weight `0` stays configured but receives no traffic, not even as a "
-"fallback."
-msgstr "在 `fixed` router 下，一条路由分到的相对流量份额。权重为 `0` 的路由仍保留在配置里，但不会收到任何流量，连回退也不会用到它。"
+"A route's relative share of traffic under `fixed`. A route with weight "
+"`0` stays configured but gets no traffic, not even as a fallback."
+msgstr "在 `fixed` 下，路由所占流量的相对份额。权重为 `0` 的路由仍保留在配置中，但不接收任何流量，回退时也不会用到。"
 
-#: ../developer/glossary.md:76
+#: ../developer/glossary.md:67
 msgid "Fallback"
 msgstr "回退（fallback）"
 
-#: ../developer/glossary.md:77
-msgid ""
-"What the router does when a route fails: it tries the model's remaining "
-"routes in order until one answers."
-msgstr "某条路由失败时 router 的做法：按顺序尝试该模型剩下的路由，直到有一条返回结果。"
+#: ../developer/glossary.md:68
+msgid "Trying the model's remaining routes in order when a route fails."
+msgstr "某条路由失败时，按顺序尝试模型的其余路由。"
 
-#: ../developer/glossary.md:80
+#: ../developer/glossary.md:70
 msgid "Circuit breaker"
 msgstr "熔断器（circuit breaker）"
 
-#: ../developer/glossary.md:81
+#: ../developer/glossary.md:71
 msgid ""
-"A per-endpoint switch that stops sending traffic to an endpoint after "
-"repeated failures and lets a single test request through after a "
-"cooldown."
-msgstr "按端点设置的开关：端点反复失败后，停止向它发送流量；冷却一段时间后，只放一个测试请求过去。"
+"A per-endpoint switch that stops traffic to an endpoint after repeated "
+"failures and lets one test request through after a cooldown."
+msgstr "按端点设置的开关：连续失败后停止向该端点发送流量，冷却期过后放行一个试探请求。"
 
-#: ../developer/glossary.md:84
+#: ../developer/glossary.md:74
 msgid "Offload route"
 msgstr "卸载路由（offload route）"
 
-#: ../developer/glossary.md:85
+#: ../developer/glossary.md:75
 msgid ""
-"A route set aside for the requests a model's other routes cannot start in"
-" time. See [Queue-wait offload](routing.md#queue-wait-offload)."
-msgstr "一条预留的路由，专门接收模型的其他路由来不及开始处理的请求。见[排队等待卸载](routing.md#queue-wait-offload)。"
+"A route reserved for the requests a model's other routes cannot start in "
+"time. See [Queue-wait offload](routing.md#queue-wait-offload)."
+msgstr "为模型的其他路由无法及时开始处理的请求预留的路由。见[排队等待卸载](routing.md#queue-wait-offload)。"
 
-#: ../developer/glossary.md:88
+#: ../developer/glossary.md:78
 msgid "Routing file"
 msgstr "路由配置文件（routing file）"
 
-#: ../developer/glossary.md:89
+#: ../developer/glossary.md:79
 msgid ""
-"The optional `routing.yaml`. It holds health-probe settings and a "
-"local/remote weight split; see [The routing file](configuration.md#the-"
-"routing-file) for what it does and does not change."
+"The optional `ROUTING_POLICY` setting: the default router, health-probe "
+"settings and a local/remote weight split. See [The routing "
+"file](configuration.md#the-routing-file)."
 msgstr ""
-"可选的 "
-"`routing.yaml`。里面是健康探测设置和本地/远程的权重划分；它能改变什么、不能改变什么，见[路由配置文件](configuration.md"
-"#the-routing-file)。"
+"可选的 `ROUTING_POLICY` 设置项：默认 "
+"router、健康探测设置和本地/远端权重划分。见[路由文件](configuration.md#the-routing-file)。"
+
+#: ../developer/glossary.md:83
+msgid "Accounts and sign-in"
+msgstr "账号与登录"
+
+#: ../developer/glossary.md:85
+msgid "Single sign-on (SSO)"
+msgstr "单点登录（SSO）"
+
+#: ../developer/glossary.md:86
+msgid ""
+"Signing in to the console with an account an organization manages, "
+"instead of a password kept by the gateway. See [Single Sign-On](sso.md)."
+msgstr "用机构管理的账号登录控制台，而不是用网关保存的密码。见[单点登录](sso.md)。"
+
+#: ../developer/glossary.md:89
+msgid "Identity provider"
+msgstr "身份提供方（identity provider）"
+
+#: ../developer/glossary.md:90
+msgid ""
+"The organization's system that signs its members in and tells the "
+"gateway, over OpenID Connect (OIDC), who they are."
+msgstr "机构用来让成员登录、并通过 OpenID Connect（OIDC）告诉网关他们是谁的系统。"
 
 #: ../developer/glossary.md:93
+msgid "Link"
+msgstr "关联（link）"
+
+#: ../developer/glossary.md:94
+msgid ""
+"The record that lets an identity at an identity provider sign in to one "
+"account. An account can hold links to several identity providers."
+msgstr "让身份提供方中的某个身份登录到某个账号的记录。一个账号可以关联多个身份提供方。"
+
+#: ../developer/glossary.md:97
+msgid "API key authorization"
+msgstr ""
+"API key 授权（API key authorization）"
+
+#: ../developer/glossary.md:98
+msgid ""
+"A user approving an application in the console, after which the "
+"application receives an API key on the user's own account. [API Key "
+"Authorization](api-key-authorization.md) explains how to allow an "
+"application."
+msgstr ""
+"用户在控制台中批准某个应用，随后该应用得到用户自己账号上的一个 API key。[API key 授权](api-key-authorization.md)说明如何允许一个应用。"
+
+#: ../developer/glossary.md:102
 msgid "Deployments"
 msgstr "部署"
 
-#: ../developer/glossary.md:95
+#: ../developer/glossary.md:104
 msgid "Distribution"
 msgstr "发行版（distribution）"
 
-#: ../developer/glossary.md:96
+#: ../developer/glossary.md:105
 msgid ""
-"One deployment's own files — its manifest, model registry, routing file, "
-"branding and Compose settings — kept together in `distributions/<name>/` "
-"instead of in the source. `distributions/example/` is the one this "
-"repository ships."
+"One deployment's code, assets and Compose settings, kept in "
+"`distributions/<name>/`. Its application settings (identity, branding, "
+"model catalog) live in the database. `distributions/example/` is the "
+"tutorial."
 msgstr ""
-"某个部署自己的文件——它的 manifest、模型注册表、路由配置文件、品牌和 Compose 设置——集中放在 "
-"`distributions/<name>/` 里，而不是放在源码里。`distributions/example/` 是本仓库自带的那一个。"
+"一个部署的代码、资源和 Compose 设置，放在 `distributions/<name>/` "
+"中。它的应用设置（站点信息、品牌、模型目录）保存在数据库里。`distributions/example/` 是教程。"
 
-#: ../developer/glossary.md:101
+#: ../developer/glossary.md:109
 msgid "Overlay"
 msgstr "overlay"
 
-#: ../developer/glossary.md:102
+#: ../developer/glossary.md:110
 msgid ""
-"The `distributions/<name>/` directory itself. It is called an overlay "
-"because it is mounted over the neutral image rather than built into it."
-msgstr "`distributions/<name>/` 这个目录本身。之所以叫 overlay，是因为它挂载在中立镜像之上，而不是打包进镜像。"
+"The `distributions/<name>/` directory itself, mounted over the neutral "
+"image instead of built into it."
+msgstr "`distributions/<name>/` 目录本身，它挂载在中立镜像之上，而不是构建进镜像。"
 
-#: ../developer/glossary.md:105
+#: ../developer/glossary.md:113
 msgid "Manifest"
 msgstr "manifest"
 
-#: ../developer/glossary.md:106
+#: ../developer/glossary.md:114
 msgid ""
-"`distribution.yaml`, the file in a distribution that names it and says "
-"where its configuration files are."
-msgstr "`distribution.yaml`，发行版里的一个文件，写明发行版的名字以及各配置文件放在哪里。"
+"The retired configuration file `distributions/<name>/distribution.yaml`. "
+"Its settings now live in Admin's `SITE_CONFIGURATION` document and "
+"startup no longer reads it; `python -m serving.config.manage import-"
+"legacy` imports an old one once."
+msgstr ""
+"已停用的配置文件 `distributions/<name>/distribution.yaml`。其中的设置现在位于 Admin 的 "
+"`SITE_CONFIGURATION` 文档中，启动时不再读取它；`python -m serving.config.manage "
+"import-legacy` 可以把旧文件导入一次。"
 
-#: ../developer/glossary.md:109
+#: ../developer/glossary.md:119
 msgid "Dry run and active"
 msgstr "试运行与生效（dry run / active）"
 
-#: ../developer/glossary.md:110
+#: ../developer/glossary.md:120
 msgid ""
-"The two modes of `DISTRIBUTION_CONFIG_MODE`. In a dry run — the default, "
-"written `dark` in the setting — the gateway reads and checks the manifest"
-" and logs what it would change, but uses nothing from it. `active` "
-"applies it."
+"The modes of the retired `DISTRIBUTION_CONFIG_MODE` setting: `active` "
+"applied a manifest, and the dry run (`dark`) only compared it."
 msgstr ""
-"`DISTRIBUTION_CONFIG_MODE` 的两种模式。试运行是默认模式，这个设置里写作 `dark`：网关会读取并检查 "
-"manifest，在日志里记下启用后会改变什么，但不使用其中任何内容。`active` 则真正应用它。"
+"已停用的 `DISTRIBUTION_CONFIG_MODE` 设置的两种模式：`active` 会应用 "
+"manifest，试运行（`dark`）只做比较。"
 
-#: ../developer/glossary.md:115
+#: ../developer/glossary.md:123
 msgid "Operational store"
 msgstr "运行数据存储（operational store）"
 
-#: ../developer/glossary.md:116
+#: ../developer/glossary.md:124
 msgid ""
 "The Postgres tables that hold accounts, API keys and everything changed "
-"from the admin console."
-msgstr "Postgres 里存放账号、API key 以及管理控制台上所有改动的那些表。"
+"in the admin console."
+msgstr "保存账号、API key 以及在管理控制台中所做的一切修改的 Postgres 表。"
 
-#: ../developer/glossary.md:119
+#: ../developer/glossary.md:127
 msgid "Setting"
 msgstr "设置项（setting）"
 
-#: ../developer/glossary.md:120
+#: ../developer/glossary.md:128
 #, python-brace-format
 msgid ""
 "A value the gateway reads by name, such as `SMTP_PASSWORD` or a `${VAR}` "
-"the model registry names. A gateway with a database stores its settings "
-"there, and an administrator edits them on the admin console's Settings "
-"tab; the environment only supplies their starting values. See [Settings "
-"stored in the database](configuration.md#settings-stored-in-the-"
-"database)."
+"the model registry names. With a database, settings are stored there and "
+"edited on the admin console's Settings tab; the environment only supplies"
+" starting values. See [Settings stored in the database](configuration.md"
+"#settings-stored-in-the-database)."
 msgstr ""
-"网关按名字读取的一个值，比如 `SMTP_PASSWORD`，或者模型注册表里引用的某个 `${VAR}`。"
-"有数据库的网关把设置项存在数据库里，由管理员在管理控制台的 Settings 标签页上编辑；"
-"环境变量只提供它们的初始值。见[存储在数据库中的设置项](configuration.md#settings-stored-in-the-database)。"
+"网关按名称读取的值，例如 `SMTP_PASSWORD`，或模型注册表引用的 `${VAR}`。有数据库时，设置项保存在数据库中，并在管理控制台的"
+" Settings 标签页上编辑；环境变量只提供初始值。见[存储在数据库中的设置项](configuration.md#settings-"
+"stored-in-the-database)。"
 
-#: ../developer/glossary.md:126
+#: ../developer/glossary.md:134
 msgid "Live group"
-msgstr ""
-"实时配置组"
+msgstr "实时配置组"
 
-#: ../developer/glossary.md:127
+#: ../developer/glossary.md:135
 msgid ""
-"A set of settings the gateway applies together without a restart, once an"
-" operator has activated the group: every backend process validates the "
-"whole set, switches to it at once and reports that it has. "
-"`alerts.runtime` is the first. See [Settings that apply without a "
-"restart](configuration.md#settings-that-apply-without-a-restart)."
+"Settings the gateway applies together without a restart once an operator "
+"activates the group: every backend process validates the set, switches to"
+" it and reports that it has. `alerts.runtime` is currently the only one. "
+"See [Settings that apply without a restart](configuration.md#settings-"
+"that-apply-without-a-restart)."
 msgstr ""
-"网关一起应用、无需重启的一组设置项，前提是操作者已激活该组：每个后端进程验证整组设置，一次性切换过去，并报告自己已经切换。`alerts.runtime` 是第一个。参见[无需重启即可生效的设置项](configuration.md#settings-that-apply-without-a-restart)。"
+"运营者启用这个组之后，网关无需重启即可一起应用的一组设置项：每个后端进程都会校验整组设置、切换过去并报告已切换。目前只有 "
+"`alerts.runtime` 这一组。见[无需重启即可生效的设置项](configuration.md#settings-that-"
+"apply-without-a-restart)。"
 
-#: ../developer/glossary.md:133
+#: ../developer/glossary.md:140
 msgid "First-run setup"
 msgstr "首次运行设置（first-run setup）"
 
-#: ../developer/glossary.md:134
+#: ../developer/glossary.md:141
 msgid ""
-"How a new deployment gets its first administrator: the backend prints a "
-"one-time setup code in its log, and whoever enters it on the console's "
-"`/setup` page creates the account. See [First-run setup](installation.md"
-"#first-run-setup)."
+"How a new deployment gets its first administrator: the backend logs a "
+"one-time setup code, and whoever enters it on the console's `/setup` page"
+" creates the account. See [First-run setup](installation.md#first-run-"
+"setup)."
 msgstr ""
-"新部署产生第一个管理员的方式：后端在日志里打印一个一次性的设置码，谁在控制台的 `/setup` "
-"页面上输入它，谁就创建这个账号。见[首次运行设置](installation.md#first-run-setup)。"
+"新部署获得第一位管理员的方式：后端在日志里输出一次性设置码，在控制台 `/setup` "
+"页面输入该设置码的人即可创建账号。见[首次运行设置](installation.md#first-run-setup)。"
 
-#: ../developer/glossary.md:139
+#: ../developer/glossary.md:145
 msgid "Runtime model"
 msgstr "运行时模型（runtime model）"
 
-#: ../developer/glossary.md:140
+#: ../developer/glossary.md:146
 msgid ""
-"A model created from the admin console instead of the model registry. It "
+"A model created in the admin console instead of the model registry. It "
 "exists only in the operational store."
-msgstr "在管理控制台里创建、而不是写在模型注册表里的模型。它只存在于运行数据存储中。"
+msgstr "在管理控制台中创建、而不是在模型注册表中定义的模型。它只存在于运行数据存储中。"
 
-#: ../developer/glossary.md:143
+#: ../developer/glossary.md:149
 msgid "Console"
 msgstr "控制台（console）"
 
-#: ../developer/glossary.md:144
+#: ../developer/glossary.md:150
 msgid ""
 "The Next.js web app: sign-up and sign-in, the user dashboard, the "
 "playground and the admin console. It also forwards API paths to the "
@@ -379,61 +409,26 @@ msgstr ""
 "Next.js 网页应用：注册和登录、用户仪表盘、对话调试页（playground）和管理控制台。它还会把 API 路径转发给网关，见[公开路径表"
 "](public-path-table.md)。"
 
-#: ../developer/glossary.md:148
+#: ../developer/glossary.md:154
 msgid "Site UI module"
 msgstr "Site UI 模块（Site UI module）"
 
-#: ../developer/glossary.md:149
+#: ../developer/glossary.md:155
 msgid ""
 "A distribution's own React components for the public pages, compiled into"
 " its console image. See [Site UI Modules](site-ui-modules.md)."
 msgstr "发行版为公开页面编写的 React 组件，编译进它自己的控制台镜像。见 [Site UI 模块](site-ui-modules.md)。"
 
-#: ../developer/glossary.md:152
+#: ../developer/glossary.md:158
 msgid "Backend extension"
 msgstr "后端扩展（后端 extension）"
 
-#: ../developer/glossary.md:153
+#: ../developer/glossary.md:159
 msgid ""
-"A trusted Python module a deployment loads at startup to add an adapter, "
-"an agent-access rule or a quota source. See [Backend Extensions](backend-"
+"A trusted Python module loaded at startup to add an adapter kind, a Cloud"
+" Agent access rule or a quota source. See [Backend Extensions](backend-"
 "extensions.md)."
 msgstr ""
-"部署在启动时加载的可信 Python 模块，用来添加 adapter、agent 访问规则或配额来源。见[后端扩展](backend-"
-"extensions.md)。"
+"启动时加载的受信任 Python 模块，用来添加 adapter kind、Cloud Agent 访问规则或配额来源。见[后端扩展"
+"](backend-extensions.md)。"
 
-msgid "The `MODEL_CATALOG` database setting that lists every model id and the routes behind it. [Configuration](configuration.md) explains how the gateway finds it."
-msgstr "`MODEL_CATALOG` 数据库设置，列出各模型 ID 及其后端路由。[配置](configuration.md)说明网关如何读取它。"
-
-msgid "The optional `ROUTING_POLICY` database setting. It holds health-probe settings and a local/remote weight split; see [The routing file](configuration.md#the-routing-file) for what it does and does not change."
-msgstr "可选的 `ROUTING_POLICY` 数据库设置，包含健康探测配置和本地与远端权重分配；其作用范围见[路由文件](configuration.md#the-routing-file)。"
-
-msgid "One deployment's code, assets and Compose settings, kept together in `distributions/<name>/`. Application settings, including identity, branding and the model catalog, live in the database. `distributions/example/` is the tutorial this repository ships."
-msgstr "具体部署的代码、资源和 Compose 设置，集中保存在 `distributions/<name>/`。应用设置（包括标识、品牌和模型目录）位于数据库中。`distributions/example/` 是仓库提供的教程。"
-
-msgid "The retired application configuration file `distribution.yaml`. Its identity and feature settings now live in Admin's `SITE_CONFIGURATION` document; application file paths are no longer used at startup."
-msgstr "已停用的应用配置文件 `distribution.yaml`。其标识和功能设置现位于 Admin 的 `SITE_CONFIGURATION` 文档中；启动时不再使用应用文件路径。"
-
-msgid "Retired modes of `DISTRIBUTION_CONFIG_MODE`. Saved database settings now determine the site configuration, without a manifest mode switch."
-msgstr "`DISTRIBUTION_CONFIG_MODE` 已停用的模式。站点配置现在由已保存的数据库设置决定，无需清单模式开关。"
-
-msgid "Accounts and sign-in"
-msgstr "账号与登录"
-
-msgid "Single sign-on (SSO)"
-msgstr "单点登录（SSO）"
-
-msgid "Signing in to the console with an account that an organization manages, instead of a password kept by the gateway. [Single Sign-On](sso.md) explains how to set it up."
-msgstr "用机构管理的账号登录控制台，而不是用网关保存的密码。[单点登录](sso.md)说明如何设置。"
-
-msgid "Identity provider"
-msgstr "身份提供方（identity provider）"
-
-msgid "The organization's system that signs its members in and tells the gateway who they are. The gateway connects to identity providers that speak OpenID Connect (OIDC)."
-msgstr "机构用来让成员登录、并告诉网关成员是谁的系统。网关对接使用 OpenID Connect（OIDC）的身份提供方。"
-
-msgid "Link"
-msgstr "关联（link）"
-
-msgid "The record that an identity at an identity provider signs in to one account. An account can hold links to several identity providers."
-msgstr "一条记录，表示某个身份提供方上的身份登录到某个账号。一个账号可以关联多个身份提供方。"

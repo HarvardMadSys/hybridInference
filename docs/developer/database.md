@@ -1,345 +1,238 @@
 # Database
 
-The gateway uses PostgreSQL for request logs, user accounts, API keys, its
-settings, and every admin/runtime change that outlives a restart. This page
-covers what is stored, how the schema comes into existence, and how to back it
-up, restore it, and reset it.
+The gateway keeps request logs, accounts, API keys, its settings and every
+runtime admin change in PostgreSQL (asyncpg). This page covers the connection,
+the schema, what is stored, backups and pgAdmin.
 
-## Is a database required?
-
-No. `DB_ENABLED` defaults to `true`, but a gateway started with `DB_ENABLED=false`
-routes requests normally — it simply has no request history, no user accounts, no
-API-key issuance, and no admin surfaces backed by stored settings. It reads
-every setting from the environment instead.
-
-The distinction matters when reading `/health` as an administrator (anyone else
-is told `status` alone), because the two "no database" states are not the same
-answer:
-
-```json
-{"status": "healthy",   "routes_configured": 3, "database_configured": false, "database_connected": false}
-{"status": "unhealthy", "reason": "database_unavailable_at_startup", "database_configured": true, "database_connected": false}
-```
-
-The first is a deployment that asked for no database. The second asked for one
-and did not get it, and reports unhealthy so a load balancer takes it out of
-rotation.
+A gateway started with `DB_ENABLED=false` still routes requests, but has no
+request history, accounts, API keys or stored settings, and reads every setting
+from the environment. How `/health` tells that apart from a database outage is
+in [Health checks](deployment.md#health-checks).
 
 ## Connection settings
 
-Read by `Settings` in `apps/backend/serving/config/settings.py`, from `.env` or
-the process environment. They are the settings that stay in the environment,
-because the backend needs them before it can read anything from the database.
+The backend reads these from `.env` or the process environment, because it
+needs them before it can read anything from the database:
 
 | Variable | Default | Notes |
 |---|---|---|
-| `DB_ENABLED` | `true` | Any of `false` / `0` / `no` disables the database entirely. |
-| `DB_HOST` | `localhost` | The Compose stack overrides this to `postgres` inside the backend container. |
-| `DB_PORT` | `5432` | In Compose this is the **host** port mapping; the container always talks to 5432. |
-| `DB_NAME` | `hybridinference` | Required by Compose (`DB_NAME must be set in .env file`). |
-| `DB_USER` | `postgres` | Required by Compose. |
-| `DB_PASSWORD` | *(empty)* | Required by Compose. |
+| `DB_ENABLED` | `true` | `false`, `0` or `no` disables the database entirely |
+| `DB_HOST` | `localhost` | Compose sets `postgres` inside the backend container |
+| `DB_PORT` | `5432` | Under Compose, the host side of the port mapping; the container always uses 5432 |
+| `DB_NAME` | `hybridinference` | Required by Compose (`DB_NAME must be set in .env file`) |
+| `DB_USER` | `postgres` | Required by Compose |
+| `DB_PASSWORD` | *(empty)* | Required by Compose |
 
-Three more settings govern what the database keeps. They are stored in it,
-under **Privacy** on the admin console's **Configuration** tab:
+Three settings that govern what is kept are stored in the database, under
+**Privacy** in **Admin → Settings → Site & Setup** (the two
+`ERASURE_FENCE_*` settings under **Advanced**):
 
 | Setting | Default | Notes |
 |---|---|---|
-| `DB_STORE_FULL_CONTENT` | `false` | Whether prompts and responses are stored verbatim; applies after a backend restart. See [Request logging and privacy](#request-logging-and-privacy). |
-| `ERASURE_FENCE_SECRET` | *(empty)* | Secret for the records that keep deleted accounts deleted. It cannot be changed once set; see [Secrets for deleting accounts](#secrets-for-deleting-accounts). |
-| `ERASURE_FENCE_PROTOCOL_READY` | `false` | Turns on permanent account deletion. See [Secrets for deleting accounts](#secrets-for-deleting-accounts). |
+| `DB_STORE_FULL_CONTENT` | `false` | Whether prompts and responses are stored; applies after a backend restart. See [Request logging and privacy](#request-logging-and-privacy) |
+| `ERASURE_FENCE_SECRET` | *(empty)* | Key for the records that keep deleted accounts deleted; can never change once set. See [Secrets for deleting accounts](#secrets-for-deleting-accounts) |
+| `ERASURE_FENCE_PROTOCOL_READY` | `false` | Turns on permanent account deletion |
 
-Each gateway process opens two connection pools to it (sizes and reasons in
-`apps/backend/serving/storage/pools.py`): a general pool of up to 10
-connections for everything, and a request pool of up to 4 reserved for the
-lookups a request makes before it is served — API-key authentication and spend,
-session checks, quotas, and the runtime settings read on the way. Slow work on
-the general pool (reports, exports, rollups) cannot hold those up, and a request
-that cannot get a request-pool connection within 3 seconds is answered with a
-503 and `Retry-After` instead of waiting; a statement on the request pool is
-stopped after 5 seconds. On the general pool, users' reads of their own request
-history (`/user/recent-requests`, `/user/usage`) hold at most 4 connections at
-once, and those reads and the Responses API's loads and saves wait at most 5
-seconds for a connection before the same 503. With the alert-history pool's 4,
-a process holds at most 18 connections; size `max_connections` for that times
-the number of gateway processes, plus the tools you run beside them.
+Each gateway process holds at most 18 connections: a general pool of 10, a pool
+of 4 reserved for the lookups a request makes before it is served (key checks,
+sessions, quotas), and 4 for alert history. Size `max_connections` for 18 per
+gateway process, plus your other tools. A request that cannot get a
+request-pool connection within 3 seconds gets a 503 with `Retry-After`. The
+pool sizes and timeouts are in `apps/backend/serving/storage/pools.py`.
 
-The bundled stack (`deploy/docker/docker-compose.yml`) runs `postgres:16`,
-initialised with `-E UTF8 --locale=C.UTF-8`, and publishes it on
-`127.0.0.1:${DB_PORT:-5432}` — loopback only. Reach it from another machine with
-an SSH tunnel, not by widening that binding.
+The bundled stack runs `postgres:16.16` (`-E UTF8 --locale=C.UTF-8`) and
+publishes it on `127.0.0.1:${DB_PORT:-5432}` only. Use an SSH tunnel to reach it
+from another machine rather than widening the binding.
 
 ## How the schema is created
 
-The schema is versioned. The migrations in `apps/backend/migrations/` create and
-change every table, and a deploy applies them as a step of its own, with the
-image it is about to start, before it restarts the gateway:
+The migrations in `apps/backend/migrations/` create and change every table. A
+deploy runs them with the image it is about to start, before it restarts the
+gateway; [Applying schema migrations](deployment.md#applying-schema-migrations)
+lists the step for each deployment method.
 
 ```bash
-make migrate                                            # the bundled Compose stack
-docker compose up -d --no-recreate --wait postgres      # the same, by hand:
-docker compose run --rm --no-deps backend python -m migrations upgrade
-cd apps/backend && uv run python -m migrations upgrade  # a checkout
+make migrate                    # the bundled Compose stack
+
+# The same by hand, from the repository root:
+docker compose -f deploy/docker/docker-compose.yml --env-file .env up -d --no-recreate --wait postgres
+docker compose -f deploy/docker/docker-compose.yml --env-file .env run --rm --no-deps backend python -m migrations upgrade
+
+uv run python -m migrations upgrade   # a source checkout, from the repository root
 ```
 
-The command reads the gateway's own `DB_*` settings, and does nothing when
-`DB_ENABLED` is off. `make up` and `make build` run it before they start the
-services. `python -m migrations status` shows the database's revision next to
-the code's.
+The command uses the gateway's `DB_*` settings and does nothing when
+`DB_ENABLED` is off. `python -m migrations status` shows the database's revision
+next to the code's.
 
-The gateway itself creates no tables. When it starts, it compares the revision
-the database records with its own:
+The gateway issues no DDL. At startup it compares the database's revision with
+its own: with no revision or an older one, it refuses to start and names the
+command above; with a newer one (after a deploy restored the previous image), it
+starts with a warning as long as that schema still supports its code.
+`0001_baseline` brings a database that predates versioning up to the current
+baseline without preparation.
 
-- No revision recorded, or an earlier one of its own: it refuses to start and
-  names the command above.
-- Its own revision: it starts.
-- A revision it does not know, so a newer one, as after a deploy that restored
-  the previous image: it starts, with a warning, as long as the database still
-  supports its code. A revision that removes something older code uses records
-  the oldest code it still supports, and older code refuses to start there.
+Each statement waits at most 3 seconds for a table lock. A long reader such as a
+nightly `pg_dump` makes the migration roll back and exit with status 75, listing
+the sessions holding locks; the running gateway keeps serving, and you can run
+the command again later. Avoid the backup window for a release that changes the
+schema. Only one migration runs at a time: a second run waits up to 60 seconds
+for the first, then fails.
 
-The first migration of a database that was running before versioning,
-`0001_baseline`, needs no preparation. It runs the code that used to build the
-schema at startup, now frozen in `apps/backend/migrations/baseline/`: it
-creates what the database lacks and records the revision. On a database the
-previous release already started on, it changes nothing and takes no strong
-table lock.
-
-Two properties are worth knowing before you operate this:
-
-**A migration that cannot get its lock stops instead of waiting.** Each
-statement waits at most 3 seconds for a table lock. A long reader such as a
-nightly `pg_dump` makes the migration fail and roll back; the command exits with
-status 75 and lists the sessions holding locks. Nothing switches over: the
-running gateway keeps serving, and the same command can simply be run again
-later. Avoid the backup window for a release that changes the schema; on a
-database already at the latest revision, the command only reads the version.
-
-**One migration runs at a time.** A second run against the same database waits
-for the first to finish, and fails if that takes too long, rather than
-migrating alongside it.
-
-To change the schema, add a revision in `apps/backend/migrations/versions/`.
-A revision must leave the previous release working, because that release keeps
-serving while it runs and is what a failed deploy restores. Large indexes on
-`api_logs` are not migrations: they are built in the background
-(`apps/backend/serving/storage/perf_metrics_index.py`), since building them
-would block request logging for hours. The rules are in the design record,
+To change the schema, add a revision in `apps/backend/migrations/versions/`. A
+revision must leave the previous release working, because that release keeps
+serving while it runs and is what a failed deploy restores. Each revision
+declares `compatibility = "expand"` (earlier code still works) or `"contract"`
+(it does not, and it must raise the floor with `raise_compat_floor`). Never edit
+or revert a revision that has run on a shared database; add a new one. Large
+indexes on `api_logs` are built in the background instead
+(`apps/backend/serving/storage/perf_metrics_index.py`), because building them in
+a migration would block request logging. The design record is
 `docs/agents/specs/2026-11-02-versioned-schema-migrations-design.zh.md`.
-
-Each revision says which kind it is. `compatibility = "expand"` means code of
-earlier revisions keeps working on its result; `"contract"` means it does not,
-and a contract raises the compatibility floor with `raise_compat_floor`. A test
-fails until the line is set. A revision that has run on a shared database is
-never edited or reverted: fix it with a new one.
-
-### Secrets for deleting accounts
-
-When an admin permanently deletes a user, the gateway also records a keyed
-fingerprint of that account in the `erasure_fence` table, so a request-log
-write that was already on its way cannot put the user's rows back. Two
-settings govern this:
-
-- `ERASURE_FENCE_SECRET` is the key for those fingerprints. The first time
-  the gateway starts against a database, it records a fingerprint of this
-  secret — even before anything has been deleted — and from then on it refuses
-  to start if the secret differs. Left empty, it uses `API_KEY_SECRET` instead,
-  which the backend generates into the database at that first start unless the
-  environment supplies one, and that value is the one recorded. To give the
-  fence its own secret, set `ERASURE_FENCE_SECRET` to a random value in `.env`
-  before the first start; the backend copies it into the database then. After
-  that neither secret can be changed: the **Configuration** tab refuses both,
-  and shows `ERASURE_FENCE_SECRET` locked once the fence uses
-  `API_KEY_SECRET`. An `ERASURE_FENCE_SECRET` added to the environment later
-  is not copied in either, with a warning in the log; but while the variable
-  is set, the fence uses it and the backend refuses to start, so remove it.
-  If you hit a mismatch — say, after restoring a backup next to different
-  secrets — restore the original value; never delete fence rows or their
-  metadata to get past it.
-- `ERASURE_FENCE_PROTOCOL_READY=true` turns permanent deletion on. Leave it
-  `false` until every process that writes `api_logs` runs a version that checks
-  the fence.
 
 ## What the tables hold
 
+`\dt` in psql lists every table. By group:
+
 | Group | Tables | Holds |
 |---|---|---|
-| Request history | `api_logs`, `api_stats_hourly`, `provider_hourly_stats`, `provider_hourly_coverage`, `request_volume_hourly`, `user_usage_daily`, `user_usage_daily_coverage`, `daily_activity`, `admin_view_results`, `admin_view_state` | One row per request (model, provider, tokens, latency, TTFT, status, cost) plus hourly and daily rollups used by the dashboards, the admin Users table and the user dashboard's usage figures, and the last computed result of the admin console's slowest views |
-| Settings | `app_config` | The settings on the admin console's Settings tab, secrets included; see [Settings and first-run setup](#settings-and-first-run-setup) |
-| Accounts and auth | `users`, `organizations`, `org_members`, `projects`, `api_keys`, `auth_sessions`, `browser_sessions`, `browser_session_accounts`, `login_events`, `email_verification_tokens`, `password_reset_tokens`, `identity_auth_codes` | User records, each account's projects and API keys with their own budgets and model allowlists (`organizations` and `org_members` are no longer read and will be dropped), refresh sessions (each deleted a day after it expires or is signed out) and the accounts signed in on each browser, sign-in history |
-| Admin actions | `admin_audit_log`, `signup_allowed_domains`, `site_settings`, `site_updates`, `email_broadcasts`, `email_broadcast_recipients` | Audited admin changes, signup policy, runtime settings and the first-run setup marker, announcements, broadcast delivery state |
-| Runtime routing overrides | `provider_definitions`, `provider_api_keys`, `provider_route_configs`, `provider_route_candidates`, `provider_weight_overrides`, `disabled_providers`, `disabled_provider_env_keys`, `provider_env_key_min_roles`, `model_visibility_overrides`, `model_concurrency_exemptions` | Everything the admin console can change about routing without editing YAML — see [Runtime configuration from the admin console](configuration.md#runtime-configuration-from-the-admin-console) |
-| Cost and quota | `account_quotas`, `user_daily_cost`, `api_key_daily_cost`, `spend_counters` | Each account's daily and monthly quota, which its keys carry copies of; per-user daily spend used for quota enforcement, the same per API key for the console's per-key spend, and counters for each project scope by day and month, which project budgets enforce |
-| RouteWise | `routewise_probe_samples`, `routewise_probe_leases` | Latency probe samples and the lease that stops two workers probing at once |
-| Responses API | `openai_responses` | Stored `/v1/responses` state, when content storage is enabled, kept for 30 days from each response's creation; a conversation is stored only while its history is no larger than `REQUEST_MAX_BODY_MB` |
-| Batch inference | `batch_jobs`, `batch_items`, `batch_attempts`, `batch_idempotency`, `batch_files`, `batch_file_chunks`, `batch_webhooks`, `batch_webhook_events`, `batch_model_limits`, `batch_user_state`, `batch_interactive_load`, `batch_read_leases` | Batches of all three batch APIs with their requests, attempts and results until `BATCH_RETENTION_DAYS` after they finish; uploaded input files and result files; idempotency keys; webhooks and their deliveries; the per-model batch concurrency caps; and the worker's scheduling state and download leases. See [Running batch inference](batches.md#running-batch-inference) |
-| Geo analytics | `geo_hourly_coverage`, `geo_hourly_demand` | Hourly per-country request and token counts; aggregate only, no IP addresses stored |
-| Agent grants | `agent_grants` | Short-lived, model-scoped capabilities this gateway mints for an external agent control plane |
+| Request history | `api_logs`, `api_stats_hourly`, `provider_hourly_*`, `request_volume_hourly`, `user_usage_daily*`, `daily_activity`, `admin_view_*` | One row per request (model, provider, tokens, latency, TTFT, status, cost), the hourly and daily rollups behind the dashboards, and cached results of the slowest admin views |
+| Public statistics | `public_stats_snapshots`, `api_log_retained_*` | The snapshots behind `GET /public-stats`, and totals kept for requests pruned from `api_logs`, without account ids |
+| Settings | `app_config`, `site_settings`, `config_*`, `routing_config_revisions`, `route_catalog` | Stored settings and documents, secrets included; runtime switches and the setup marker; the counters that carry changes to every process; and the previous release's catalog copy, kept for rollback. See [Settings and first-run setup](#settings-and-first-run-setup) |
+| Accounts and sign-in | `users`, `projects`, `api_keys`, `account_quotas`, `auth_sessions`, `browser_session*`, `login_events`, `email_verification_tokens`, `password_reset_tokens`, `identity_auth_codes`, `api_key_authorization_codes`, `phone_auth_*`, `user_two_factor`, `two_factor_recovery_codes`, `user_identities`, `sso_*`, `organizations`, `org_members` | Accounts, their projects and API keys with budgets and model allowlists, sessions, sign-in history, phone codes, authenticators and recovery codes, single sign-on identities, and the hashed one-time codes of [API key authorization](api-key-authorization.md). `organizations` and `org_members` are no longer read and will be dropped |
+| User tags | `user_tags`, `user_tag_members` | Named groups of accounts and the limits their members get |
+| Admin | `admin_audit_log`, `signup_allowed_domains`, `site_updates`, `email_broadcast*` | Audited admin changes, signup policy, announcements and broadcasts |
+| Routing overrides | `provider_definitions`, `provider_api_keys`, `provider_route_*`, `provider_weight_overrides`, `provider_env_key_min_roles`, `disabled_provider*`, `model_visibility_overrides`, `model_concurrency_exemptions` | What Admin changes about providers, routes and models at runtime; see [Runtime configuration from the admin console](configuration.md#runtime-configuration-from-the-admin-console) |
+| Cost and quota | `user_daily_cost`, `api_key_daily_cost`, `spend_*`, `accounting_currency_migrations` | Daily spend per user and per key, project budget counters, the shared spend mode's reservations and settlements, and the currency migration's audit table |
+| RouteWise | `routewise_probe_*` | Latency probe samples, and the lease that stops two workers probing at once |
+| Responses API | `openai_responses` | Stored `/v1/responses` state when content storage is on, kept 30 days |
+| Batch inference | `batch_*` | Batches with their requests, attempts, results and files until `BATCH_RETENTION_DAYS` after they finish, plus webhooks, per-model caps and scheduling state; see [Running batch inference](batches.md#running-batch-inference) |
+| Geo analytics | `geo_hourly_*` | Hourly request and token counts per country; no addresses |
+| GPU fleet metrics | `openinfra_*` | Host, GPU and inference-engine metrics that GPU hosts report for the public `/openinfra` page: live rows, per-second samples, rollups, request events and a record of archived weeks; see [OpenInfra](openinfra.md) |
+| Agents | `agent_grants`, `agent_invite_tokens`, `agent_provisioned_accounts` | Short-lived grants this gateway mints for an external agent control plane, and the invitations and accounts it provisions |
 | Account deletion | `erasure_fence` | Keyed fingerprints of permanently deleted accounts; see [Secrets for deleting accounts](#secrets-for-deleting-accounts) |
-
-`\dt` on a live database lists every table.
 
 ### Settings and first-run setup
 
-- `app_config` holds one row per stored setting: `key` (the
-  environment-variable name), `value` (in the string form that variable
-  takes, such as `true`, `8` or `a,b,c`), `secret`, `source` — `admin`,
-  `setup`, `env_import` or `generated` — and `updated_at`/`updated_by`. Secret
-  values are stored in plaintext; the admin API never returns them. A row wins
-  over the environment even when its value is empty. See
+- `app_config` has one row per stored setting: `key` (the environment-variable
+  name), `value` (as that variable would spell it, such as `true` or `a,b,c`),
+  `secret`, `source` (`admin`, `setup`, `env_import` or `generated`),
+  `updated_at` and `updated_by`. Secrets are stored in plaintext; the admin API
+  never returns them. A row wins over the environment even when empty. See
   [Settings stored in the database](configuration.md#settings-stored-in-the-database).
-- `site_settings` holds the runtime switches of the admin Settings tab and,
-  once the first administrator exists, the row `setup_completed_at`, which
-  marks first-run setup as done. The application never clears it. While setup
-  is pending, the row `setup_code` holds the one-time code the backend prints
-  in its log, so read access to the database is enough to create the first
-  administrator; completing setup deletes it.
-- `users.email` is empty for the administrator that first-run setup creates;
-  that account signs in with `users.login_name`, which is unique regardless of
-  case. Every account from signup has an email address.
+- `site_settings` holds the runtime switches and, once the first administrator
+  exists, `setup_completed_at`. While setup is pending, its `setup_code` row
+  holds the one-time code, so read access to the database is enough to create
+  the first administrator.
+- The setup administrator has no `users.email` and signs in with
+  `users.login_name` (unique regardless of case). Accounts created by phone
+  signup have `users.phone` and no email. Service accounts, which an
+  administrator creates for API-key use, have no email and cannot sign in from
+  a browser (`users.is_service_account`).
 
 ## Request logging and privacy
 
-`DB_STORE_FULL_CONTENT` defaults to `false`, and that default is not a redaction
-of the stored text — the text is never written. It is a setting under
-**Privacy** on the admin console's Settings tab, and a change applies
-after a backend restart. With it off, `api_logs.prompt`,
-`api_logs.response` and `api_logs.request_payload` are inserted as `NULL`, and
-`/v1/responses` state is not persisted.
+With `DB_STORE_FULL_CONTENT` at its default, `false`, the text is never written:
+`api_logs.prompt`, `api_logs.response` and `api_logs.request_payload` are
+`NULL`, and `/v1/responses` state is not stored. Token counts, cost, latency,
+TTFT, the conversation's shape (`num_turns`, `num_user_turns`,
+`num_tool_calls`) and a fingerprint of the newest user message
+(`last_user_msg_chars`, `last_user_msg_entropy`, `last_user_msg_hash`) are
+recorded either way, for the dashboards.
 
-Derived, non-content columns are recorded either way, because the dashboards read
-them instead of de-TOASTing payloads: token counts, cost, latency and TTFT, the
-conversation shape (`num_turns`, `num_user_turns`, `num_tool_calls`), and a
-fingerprint of the newest user message (`last_user_msg_chars`,
-`last_user_msg_entropy`, `last_user_msg_hash`).
-
-Turning it on stores full prompts and responses. Weigh that against your users'
-expectations before you do.
-
-A row's size stays bounded even then. A request's conversation (its messages,
-system prompt, tool definitions and input) is stored up to 4 Mi characters,
-more than any context window holds. The other fields of its body share
-64 Ki characters: each is stored whole while they fit, smallest first, and left
-out when it does not, so a field the gateway ignores cannot fill the table. A
-refused request (a 4xx other than 499) keeps a summary of each of them, of at
-most 64 Ki characters. `metadata.payload_truncated` marks a row from which
-anything was cut.
+Turning it on stores full prompts and responses; weigh that against your users'
+expectations. Rows stay bounded: a conversation is stored up to 4 Mi characters,
+the rest of the body shares 64 Ki characters (smallest fields first), and a
+refused request (a 4xx other than 499) keeps at most 64 Ki characters of each
+part. `metadata.payload_truncated` marks a row that was cut.
 
 ### Which session a request belongs to
 
-`api_logs.session_id` groups one conversation's requests together. A client can
-set it with the gateway's `X-Session-ID` header, but coding agents do not send
-that header. Each carries a session id of its own instead, and the gateway
-reads whichever one the request has:
+`api_logs.session_id` groups one conversation's requests. The gateway reads the
+first session id the request carries:
 
 | Read from | Sent by |
 |---|---|
-| `X-Session-ID` header | anything speaking the gateway's own contract; wins whenever present |
-| `session-id` / `thread-id` headers (the `session_id` / `conversation_id` spellings too) | Codex CLI, which stamps its run on every request |
-| `x-session-affinity` / `x-opencode-session` headers | OpenCode and its Kilo Code fork, which send the affinity header beside `X-Session-ID` on any provider they do not recognise as their own, and `x-opencode-session` on one they do |
-| `metadata.session_id` or `client_metadata.session_id` in the request body | a client that labels the session where it labels everything else; Codex uses `client_metadata` |
-| `x-claude-code-session-id` header | Claude Code, on every request |
-| `metadata.user_id` in the request body | Claude Code, which packs the device, account and run into Anthropic's one `user_id` field. Two shapes — see below |
+| `X-Session-ID` header | Anything using the gateway's own contract; always wins |
+| `session-id` / `thread-id` headers (also spelled `session_id` / `conversation_id`) | Codex CLI |
+| `x-session-affinity` / `x-opencode-session` headers | OpenCode and its Kilo Code fork |
+| `metadata.session_id` or `client_metadata.session_id` in the body | Clients that label the session in the body; Codex uses `client_metadata` |
+| `x-claude-code-session-id` header | Claude Code |
+| `metadata.user_id` in the body | Claude Code, as a JSON object with a `session_id` (version 2.1.78 and later) or a `user_<hash>_account_<uuid>_session_<uuid>` string (earlier); `parent_session_id` is ignored |
 
-Since version 2.1.78, Claude Code sends `metadata.user_id` as a JSON object —
-`{"device_id": …, "account_uuid": …, "session_id": …}` — and before that as a
-`user_<hash>_account_<uuid>_session_<uuid>` string. The gateway reads both.
-It does not use `parent_session_id`, which a subagent run carries: that names
-the session that started the subagent, not this one.
+Kilo Code sends no session id on its newer request path until it takes
+OpenCode's fix (`sst/opencode#43188`), so those requests have no session.
+`metadata.session_id_source` records which source was used. Session ids are
+client-supplied labels: nothing is authorized, billed or rate-limited by them, a
+value over 128 characters or with control characters is dropped, and they are
+recorded whatever `DB_STORE_FULL_CONTENT` says. Recent Requests in the admin
+console filters by session.
 
-Some OpenCode versions and the Kilo Code fork send no session id on their newer
-request path. OpenCode fixed this upstream (`sst/opencode#43188`); until Kilo
-Code takes the same fix, its requests are recorded without a session.
+## Secrets for deleting accounts
 
-The admin console's Recent Requests view shows the session under each row's
-client, and clicking it filters the list to that one conversation.
+When an admin permanently deletes a user, the gateway writes a keyed
+fingerprint of the account to `erasure_fence`, so a request-log write already in
+flight cannot bring the user's rows back.
 
-`metadata.session_id_source` on the same row names which of those sources the
-session came from. Every source is client-supplied, and
-nothing is authorized, billed or rate-limited by a session id; a declaration
-over 128 characters, or one carrying control characters, is dropped rather than
-recorded. Like the derived columns above, the session is recorded whether or not
-`DB_STORE_FULL_CONTENT` is on: it is a label the client put on the request, not
-part of the conversation.
+`ERASURE_FENCE_SECRET` is the key. At its first start against a database the
+gateway records a fingerprint of the key, and from then on it refuses to start
+if the key differs. Left empty, the fence uses `API_KEY_SECRET`, which the
+backend generates at that first start unless the environment supplies one. To
+give the fence its own key, set `ERASURE_FENCE_SECRET` in `.env` before the
+first start. Neither secret can change afterwards, and Admin refuses both.
+
+An `ERASURE_FENCE_SECRET` added to the environment later is not imported, but
+while it is set the backend uses it and refuses to start, so remove it. After a
+mismatch (say, a backup restored beside different secrets), restore the original
+value; never delete fence rows to get past it.
+
+Leave `ERASURE_FENCE_PROTOCOL_READY` off until every process that writes
+`api_logs` runs a version that checks the fence.
 
 ## Backup
-
-The standard lifecycle commands create a private dump and verify it in a
-throwaway database server:
 
 ```bash
 make backup BACKUP=/private/path/gateway.dump
 make restore-check BACKUP=/private/path/gateway.dump
 ```
 
-The dump includes every application document and secret in `app_config`.
-Without `BACKUP` it goes to `.ops/<distribution>/gateway.dump`, which neither Git
-nor a Docker build includes. The restore check never touches the deployment's
-database server: it restores the dump into a throwaway PostgreSQL container of
-the same image, with its own volume and internal network, runs this release's
-migrations on the copy, so a backup taken before an upgrade passes as it would
-restore, and removes the container, volume and network afterwards. It needs
-free disk where Docker keeps volumes, normally the disk of the deployment's
-database: about twice the database's size plus 1 GiB, or it refuses to start.
-The commands below remain available when a manual database restore is required.
+Without `BACKUP`, the dump goes to `.ops/<distribution>/gateway.dump`, which
+neither Git nor a Docker build includes. `make restore-check` never touches the
+deployment's database server: it restores the dump into a throwaway PostgreSQL
+container of the same image, runs this release's migrations on the copy, and
+removes it. It adds a second server's CPU and I/O load while it runs, and refuses
+to start unless the disk where Docker keeps volumes has about twice the
+database's size plus 1 GiB free.
 
-`pg_dump` in custom format, straight out of the container:
+By hand, with `pg_dump` in custom format (never add `-t` to `docker exec`: a TTY
+corrupts the binary stream):
 
 ```bash
 docker exec hybridinference-postgres \
   pg_dump -U "$DB_USER" -d "$DB_NAME" -Fc > hybridinference-$(date +%F).dump
 ```
 
-Do not add `-t` to `docker exec`: allocating a TTY corrupts the binary stream.
-
-Restore into an existing, running database:
+To restore over a running database, stop the backend first with
+`docker stop hybridinference-backend` (`make down` would stop Postgres too):
 
 ```bash
 docker exec -i hybridinference-postgres \
   pg_restore -U "$DB_USER" -d "$DB_NAME" --clean --if-exists < hybridinference-2026-01-01.dump
 ```
 
-Stop the backend with `docker stop hybridinference-backend` before restoring
-over a live database; `make down` would stop Postgres too.
-
-The backup contains every stored setting in plaintext — provider keys, the
-SMTP password, and the `JWT_SECRET_KEY` and `API_KEY_SECRET` that sign
-sessions and protect API keys — as well as hashed API keys and, if
-`DB_STORE_FULL_CONTENT` was ever on, user prompt content. Whoever holds it can
-use your provider keys, decrypt users' stored API keys and sign administrator
-tokens, so store it as carefully as the credentials themselves.
-
-## Reset
-
-Deleting the database is more awkward than it looks, because the Postgres volume
-is declared `external:` in `deploy/docker/docker-compose.yml`:
-
-```yaml
-volumes:
-  postgres_data:
-    external: true
-    name: hybridinference_postgres_data
+```{warning}
+The database holds every setting in plaintext: provider keys, the SMTP
+password, webhook URLs, and the `JWT_SECRET_KEY` and `API_KEY_SECRET` that sign
+sessions and protect API keys, as well as user prompts if
+`DB_STORE_FULL_CONTENT` was ever on. Anyone with a dump, a backup, or psql or
+pgAdmin access can call your providers, decrypt users' stored API keys and sign
+administrator tokens. Protect them as you would those credentials.
 ```
 
-**`docker compose down --volumes` does not delete an external volume.** Nor does
-`make down`, which passes no `--volumes` at all. A reset that relies on either
-silently leaves every row in place. Delete the volume by name:
-
-```bash
-make down
-docker volume rm hybridinference_postgres_data    # destroys all data
-make up                                           # recreates an empty volume
-```
-
-`make up` depends on the `docker-volumes` target, which recreates the named
-volume if it is missing, so the stack comes back on an empty database and the
-startup initialisers rebuild the schema. The backend then generates new secrets
-unless the environment supplies them, and prints a setup code for a new
-administrator. Take a dump first if there is any chance you want the data
-back.
-
-The runnable example (`make demo-reset DISTRIBUTION=example`) uses its own,
-example-scoped volume and cannot delete `hybridinference_postgres_data`.
+To delete all data and start over, see
+[Resetting the stack](deployment.md#resetting-the-stack). The runnable example
+(`make demo-reset DISTRIBUTION=example`) uses its own volume and cannot delete
+`hybridinference_postgres_data`.
 
 ## Inspecting the database
 
@@ -347,85 +240,105 @@ example-scoped volume and cannot delete `hybridinference_postgres_data`.
 docker exec -it hybridinference-postgres psql -U "$DB_USER" -d "$DB_NAME"
 ```
 
-Useful starting points: `\dt` for the table list and `\d api_logs` for the request
-log's columns. `make ps` shows the published bindings — Postgres should read
-`127.0.0.1:...`, and pgAdmin shows none unless you published it, when it reads
-`127.0.0.1:...` too; anything else means the database is listening beyond this
+`\dt` lists the tables and `\d api_logs` the request log's columns. In `make ps`,
+Postgres should show `127.0.0.1:...`; anything else means it listens beyond this
 host.
 
 ## Optional: pgAdmin
 
-The Compose stack ships a pgAdmin service for people who prefer a GUI. It is
-**profile-gated** — nothing starts it unless the `admin` profile is named — and
-it is entirely optional; `psql` above does everything.
-
-### Starting and restarting it
-
-The profile must be on *every* Compose command, not just the first:
+The Compose file includes pgAdmin in the `admin` profile. Name the profile on
+every command, including `make down`, or set `COMPOSE_PROFILES=admin` in
+`.ops.env`: a plain `make up` skips pgAdmin, and a plain `make down` leaves it
+running.
 
 ```bash
 make up   COMPOSE_PROFILES=admin
 make down COMPOSE_PROFILES=admin
 ```
 
-Omitting it does not fail loudly, it just does the wrong thing in both
-directions: a plain `make up` starts every other service and skips pgAdmin, and a
-plain `make down` leaves the pgAdmin container running while removing everything
-around it (Compose then reports the network as still in use). Pass
-`COMPOSE_PROFILES=admin` on both halves of a restart.
+The console serves pgAdmin at `/pgadmin/`. pgAdmin is on its own `pgadmin`
+network, shared only with the console and the database, so the backend cannot
+reach it. The Compose file pins `dpage/pgadmin4:9.19`; a volume that ran
+`dpage/pgadmin4:8` is upgraded on first start and cannot go back.
 
 ### Authentication
 
-Two separate gates protect pgAdmin, and by default both are on:
+Two checks protect pgAdmin, both on by default:
 
-- Reached through the console at `/pgadmin/`, the request is gated on an admin
-  session by a Next.js route handler
-  (`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`), which asks the backend
-  to verify the caller. By default this is the only way in: pgAdmin publishes
-  no host port.
-- `PGADMIN_CONFIG_SERVER_MODE` defaults to `True`, so pgAdmin asks for its own
-  login, `PGADMIN_EMAIL` / `PGADMIN_PASSWORD`. Set the password in `.env` before
-  pgAdmin first starts. There is no fallback: without one pgAdmin refuses to set
-  up its volume and says so in `docker logs hybridinference-pgadmin`. `False`
-  serves pgAdmin with **no login of its own**.
+- The console's route handler (`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`)
+  admits only an admin session, verified by the backend, and refuses on any
+  error. pgAdmin publishes no host port, so this is the only way in.
+- pgAdmin's own login, `PGADMIN_EMAIL` and `PGADMIN_PASSWORD`, while
+  `PGADMIN_CONFIG_SERVER_MODE` is `True` (the default). `False` means no login
+  at all. Set the password before pgAdmin first starts: without one it refuses
+  to set up its volume (see `docker logs hybridinference-pgadmin`).
 
-pgAdmin keeps the login it first started with in its volume and ignores these
-settings afterwards. A volume first started with no password, under the
-earlier Compose fallback, signs in as `admin@local.dev` / `admin`: change that
-password in pgAdmin. One first started with server mode off has no login at
-all, so once server mode is on nobody can sign in: reset the volume as
-described below, which removes only pgAdmin's saved connections.
+pgAdmin keeps the login it first started with and ignores later changes. A
+volume first started without a password signs in as `admin@local.dev` /
+`admin`: change that password in pgAdmin. A volume first started with server
+mode off has no login, so after turning server mode on, reset the volume (below).
+Its master password prompt never appears: Compose pins
+`PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED` to `"False"`.
 
-For an SSH tunnel, `PGADMIN_PUBLISH=1` publishes pgAdmin on the host's
-loopback, on port `PGADMIN_PORT` (5050 unless set). Pass it on every command
-that touches pgAdmin, as with the profile. That port skips the console's gate
-and every account on the host can reach it, so pgAdmin's own login is the
-only gate there: do not combine it with server mode off.
+For an SSH tunnel, `PGADMIN_PUBLISH=1` publishes pgAdmin on the host's loopback,
+port `PGADMIN_PORT` (5050 unless set). Pass it on every command, as with the
+profile. That port skips the console's check and is open to every account on the
+host, so never combine it with server mode off.
 
 ```bash
 make up COMPOSE_PROFILES=admin PGADMIN_PUBLISH=1
 ssh -L 5050:127.0.0.1:5050 <user>@<your-gateway-host>
 ```
 
-pgAdmin's *master password* prompt never appears:
-`PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED` is pinned to `"False"` in the Compose
-file with no environment variable to change it.
+```{note}
+pgAdmin and the agent web app (`/agents`) are served on the console's origin, so
+a script either app serves runs with the authority of the console session open
+in that browser. The proxies keep each app's cookies under its own path and
+refuse cookies named like the console's, which stops an app from replacing the
+console's session; only a separate origin would remove the shared authority.
+```
 
 ### Registering the database
 
 1. `Servers` → right-click → `Register` → `Server`.
 2. **General**: any name.
 3. **Connection**: host `postgres`, port `5432`, maintenance database `DB_NAME`,
-   username `DB_USER`, password `DB_PASSWORD` — the container-internal values,
-   not the host port mapping.
+   username `DB_USER`, password `DB_PASSWORD` (the values inside the container
+   network, not the host port mapping).
 
 ### Resetting pgAdmin
 
 Its saved connections live in `hybridinference_pgadmin_data`, an ordinary
-project-local volume (not external, unlike the Postgres one):
+project volume:
 
 ```bash
 make down COMPOSE_PROFILES=admin
 docker volume rm hybridinference_pgadmin_data     # destroys saved connections only
 make up   COMPOSE_PROFILES=admin
 ```
+
+### pgAdmin over mutual TLS
+
+For a separately hosted pgAdmin behind a gateway that requires client
+certificates, set these in the console container's runtime environment (the
+Compose file does not pass them, so add them and the secret mounts in an
+override; the root `.env` is not enough):
+
+```text
+PGADMIN_INTERNAL_URL=https://pgadmin-gateway.internal:8443
+PGADMIN_MTLS_ENABLED=true
+PGADMIN_MTLS_CA_FILE=/run/pgadmin-tls/ca.crt
+PGADMIN_MTLS_CERT_FILE=/run/pgadmin-tls/client.crt
+PGADMIN_MTLS_KEY_FILE=/run/pgadmin-tls/client.key
+```
+
+`PGADMIN_INTERNAL_URL` defaults to `http://pgadmin:80`. With mTLS on, the URL
+must be HTTPS with a hostname matching the server certificate, and all three
+files are required; any problem makes `/pgadmin/` answer 502, never a fallback
+to HTTP. Values other than `true` or `false` fail closed. The files are paths in
+the container, read for each new request: mount them read-only, readable by uid
+1000 (the console does not run as root), for example group 1000 with mode
+`0440` or a Kubernetes `fsGroup: 1000`. Keep all three in one Secret projection
+so they change together, and coordinate certificate rotation with the gateway.
+The gateway must enforce mTLS and restrict access to pgAdmin itself; the
+console's check does not protect a pgAdmin exposed elsewhere.

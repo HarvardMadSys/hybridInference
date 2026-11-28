@@ -1453,6 +1453,7 @@ async def test_the_admin_token_cannot_rewrite_the_secrets_a_backup_withholds(con
     "values",
     [
         {"IDENTITY_ALLOWED_REDIRECTS": "https://collector.example/cb"},
+        {"API_KEY_AUTHORIZATION_CALLBACKS": "https://collector.example/cb"},
         {"TRUSTED_PROXIES": "0.0.0.0/0"},
         {"SITE_PUBLIC_BASE_URL": "https://collector.example"},
         {"SITE_NAME": "Mixed", "SMTP_HOST": "smtp.collector.example"},

@@ -219,6 +219,10 @@ async def test_a_circuit_opened_through_messages_names_its_callers(
     from serving.http import AsyncHTTPClient
 
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "3")
+    # One test key sends every request, and one caller alone cannot open a
+    # circuit (tests/unit/routing/test_caller_repeat_breaker.py); with callers
+    # not told apart, this reads the surface's health wiring on its own.
+    monkeypatch.setenv("CIRCUIT_CALLER_WINDOW_SECONDS", "0")
 
     async def fake_post(self, url, **kwargs):
         raise aiohttp.ClientResponseError(

@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-11-17 09:56-0500\n"
+"POT-Creation-Date: 2026-11-28 06:30+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -25,35 +25,25 @@ msgstr "记账币种"
 
 #: ../developer/accounting.md:3
 msgid ""
-"The gateway keeps its ledger in USD by default. A deployment can keep it "
-"in CNY instead: model prices, usage charges and user quotas are then "
-"counted in CNY. Each deployment has exactly one ledger currency. It is "
-"chosen by an offline, audited migration and cannot be changed afterwards;"
-" it is not a display preference, and neither editing the site "
-"configuration nor restarting the gateway changes it."
+"The gateway keeps its ledger in USD unless an offline, audited migration "
+"moves it to CNY. A CNY ledger counts model prices, charges and quotas in "
+"CNY. The currency cannot change after the migration, and editing the site"
+" configuration or restarting the gateway does not change it. A deployment"
+" that never migrates keeps USD, and its API responses carry no currency "
+"fields."
 msgstr ""
-"网关默认用 USD 记账。部署也可以改用 CNY 记账：模型价格、用量费用和用户额度都按 CNY "
-"计算。每个部署只有一种记账币种，由一次离线、可审计的迁移选定，之后不能再改；它不是显示偏好，修改站点配置或重启网关都不会改变它。"
+"网关的账本默认使用 USD，只有经过一次离线、可审计的迁移才会改为 CNY。CNY 账本以 CNY "
+"计算模型价格、费用和额度。迁移之后币种不能再改，编辑站点配置或重启网关也不会改变它。从未迁移的部署保持 USD，其 API 响应不含任何币种字段。"
 
 #: ../developer/accounting.md:5
-msgid ""
-"A deployment that never runs the migration is unaffected: it charges, "
-"rounds, admits and refuses exactly as before this feature existed, and "
-"its APIs answer with exactly the same fields."
-msgstr "从未执行迁移的部署不受影响：计费、舍入、准入和拒绝都与此功能出现之前完全一致，API 返回的字段也完全相同。"
+msgid "How amounts are kept"
+msgstr "金额如何保存"
 
 #: ../developer/accounting.md:7
-msgid "The rules every amount follows"
-msgstr "所有金额遵循的规则"
-
-#: ../developer/accounting.md:9
 msgid ""
-"`serving.accounting.AccountingPolicy` is the single place that knows how "
-"the ledger currency changes the arithmetic. Business code asks the "
-"policy; it never compares currency codes."
-msgstr ""
-"`serving.accounting.AccountingPolicy` "
-"是唯一知道记账币种如何影响计算的地方。业务代码只询问策略，从不比较币种代码。"
+"`serving.accounting.AccountingPolicy` holds every rule that depends on "
+"the currency. Code asks the policy instead of comparing currency codes."
+msgstr "`serving.accounting.AccountingPolicy` 掌握所有与币种相关的规则。代码向这个策略查询，而不是自己比较币种代码。"
 
 #: ../developer/accounting.md
 msgid "USD ledger (default)"
@@ -64,12 +54,12 @@ msgid "CNY ledger"
 msgstr "CNY 账本"
 
 #: ../developer/accounting.md
-msgid "Record of the ledger"
-msgstr "账本的权威记录"
+msgid "Ledger columns"
+msgstr "账本列"
 
 #: ../developer/accounting.md
-msgid "the `*_usd` columns, as always"
-msgstr "`*_usd` 列，与以往相同"
+msgid "the `*_usd` columns"
+msgstr "`*_usd` 列"
 
 #: ../developer/accounting.md
 msgid "the native `*_amount` columns (`NUMERIC(24, 12)`)"
@@ -85,17 +75,17 @@ msgstr "即账本本身"
 
 #: ../developer/accounting.md
 msgid ""
-"USD equivalents at the fixed policy rate, kept by the "
-"`accounting_sync_amounts` triggers"
-msgstr "按固定策略汇率得出的美元等值，由 `accounting_sync_amounts` 触发器维护"
+"USD equivalents at the fixed rate, kept by the `accounting_sync_amounts` "
+"triggers"
+msgstr "按固定汇率折算的 USD 等值，由 `accounting_sync_amounts` 触发器维护"
 
 #: ../developer/accounting.md
 msgid "Arithmetic of a charge, a gate and a reservation"
 msgstr "费用、额度检查和预留的计算方式"
 
 #: ../developer/accounting.md
-msgid "binary floats, unchanged"
-msgstr "二进制浮点数，与以往相同"
+msgid "binary floats"
+msgstr "二进制浮点数"
 
 #: ../developer/accounting.md
 msgid "exact decimals of the configured prices"
@@ -118,8 +108,8 @@ msgid "Request log `cost_usd`"
 msgstr "请求日志 `cost_usd`"
 
 #: ../developer/accounting.md
-msgid "`DECIMAL(12, 8)`, unchanged"
-msgstr "`DECIMAL(12, 8)`，与以往相同"
+msgid "`DECIMAL(12, 8)`"
+msgstr "`DECIMAL(12, 8)`"
 
 #: ../developer/accounting.md
 msgid "the USD equivalent of `cost_amount`"
@@ -137,428 +127,293 @@ msgstr "`0.01`、`5`、`1000` USD"
 msgid "the same USD constants at the fixed rate"
 msgstr "相同的 USD 常量按固定汇率换算"
 
-#: ../developer/accounting.md:20
+#: ../developer/accounting.md:18
 msgid ""
-"A request's cost is computed once from its prices and its usage, and "
-"rounded only where it is counted. On a CNY ledger a price far below a "
-"cent per token accumulates exactly: twelve decimal places hold a ten-"
-"thousandth of a fen per million tokens. A CNY amount is never converted "
-"to USD and back. The `*_usd` equivalents are derived from it, one way, "
-"for USD contracts only."
+"A request's cost is computed once, from its prices and usage, and rounded"
+" only where it is counted, so sub-cent token prices add up exactly on a "
+"CNY ledger. CNY amounts are never converted to USD and back; the `*_usd` "
+"equivalents are derived one way, for USD contracts. The rate "
+"(`usd_to_currency_rate`, CNY per USD) is fixed at migration time, with "
+"the date and source the operator recorded. It is not a live exchange "
+"rate, and recorded amounts are never re-read at another rate."
 msgstr ""
-"请求费用由价格和用量一次算出，只在计入账本时舍入。在 CNY 账本中，远低于一分钱的 token 单价也能精确累计：十二位小数足以表示每百万 "
-"token 万分之一分。CNY 金额从不换成美元再换回来；`*_usd` 等值只为 USD 约定单向推导。"
+"请求的费用根据价格和用量只计算一次，并且只在计入时舍入，因此在 CNY 账本上，低于一分的 token 单价也能精确累计。CNY 金额从不先换成 "
+"USD 再换回来；`*_usd` 等值只单向推导，供 USD 约定使用。汇率（`usd_to_currency_rate`，每 USD 合多少 "
+"CNY）在迁移时连同运维人员记录的日期和来源一起固定下来。它不是实时汇率，已记录的金额也绝不会按其他汇率重新读取。"
+
+#: ../developer/accounting.md:20
+msgid "Model prices"
+msgstr "模型价格"
 
 #: ../developer/accounting.md:22
 msgid ""
-"The rate (`usd_to_currency_rate`, CNY per USD) is fixed when the ledger "
-"is migrated, with the date and source the operator recorded. It is not a "
-"live exchange rate. An amount once recorded keeps its value: nothing re-"
-"reads history at another rate."
-msgstr "汇率（`usd_to_currency_rate`，即每美元兑多少人民币）在迁移账本时确定，并记录操作员提供的日期和来源。它不是实时汇率。金额一经记录就保持不变，不会按其他汇率重新解读历史。"
+"`pricing_currency` (default `USD`) is the currency of a model's or "
+"route's `pricing` and `pricing_schedule`. Token prices are per million "
+"tokens, `request` per request and `image` per image. A price in the "
+"ledger currency is charged as written, and a USD price on a CNY ledger is"
+" converted at the fixed rate. Any other combination, such as a CNY price "
+"on a USD ledger, is refused."
+msgstr ""
+"`pricing_currency`（默认 `USD`）是模型或路由的 `pricing` 和 `pricing_schedule` "
+"所用的币种。token 价格按每百万 token 计，`request` 按每次请求计，`image` "
+"按每张图片计。与账本币种相同的价格按原值计费，CNY 账本上的 USD 价格按固定汇率折算。其他任何组合（例如 USD 账本上的 CNY "
+"价格）都会被拒绝。"
 
 #: ../developer/accounting.md:24
-msgid "Model price currency"
-msgstr "模型报价币种"
+msgid ""
+"Automatic DeepSeek prices come from the [English pricing page](https"
+"://api-docs.deepseek.com/quick_start/pricing/) on a USD ledger and the "
+"[Chinese pricing page](https://api-docs.deepseek.com/zh-"
+"cn/quick_start/pricing/) on a CNY ledger, never converted. A price "
+"snapshot in another currency than the ledger's is refused. See [Automatic"
+" DeepSeek prices](adding-models.md#automatic-deepseek-prices)."
+msgstr ""
+"DeepSeek 自动价格在 USD 账本上取自[英文价格页](https://api-"
+"docs.deepseek.com/quick_start/pricing/)，在 CNY 账本上取自[中文价格页](https://api-"
+"docs.deepseek.com/zh-"
+"cn/quick_start/pricing/)，从不换算。币种与账本不同的价格快照会被拒绝。参见[自动获取 DeepSeek 价格"
+"](adding-models.md#automatic-deepseek-prices)。"
 
 #: ../developer/accounting.md:26
-msgid ""
-"`pricing_currency` declares the currency of a model's or a route's "
-"`pricing` and `pricing_schedule`; it defaults to `USD`. Token prices are "
-"per million tokens, `request` per request and `image` per image."
-msgstr ""
-"`pricing_currency` 声明模型或路由的 `pricing` 与 `pricing_schedule` 所用的币种，默认为 "
-"`USD`。token 价格按每百万 token 计，`request` 按每次请求计，`image` 按每张图片计。"
-
-#: ../developer/accounting.md:28
-msgid "A price in the ledger currency is charged as written."
-msgstr "与账本币种相同的报价按原样计费。"
-
-#: ../developer/accounting.md:29
-msgid "A USD price on a CNY ledger is converted once, at the fixed rate."
-msgstr "CNY 账本中的 USD 报价按固定汇率换算一次。"
-
-#: ../developer/accounting.md:30
-msgid ""
-"Any other combination, such as a CNY price on a USD ledger, is refused: "
-"there is no declared rate for it."
-msgstr "其他组合（例如 USD 账本中的 CNY 报价）会被拒绝，因为没有为其声明汇率。"
-
-#: ../developer/accounting.md:32
-msgid ""
-"Automatic DeepSeek prices follow the ledger: a USD ledger reads the "
-"[official English pricing page](https://api-"
-"docs.deepseek.com/quick_start/pricing/) and a CNY ledger the [official "
-"Chinese pricing page](https://api-docs.deepseek.com/zh-"
-"cn/quick_start/pricing/), each in its own currency and never converted "
-"from the other. Snapshots are stored by currency, and a snapshot in "
-"another currency than the ledger's is refused. See [Automatic DeepSeek "
-"prices](adding-models.md#automatic-deepseek-prices)."
-msgstr ""
-"DeepSeek 自动价格跟随账本币种：USD 账本读取[英文官方价格页](https://api-"
-"docs.deepseek.com/quick_start/pricing/)，CNY 账本读取[中文官方价格页](https://api-"
-"docs.deepseek.com/zh-"
-"cn/quick_start/pricing/)，各自按原币读取，从不由另一种换算而来。快照按币种分别保存，币种与账本不一致的快照会被拒绝。参见[DeepSeek"
-" 自动价格](adding-models.md#automatic-deepseek-prices)。"
-
-#: ../developer/accounting.md:34
 msgid "API contracts"
 msgstr "API 约定"
 
-#: ../developer/accounting.md:36
-msgid "Every existing `*_usd` field keeps its USD meaning in every deployment."
-msgstr "在任何部署中，现有的每个 `*_usd` 字段都保持美元含义。"
+#: ../developer/accounting.md:28
+msgid "Every `*_usd` field means USD on every ledger."
+msgstr "在任何账本上，每个 `*_usd` 字段都表示 USD。"
 
-#: ../developer/accounting.md:38
+#: ../developer/accounting.md:30
 msgid ""
-"**USD ledger.** Responses keep exactly their fields: no `currency` and no"
-" native amounts are added. The one addition is two headers on a budget "
-"refusal (429): `X-Accounting-Currency: USD` and `X-RateLimit-Cost-"
-"Currency: USD`, which state the unit of the `X-RateLimit-*-Cost` headers."
+"USD ledger: responses have no `currency` field and no native amounts. A "
+"budget refusal (429) adds `X-Accounting-Currency: USD` and `X-RateLimit-"
+"Cost-Currency: USD`, which give the unit of the `X-RateLimit-*-Cost` "
+"headers."
 msgstr ""
-"**USD 账本。** 响应字段保持不变：不新增 `currency`，也不新增原币金额。唯一的新增是额度拒绝（429）时的两个响应头：`X"
-"-Accounting-Currency: USD` 和 `X-RateLimit-Cost-Currency: USD`，用于说明 "
-"`X-RateLimit-*-Cost` 响应头的单位。"
+"USD 账本：响应中没有 `currency` 字段，也没有原生金额。预算拒绝（429）会多带 `X-Accounting-Currency: "
+"USD` 和 `X-RateLimit-Cost-Currency: USD` 两个响应头，说明 `X-RateLimit-*-Cost` "
+"响应头的单位。"
 
-#: ../developer/accounting.md:39
+#: ../developer/accounting.md:31
 msgid ""
-"**CNY ledger.** Responses add native amounts beside their USD fields, "
-"with `currency`: `cost`, `quota`, `spent`, `remaining`, `daily_limit`, "
-"`budget_daily`, `usage_today` and the like, as exact decimals. The "
-"`*_usd` fields carry the USD equivalents. The model catalog adds `prices`"
-" and `currency`; its `pricing` stays USD."
+"CNY ledger: responses add exact native amounts with `currency` beside "
+"their USD fields (`cost`, `quota`, `spent`, `remaining`, `daily_limit`, "
+"`budget_daily`, `usage_today` and the like), and the `*_usd` fields carry"
+" USD equivalents. The model catalog adds `prices` and `currency`; its "
+"`pricing` stays USD."
 msgstr ""
-"**CNY 账本。** 响应在美元字段旁边增加原币金额及 "
-"`currency`：`cost`、`quota`、`spent`、`remaining`、`daily_limit`、`budget_daily`、`usage_today`"
-" 等，均为精确十进制数。`*_usd` 字段返回美元等值。模型目录增加 `prices` 和 `currency`；其 `pricing` 仍为 "
-"USD。"
+"CNY 账本：响应在 USD 字段旁增加精确的原生金额和 "
+"`currency`（`cost`、`quota`、`spent`、`remaining`、`daily_limit`、`budget_daily`、`usage_today`"
+" 等），`*_usd` 字段则给出 USD 等值。模型目录增加 `prices` 和 `currency`；其 `pricing` 仍为 USD。"
 
-#: ../developer/accounting.md:40
+#: ../developer/accounting.md:32
 #, python-brace-format
 msgid ""
-"**Writes.** A native amount is sent with the ledger `currency`, for "
-"example `{\"budget_daily\": \"50\", \"currency\": \"CNY\"}`; the legacy "
-"`budget_daily_usd` still means USD. Sending a currency other than the "
-"ledger's, or both a native amount and its USD alias, is refused. A native"
-" write is stored exactly, and its USD equivalent beside it."
+"Writes: send a native amount with the ledger `currency`, for example "
+"`{\"budget_daily\": \"50\", \"currency\": \"CNY\"}`. `budget_daily_usd` "
+"still means USD. Another currency, or both a native amount and its USD "
+"alias, is refused."
 msgstr ""
-"**写入。** 原币金额需与账本 `currency` 一起提交，例如 `{\"budget_daily\": \"50\", "
-"\"currency\": \"CNY\"}`；旧的 `budget_daily_usd` "
-"仍表示美元。提交与账本不同的币种，或同时提交原币金额及其美元别名，都会被拒绝。原币写入按原值精确保存，并在旁边保存其美元等值。"
+"写入：发送原生金额时附上账本的 `currency`，例如 `{\"budget_daily\": \"50\", \"currency\": "
+"\"CNY\"}`。`budget_daily_usd` 仍表示 USD。其他币种，或同时发送原生金额及其 USD 别名，都会被拒绝。"
+
+#: ../developer/accounting.md:34
+#, python-brace-format
+msgid ""
+"These contracts stay USD on every ledger, so clients such as new-api, "
+"one-api, sub2api and the cloud agent work unchanged: the OpenAI-"
+"compatible billing endpoints (`/v1/usage`, `/v1/dashboard/billing/*`), "
+"`/internal/agent-grants/{id}/usage` (`spent_usd`), batch `cost_usd`, "
+"`upstream_cost_usd`, RouteWise budgets and diagnostics, and the "
+"`X-RateLimit-*-Cost` headers. Provider balances keep their provider's "
+"units."
+msgstr ""
+"以下约定在任何账本上都保持 USD，因此 new-api、one-api、sub2api 和云端 agent "
+"等客户端无需改动即可继续使用：OpenAI "
+"兼容的计费端点（`/v1/usage`、`/v1/dashboard/billing/*`）、`/internal/agent-"
+"grants/{id}/usage`（`spent_usd`）、批次的 "
+"`cost_usd`、`upstream_cost_usd`、RouteWise 预算与诊断，以及 `X-RateLimit-*-Cost` "
+"响应头。provider 余额保持 provider 报告的单位。"
+
+#: ../developer/accounting.md:36
+msgid ""
+"The role default quotas (`user_daily_quota_<role>`) are stored in USD; on"
+" a CNY ledger Admin shows and accepts them in CNY. `GET /site-config` "
+"reports `accounting.currency`. The console shows the amounts the API "
+"supplies and never converts or relabels them."
+msgstr ""
+"角色默认额度（`user_daily_quota_<role>`）以 USD 存储；在 CNY 账本上，Admin 以 CNY "
+"显示和接受这些值。`GET /site-config` 报告 `accounting.currency`。控制台显示 API "
+"提供的金额，从不自行换算或改标币种。"
+
+#: ../developer/accounting.md:38
+msgid "Charging"
+msgstr "计费"
+
+#: ../developer/accounting.md:40
+msgid ""
+"Every request is charged at one billing point, in the ledger currency, "
+"through one spend ledger: chat completions, Responses, Anthropic "
+"`/v1/messages`, embeddings, the console playground, batches, inference "
+"grants and requests made on behalf of another user. Admission checks the "
+"API key's budgets, then its project's budgets, then the account's daily "
+"and monthly quotas, and reserves an estimate between the flat minimum and"
+" the reservation ceiling. The finished cost goes to the account, key and "
+"project counters. A failed or cancelled request is charged what the "
+"billing point recorded, or nothing if it produced no billable usage."
+msgstr ""
+"每个请求都在同一个计费点、以账本币种、通过同一个支出账本计费：Chat Completions、Responses、Anthropic "
+"`/v1/messages`、Embeddings、控制台 Playground、批次、推理授权，以及代表其他用户发出的请求。准入时依次检查 "
+"API "
+"密钥的预算、其项目的预算、账户的每日和每月额度，并在固定预估下限与预留上限之间预留一笔估算费用。完成后的费用计入账户、密钥和项目计数器。失败或取消的请求按计费点记录的金额收费；没有产生可计费用量的则不收费。"
 
 #: ../developer/accounting.md:42
 #, python-brace-format
 msgid ""
-"USD-only contracts stay USD: the OpenAI-compatible billing endpoints "
-"(`/v1/usage`, `/v1/dashboard/billing/*`), `/internal/agent-"
-"grants/{id}/usage` (`spent_usd`), batch `cost_usd` totals, "
-"`upstream_cost_usd`, RouteWise budgets and diagnostics, and the "
-"`X-RateLimit-*-Cost` headers. On a CNY ledger they report USD "
-"equivalents, so clients such as new-api, one-api, sub2api and the cloud "
-"agent keep working unchanged. Provider balances and quotas keep the units"
-" their provider reports."
+"Projects, multiple API keys and per-key budgets are described in the "
+"design record {download}`2026-11-01-projects-and-api-keys-design.md "
+"<../agents/specs/2026-11-01-projects-and-api-keys-design.md>`. [User tags"
+"](user-tags.md) can lower an account's quotas further."
 msgstr ""
-"仅限美元的约定继续使用美元：OpenAI "
-"兼容的计费接口（`/v1/usage`、`/v1/dashboard/billing/*`）、`/internal/agent-"
-"grants/{id}/usage`（`spent_usd`）、批处理 `cost_usd` "
-"汇总、`upstream_cost_usd`、RouteWise 预算与诊断，以及 `X-RateLimit-*-Cost` 响应头。在 CNY "
-"账本中它们返回美元等值，因此 new-api、one-api、sub2api 和云端 agent 等客户端无需改动即可继续使用。Provider "
-"余额和额度保留 provider 返回的单位。"
+"项目、多个 API 密钥和按密钥预算见设计记录 {download}`2026-11-01-projects-and-api-keys-"
+"design.md <../agents/specs/2026-11-01-projects-and-api-keys-"
+"design.md>`。[用户标签](user-tags.md)可以进一步降低账户的额度。"
 
 #: ../developer/accounting.md:44
-msgid ""
-"The role default quotas (`user_daily_quota_<role>`) are runtime settings "
-"stored in USD. On a CNY ledger Admin shows and accepts them in CNY, and "
-"the stored value is the USD equivalent of what was entered."
-msgstr ""
-"角色默认额度（`user_daily_quota_<role>`）是以 USD 保存的运行时设置。在 CNY 账本中，管理后台以 CNY "
-"显示和接收它们，保存的是所输入金额的美元等值。"
+msgid "Shared accounting"
+msgstr "共享记账"
 
 #: ../developer/accounting.md:46
 msgid ""
-"`GET /site-config` reports `accounting.currency` so the console can "
-"format amounts. The console displays the amounts the API supplies; it "
-"never applies a rate of its own, and it never shows a USD value "
-"relabelled as CNY."
+"In shared mode, reservations and reconciliations are kept in "
+"`spend_reservations.amount` and `spend_reconciliations.amount`, in the "
+"ledger currency, with USD equivalents. A settlement's digest includes the"
+" currency and the rate, and a crash reconciliation refuses log rows "
+"charged in another currency (`metadata.spend_currency`)."
 msgstr ""
-"`GET /site-config` 返回 `accounting.currency`，供控制台格式化金额。控制台只显示 API "
-"给出的金额，从不自行换汇，也不会把美元值改标为人民币显示。"
+"在共享模式下，预留和对账记录保存在 `spend_reservations.amount` 和 "
+"`spend_reconciliations.amount` 中，使用账本币种，并附有 USD "
+"等值。结算摘要包含币种和汇率；崩溃后的对账会拒绝以其他币种计费的日志行（`metadata.spend_currency`）。"
 
 #: ../developer/accounting.md:48
-msgid "Every way a request is charged"
-msgstr "请求的所有计费入口"
+msgid ""
+"Each process reports protocol `2`, its mode, currency and rate in its "
+"`config_instances` capabilities. `python -m serving.shared_spend status` "
+"lists a process with an older protocol, or another currency or rate, as "
+"`unsupported` (and under `other_policy`); such a process must not join "
+"the ledger. A process that holds a cost not known to be written cannot be"
+" sealed for a handoff."
+msgstr ""
+"每个进程在其 `config_instances` 能力信息中报告协议 `2`、模式、币种和汇率。`python -m "
+"serving.shared_spend status` 会把协议较旧、或币种或汇率不同的进程列为 `unsupported`（同时列在 "
+"`other_policy` 下）；这样的进程不得加入该账本。仍持有一笔未确认已写入的费用的进程，不能为交接而封存。"
 
 #: ../developer/accounting.md:50
-msgid ""
-"Chat completions, streaming and non-streaming, the Responses API, "
-"Anthropic `/v1/messages`, embeddings, the console's web chat "
-"(playground), batches, inference grants and requests on behalf of another"
-" user are all charged at one billing point, in the ledger currency, "
-"through the same spend ledger:"
-msgstr ""
-"聊天补全（流式与非流式）、Responses API、Anthropic "
-"`/v1/messages`、embeddings、控制台网页聊天（playground）、批处理、推理授权，以及代其他用户发起的请求，都在同一个计费点、以账本币种、通过同一个费用账本计费："
+msgid "Migrating to CNY"
+msgstr "迁移到 CNY"
 
 #: ../developer/accounting.md:52
 msgid ""
-"**Admission.** The request is checked against the API key's budgets, then"
-" its project's, then the account's daily and monthly quotas, and reserves"
-" an estimate (between the flat minimum and the reservation ceiling). On a"
-" CNY ledger every one of these comparisons is between native amounts."
+"`python -m migrations upgrade` applies `0022_ledger_currency`. It adds "
+"the native columns, their triggers, the dashboard rollup's native sum and"
+" the audit table, and converts nothing. The previous release keeps "
+"running on it, and the database stays a USD ledger. A new CNY deployment "
+"runs the steps below before it serves traffic."
 msgstr ""
-"**准入。** 请求依次接受 API Key 预算、所属项目预算、账户日额度和月额度的检查，并预留一个预估金额（介于固定下限和预留上限之间）。在 "
-"CNY 账本中，这些比较都在原币金额之间进行。"
-
-#: ../developer/accounting.md:53
-msgid ""
-"**Charge.** The finished request's cost is recorded in the ledger and "
-"written to the account, key and project counters."
-msgstr "**计费。** 请求结束后的费用记入账本，并写入账户、Key 和项目计数器。"
+"`python -m migrations upgrade` 会应用 "
+"`0022_ledger_currency`。它添加原生金额列及其触发器、仪表盘汇总的原生金额合计和审计表，不做任何换算。上一个版本可以继续在它上面运行，数据库仍是"
+" USD 账本。新的 CNY 部署要在承接流量之前完成以下步骤。"
 
 #: ../developer/accounting.md:54
 msgid ""
-"**Failure and cancellation.** These are charged exactly as before: what "
-"the billing point recorded, and nothing for a request that produced no "
-"billable usage."
-msgstr "**失败与取消。** 计费方式与以往完全相同：按计费点记录的金额计费；没有产生可计费用量的请求不收费。"
+"`ops/accounting_currency.py` converts the ledger. It issues no DDL, and "
+"it refuses `--apply` unless the schema is at this release's head, no "
+"other client is connected, and shared accounting is in `local` mode with "
+"no shared reservations, settlements or reconciliations. It needs a "
+"positive `--usd-to-currency-rate`, an ISO `--rate-date` and a nonempty "
+"`--rate-source`; it does not fetch a rate."
+msgstr ""
+"`ops/accounting_currency.py` 负责转换账本。它不执行 DDL，并且只有在以下条件都满足时才接受 "
+"`--apply`：schema 处于本版本的最新修订，没有其他客户端连接，共享记账处于 `local` "
+"模式且没有共享预留、结算或对账记录。它需要正数的 `--usd-to-currency-rate`、ISO 格式的 `--rate-date` "
+"和非空的 `--rate-source`；它不会自行获取汇率。"
 
 #: ../developer/accounting.md:56
-msgid "Shared accounting and draining"
-msgstr "共享记账与排空"
+msgid ""
+"Before the maintenance window, choose and record the rate, take a "
+"database backup and test the restore, and keep the previous "
+"configuration."
+msgstr "在维护窗口之前：选定并记录汇率，备份数据库并测试恢复，保留之前的配置。"
+
+#: ../developer/accounting.md:57
+msgid ""
+"Stop incoming traffic and drain in-flight requests. Stop every gateway "
+"worker, rollup, scheduled job, maintenance process, database console and "
+"backup connection, and disable automatic restarts. The command terminates"
+" no connection and cannot stop a scheduler from opening a new one."
+msgstr ""
+"停止接入流量并排空进行中的请求。停止所有网关 "
+"worker、汇总任务、定时任务、维护进程、数据库控制台和备份连接，并关闭自动重启。该命令不会终止任何连接，也无法阻止调度器之后打开新连接。"
 
 #: ../developer/accounting.md:58
-msgid ""
-"The local (per-process) and the shared accounting follow the same rules. "
-"In the shared mode, reservations and reconciliations are kept in "
-"`spend_reservations.amount` and `spend_reconciliations.amount`, in the "
-"ledger currency, beside their USD equivalents. A settlement's digest "
-"includes the currency and the rate, so a batch resent after its answer "
-"was lost can never be counted in another unit. A log row records the "
-"currency of its charge (`metadata.spend_currency`), and a crash "
-"reconciliation refuses rows recorded in another currency."
-msgstr ""
-"本地（单进程）记账和共享记账遵循相同规则。在共享模式下，预留和对账记录保存在 `spend_reservations.amount` 与 "
-"`spend_reconciliations.amount` "
-"中，以账本币种计，旁边是美元等值。结算摘要包含币种和汇率，因此应答丢失后重发的批次绝不会按另一种单位计数。日志行记录其费用的币种（`metadata.spend_currency`），崩溃恢复对账会拒绝以其他币种记录的行。"
-
-#: ../developer/accounting.md:60
-msgid ""
-"Each process reports its accounting in its `config_instances` "
-"capabilities and in its handoff status: protocol `2`, the mode, the "
-"currency and the rate. `python -m serving.shared_spend status` lists as "
-"`unsupported` every process that reports an older protocol, or another "
-"currency or rate (`other_policy`): processes that cannot keep the same "
-"ledger must not take part in it, whatever mode they report. A process "
-"that still holds a cost not known to be written, in either mode, cannot "
-"be sealed for a handoff."
-msgstr ""
-"每个进程在 `config_instances` 能力和排空（handoff）状态中报告其记账方式：协议版本 "
-"`2`、模式、币种和汇率。`python -m serving.shared_spend status` "
-"会把协议版本较旧、或币种/汇率不同（`other_policy`）的进程列为 "
-"`unsupported`：无法维护同一本账的进程，无论声称处于哪种模式，都不能参与。无论哪种模式，仍持有未确认入账费用的进程都不能在交接时封口。"
-
-#: ../developer/accounting.md:62
-msgid "Migrating a ledger"
-msgstr "迁移账本"
-
-#: ../developer/accounting.md:64
-msgid "An existing USD database"
-msgstr "已有的 USD 数据库"
-
-#: ../developer/accounting.md:66
-msgid ""
-"`python -m migrations upgrade` with this release applies "
-"`0022_ledger_currency`. It only adds the native columns, their triggers, "
-"the dashboard rollup's native sum and the migration audit table; it "
-"converts nothing. The previous release keeps running on the upgraded "
-"schema, and its writes get their native amounts from the triggers. The "
-"database stays a USD ledger until an operator migrates it."
-msgstr ""
-"使用本版本执行 `python -m migrations upgrade` 会应用 "
-"`0022_ledger_currency`。它只新增原币列、对应触发器、看板汇总的原币合计和迁移审计表，不换算任何金额。上一版本可以继续在升级后的库结构上运行，它的写入由触发器补齐原币金额。在操作员执行迁移之前，数据库始终是"
-" USD 账本。"
+msgid "Preview, from the repository root:"
+msgstr "在仓库根目录预览："
 
 #: ../developer/accounting.md:68
-msgid "A new deployment"
-msgstr "新部署"
+msgid ""
+"The preview is read-only. It shows both policies and, per monetary "
+"column, the row counts, the USD total and the proposed native total. Logs"
+" and their rollups describe overlapping usage, so reconcile each table on"
+" its own."
+msgstr "预览是只读的。它显示新旧两个策略，并针对每个金额列显示行数、USD 合计和拟转换的原生合计。日志与其汇总表描述的用量相互重叠，因此要逐表核对。"
+
+#: ../developer/accounting.md:69
+msgid ""
+"Run the same command with `--apply`. In one serializable transaction it "
+"fills every native amount at the rate, records `accounting:policy` and "
+"`accounting:migration` in `site_settings`, writes an audit row to "
+"`accounting_currency_migrations`, and raises the compatibility floor to "
+"`0022_ledger_currency`. Keep the JSON result and check that `applied` and"
+" `migration_complete` are true. The `*_usd` values are not touched. "
+"Running the same policy again returns `already_applied` and changes "
+"nothing; any other policy, including another rate, is refused."
+msgstr ""
+"加上 `--apply` 再运行同一条命令。它在一个可串行化事务中按汇率填写所有原生金额，在 `site_settings` 中记录 "
+"`accounting:policy` 和 `accounting:migration`，向 "
+"`accounting_currency_migrations` 写入一行审计记录，并把兼容下限提升到 "
+"`0022_ledger_currency`。保留输出的 JSON，确认 `applied` 和 `migration_complete` 为 "
+"true。`*_usd` 值不会被修改。以同一策略再次运行会返回 `already_applied` "
+"且不做任何改动；任何其他策略（包括不同的汇率）都会被拒绝。"
 
 #: ../developer/accounting.md:70
 msgid ""
-"Run the schema migrations as for any deployment. A new USD deployment "
-"needs nothing more. A new CNY deployment runs the currency migration "
-"below before it serves traffic. With no usage there is nothing to "
-"convert, but the policy, its completion marker and the audit record are "
-"written in the same way."
+"Before the gateway starts, declare the currency in `SITE_CONFIGURATION`, "
+"for example with `python -m serving.config.manage set SITE_CONFIGURATION "
+"'<json>'` in the backend image:"
 msgstr ""
-"与任何部署一样执行库结构迁移。新的 USD 部署无需其他操作。新的 CNY "
-"部署在承接流量之前执行下面的币种迁移。没有用量时没有需要换算的金额，但策略、完成标记和审计记录同样会写入。"
-
-#: ../developer/accounting.md:72
-msgid "Moving a ledger to CNY"
-msgstr "将账本迁移为 CNY"
-
-#: ../developer/accounting.md:74
-msgid ""
-"The currency migration is `ops/accounting_currency.py`. It issues no DDL "
-"and refuses `--apply` unless:"
-msgstr "币种迁移工具是 `ops/accounting_currency.py`。它不执行 DDL，并且只有满足以下条件才会执行 `--apply`："
+"在网关启动之前，在 `SITE_CONFIGURATION` 中声明币种，例如在后端镜像中运行 `python -m "
+"serving.config.manage set SITE_CONFIGURATION '<json>'`："
 
 #: ../developer/accounting.md:76
 msgid ""
-"the schema is at this release's head and has the native columns, triggers"
-" and audit table;"
-msgstr "库结构处于本版本的最新版本，并已具备原币列、触发器和审计表；"
+"Startup refuses a declaration that differs from the ledger (an absent one"
+" means USD), an invalid policy, a CNY policy without its completion "
+"marker, and a database missing the native columns, triggers or audit "
+"table. Once the gateway runs, Admin refuses a currency change. The "
+"declaration alone never migrates a database."
+msgstr ""
+"以下情况启动会被拒绝：声明与账本不一致（未声明即视为 USD）、策略无效、CNY "
+"策略缺少对应的完成标记，以及数据库缺少原生金额列、触发器或审计表。网关运行后，Admin 会拒绝更改币种。仅修改声明从不会迁移数据库。"
 
 #: ../developer/accounting.md:77
-msgid "no other client is connected to the database;"
-msgstr "没有其他客户端连接数据库；"
-
-#: ../developer/accounting.md:78
 msgid ""
-"the shared accounting is in its `local` mode, with no shared "
-"reservations, settlements or reconciliations."
-msgstr "共享记账处于 `local` 模式，且没有共享预留、结算或对账记录。"
-
-#: ../developer/accounting.md:80
-msgid ""
-"CNY requires a positive `--usd-to-currency-rate` (CNY per USD), an ISO "
-"`--rate-date` and a nonempty `--rate-source`. The command does not fetch "
-"a rate."
+"Before reopening traffic, check that `/site-config`, the catalog `prices`"
+" and the usage and quota fields carry CNY, and check one controlled "
+"request and one quota change against the ledger."
 msgstr ""
-"CNY 需要正数的 `--usd-to-currency-rate`（每美元兑多少人民币）、ISO 格式的 `--rate-date` 和非空的 "
-"`--rate-source`。该命令不会自行获取汇率。"
+"重新开放流量之前，确认 `/site-config`、目录中的 `prices` 以及用量和额度字段都是 "
+"CNY，并用一个受控请求和一次额度修改对照账本核对。"
 
-#: ../developer/accounting.md:82
-msgid "Before the maintenance window:"
-msgstr "维护窗口之前："
-
-#: ../developer/accounting.md:84
-msgid "Choose and record the rate."
-msgstr "选定并记录汇率。"
-
-#: ../developer/accounting.md:85
-msgid "Take a database backup and test the restore."
-msgstr "备份数据库并演练恢复。"
-
-#: ../developer/accounting.md:86
-msgid "Keep the previous deployment configuration."
-msgstr "保留上一版本的部署配置。"
-
-#: ../developer/accounting.md:88
-msgid "During the window:"
-msgstr "维护窗口期间："
-
-#: ../developer/accounting.md:90
-msgid "Stop incoming traffic and drain in-flight requests."
-msgstr "停止接入流量，并排空进行中的请求。"
-
-#: ../developer/accounting.md:91
-msgid ""
-"Stop every gateway worker, rollup, scheduled job, maintenance process, "
-"database console and backup connection, and disable automatic restarts. "
-"The command refuses to apply while another client is connected; it "
-"terminates nobody, and it cannot stop a scheduler from starting a new "
-"client afterwards."
-msgstr "停止所有网关进程、汇总任务、定时任务、维护进程、数据库控制台和备份连接，并关闭自动重启。仍有其他客户端连接时，命令拒绝执行；它不会终止任何连接，也无法阻止调度器之后启动新的客户端。"
-
-#: ../developer/accounting.md:93
-msgid "Then preview, from the repository root:"
-msgstr "然后在仓库根目录预览："
-
-#: ../developer/accounting.md:103
-msgid ""
-"The preview is read-only. It shows the previous and target policies and, "
-"for each monetary column, the row counts, the original USD total and the "
-"proposed native total. Logs and their rollups describe overlapping usage;"
-" reconcile each table on its own."
-msgstr "预览是只读的。它显示原策略和目标策略，以及每个金额列的行数、原始美元合计和拟换算的原币合计。日志和日志汇总描述的是重叠的用量，应逐表核对。"
-
-#: ../developer/accounting.md:105
-msgid "Run the same command with `--apply`. In one serializable transaction it:"
-msgstr "用 `--apply` 再次运行同一命令。它在一个可串行化事务中："
-
-#: ../developer/accounting.md:107
-msgid "fills the native amounts of every monetary table at the rate;"
-msgstr "按汇率填写所有金额表的原币金额；"
-
-#: ../developer/accounting.md:108
-msgid ""
-"records the policy and a completion marker in `site_settings` "
-"(`accounting:policy`, `accounting:migration`);"
-msgstr "在 `site_settings` 中记录策略和完成标记（`accounting:policy`、`accounting:migration`）；"
-
-#: ../developer/accounting.md:109
-msgid "writes an audit row to `accounting_currency_migrations`;"
-msgstr "向 `accounting_currency_migrations` 写入一条审计记录；"
-
-#: ../developer/accounting.md:110
-msgid "raises the schema's compatibility floor to `0022_ledger_currency`."
-msgstr "将库结构的兼容下限提高到 `0022_ledger_currency`。"
-
-#: ../developer/accounting.md:112
-msgid ""
-"Keep the JSON result and confirm `applied` and `migration_complete` are "
-"true. The `*_usd` values are left as they were. Repeating the exact "
-"completed policy returns `already_applied` and changes nothing: no amount"
-" is converted twice and the floor is not touched. Any other policy, a "
-"different rate included, is refused once a CNY policy is active."
-msgstr ""
-"保留 JSON 结果，并确认 `applied` 和 `migration_complete` 均为 true。`*_usd` "
-"值保持原样。用完全相同的已完成策略重复执行会返回 `already_applied`，不做任何改动：不会二次换算，也不会改动兼容下限。CNY "
-"策略生效后，任何其他策略（包括不同汇率）都会被拒绝。"
-
-#: ../developer/accounting.md:114
-msgid ""
-"Then declare the currency in `SITE_CONFIGURATION` before the gateway "
-"starts:"
-msgstr "然后在网关启动前，在 `SITE_CONFIGURATION` 中声明币种："
-
-#: ../developer/accounting.md:120
-msgid ""
-"For example, `python -m serving.config.manage set SITE_CONFIGURATION "
-"'<json>'` with the backend image. Startup refuses all of these:"
-msgstr ""
-"例如使用后端镜像执行 `python -m serving.config.manage set SITE_CONFIGURATION "
-"'<json>'`。以下情况启动都会被拒绝："
-
-#: ../developer/accounting.md:122
-msgid ""
-"a declaration that differs from the ledger's currency (an absent "
-"declaration means USD);"
-msgstr "声明的币种与账本币种不一致（未声明即视为 USD）；"
-
-#: ../developer/accounting.md:123
-msgid "an invalid policy, or a CNY policy without its matching completion marker;"
-msgstr "策略无效，或 CNY 策略缺少对应的完成标记；"
-
-#: ../developer/accounting.md:124
-msgid "a database missing the native columns, triggers or audit table."
-msgstr "数据库缺少原币列、触发器或审计表。"
-
-#: ../developer/accounting.md:126
-msgid ""
-"Once the gateway runs, Admin refuses a site configuration whose currency "
-"differs from the ledger's. Setting the declaration alone never migrates a"
-" database."
-msgstr "网关运行后，管理后台会拒绝币种与账本不一致的站点配置。单独修改声明永远不会迁移数据库。"
-
-#: ../developer/accounting.md:128
-msgid "Before reopening traffic:"
-msgstr "重新开放流量之前："
-
-#: ../developer/accounting.md:130
-msgid ""
-"Check that `/site-config`, the model catalog `prices` and the usage and "
-"quota fields carry CNY."
-msgstr "确认 `/site-config`、模型目录的 `prices` 以及用量和额度字段都返回 CNY。"
-
-#: ../developer/accounting.md:131
-msgid ""
-"Check a controlled request and a quota change against the ledger and its "
-"USD equivalents."
-msgstr "用一次受控请求和一次额度修改，对照账本及其美元等值进行核对。"
-
-#: ../developer/accounting.md:133
+#: ../developer/accounting.md:79
 msgid "Compatibility and rollback"
 msgstr "兼容性与回滚"
 
@@ -588,78 +443,68 @@ msgid ""
 "compatibility floor is `0022_ledger_currency`"
 msgstr "本版本及之后的版本；更早的镜像会拒绝启动，因为兼容下限为 `0022_ledger_currency`"
 
-#: ../developer/accounting.md:140
+#: ../developer/accounting.md:86
 msgid ""
-"An image older than `0022_ledger_currency` knows only a USD ledger. It "
-"would charge a CNY tariff as dollars, which is why the migration shuts it"
-" out. A failed `--apply` rolls back its transaction: keep services "
-"stopped, correct the cause, and run it again with the same approved "
-"inputs. An applied CNY policy cannot be converted back in place or given "
-"another rate. Going back means stopping every client, restoring the pre-"
-"migration backup and the matching previous configuration, and accounting "
-"for the writes accepted after the backup. Do not simulate a rollback by "
-"editing the declaration or the policy rows, or by applying an inverse "
-"rate. No schema downgrade is involved: `0022_ledger_currency`'s downgrade"
-" keeps every column."
+"Older images know only USD and would charge a CNY tariff as dollars, "
+"which the floor prevents. A failed `--apply` rolls back its transaction: "
+"keep services stopped, fix the cause and run it again with the same "
+"inputs."
 msgstr ""
-"早于 `0022_ledger_currency` 的镜像只认识 USD 账本，会把 CNY "
-"报价当作美元计费，这正是迁移要把它拦在外面的原因。`--apply` "
-"失败时会回滚其事务：保持服务停止，修正原因后用同样经过批准的参数重新执行。已生效的 CNY "
-"策略不能原地换回，也不能改用其他汇率。回退的方式是停止所有客户端，恢复迁移前的备份和对应的上一版本配置，并处理备份之后接受的写入。不要通过修改声明或策略记录、或应用反向汇率来模拟回滚。整个过程不涉及库结构降级：`0022_ledger_currency`"
-" 的降级会保留所有列。"
+"旧镜像只认识 USD，会把 CNY 价格当作美元计费，兼容下限阻止了这种情况。失败的 `--apply` "
+"会回滚其事务：保持服务停止，修正原因后用相同的输入再次运行。"
 
-#: ../developer/accounting.md:142
+#: ../developer/accounting.md:88
+msgid ""
+"An applied CNY policy cannot be reversed or given another rate in place. "
+"To go back, stop every client, restore the pre-migration backup and the "
+"previous configuration, and account for the writes accepted after the "
+"backup. Never imitate a rollback by editing the declaration or the policy"
+" rows, or by applying an inverse rate. No schema downgrade is involved: "
+"the downgrade of `0022_ledger_currency` keeps every column."
+msgstr ""
+"已应用的 CNY "
+"策略不能原地撤销，也不能改用其他汇率。要退回，需停止所有客户端，恢复迁移前的备份和之前的配置，并处理备份之后接受的写入。切勿通过编辑声明或策略行、或应用反向汇率来模拟回滚。回滚不涉及"
+" schema 降级：`0022_ledger_currency` 的降级会保留所有列。"
+
+#: ../developer/accounting.md:90
 msgid "Databases built by a distribution"
 msgstr "由发行版构建的数据库"
 
-#: ../developer/accounting.md:144
+#: ../developer/accounting.md:92
 msgid ""
-"A distribution may already keep a CNY ledger whose own revisions created "
-"these objects, with the same `accounting_sync_amounts` function, the same"
-" columns and the same triggers. For such a database:"
+"If a distribution's own revisions already created these objects, with the"
+" same `accounting_sync_amounts` function, columns and triggers:"
+msgstr "如果某个发行版自己的修订已经创建了这些对象，且 `accounting_sync_amounts` 函数、列和触发器都相同："
+
+#: ../developer/accounting.md:94
+msgid ""
+"Keep its released revisions (files, ids and parents), so a database that "
+"ran them never runs them again."
+msgstr "保留它已发布的修订（文件、id 和父修订），使运行过它们的数据库不会再次运行。"
+
+#: ../developer/accounting.md:95
+msgid ""
+"Add one empty merge revision: `down_revision = (\"<distribution head>\", "
+"\"0022_ledger_currency\")`."
 msgstr ""
-"某个发行版可能已经维护着一个 CNY 账本，其自有迁移已经创建了这些对象：相同的 `accounting_sync_amounts` "
-"函数、相同的列和相同的触发器。对于这样的数据库："
+"添加一个空的合并修订：`down_revision = (\"<distribution head>\", "
+"\"0022_ledger_currency\")`。"
 
-#: ../developer/accounting.md:146
+#: ../developer/accounting.md:96
 msgid ""
-"**Keep its released revisions.** Keep the files, ids and parents of its "
-"own revisions, so that a database that ran them never runs them again."
-msgstr "**保留其已发布的迁移。** 保留其自有迁移的文件、ID 和父版本，使已执行过它们的数据库不会再执行一次。"
-
-#: ../developer/accounting.md:147
-msgid ""
-"**Join its head to `0022_ledger_currency`.** Add one empty merge "
-"revision: `down_revision = (\"<distribution head>\", "
-"\"0022_ledger_currency\")`, with no upgrade body."
+"Upgrade. `0022_ledger_currency` checks the function digest "
+"(`SYNC_FUNCTION_SHA256`), adds only what is missing, converts no amount, "
+"and replaces only the `account_quotas` and `organizations` bridge "
+"functions. It refuses a CNY database whose shared reservations or "
+"reconciliations lack native amounts. It does not raise the compatibility "
+"floor, so the distribution's previous image keeps starting."
 msgstr ""
-"**把其最新版本并入 `0022_ledger_currency`。** 新增一个空的合并迁移：`down_revision = "
-"(\"<distribution head>\", \"0022_ledger_currency\")`，升级函数为空。"
+"升级。`0022_ledger_currency` "
+"会校验函数摘要（`SYNC_FUNCTION_SHA256`），只添加缺失的部分，不换算任何金额，并且只替换 `account_quotas` 和"
+" `organizations` 两个桥接函数。如果 CNY "
+"数据库的共享预留或对账记录缺少原生金额，它会拒绝运行。它不会提升兼容下限，因此该发行版的上一个镜像仍可启动。"
 
-#: ../developer/accounting.md:148
-msgid ""
-"**Upgrade.** `0022_ledger_currency` then runs on that database as a no-"
-"op, except that it replaces the two `account_quotas` and `organizations` "
-"bridge functions with its own; their native branch is the one the "
-"distribution installed. It reads the function digest, "
-"`SYNC_FUNCTION_SHA256`, adds only what is missing, and converts no "
-"amount. A CNY database whose shared reservations or reconciliations lack "
-"native amounts is refused rather than relabelled."
-msgstr ""
-"**升级。** 之后 `0022_ledger_currency` 在该数据库上不做任何改动，只会用自己的版本替换 "
-"`account_quotas` 与 `organizations` 之间的两个桥接函数，其原币分支与发行版安装的相同。它读取函数摘要 "
-"`SYNC_FUNCTION_SHA256`，只补齐缺失的部分，不换算任何金额。共享预留或对账记录缺少原币金额的 CNY "
-"数据库会被拒绝，而不会被改标单位。"
+#: ../developer/accounting.md:97
+msgid "Keep `accounting.currency` declared in `SITE_CONFIGURATION`."
+msgstr "在 `SITE_CONFIGURATION` 中保留 `accounting.currency` 声明。"
 
-#: ../developer/accounting.md:149
-msgid ""
-"**Leave the floor as it is.** The compatibility floor is not raised, so "
-"the distribution's previous image keeps starting through its rollback "
-"window."
-msgstr "**保持兼容下限不变。** 不提高兼容下限，因此发行版的上一版本镜像在其回滚窗口内仍可启动。"
-
-#: ../developer/accounting.md:150
-msgid ""
-"**Keep the currency declared.** Keep `accounting.currency` in "
-"`SITE_CONFIGURATION`."
-msgstr "**保持币种声明。** 在 `SITE_CONFIGURATION` 中保留 `accounting.currency`。"

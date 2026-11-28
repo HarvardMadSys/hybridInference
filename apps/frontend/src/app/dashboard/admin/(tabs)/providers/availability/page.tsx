@@ -1,5 +1,11 @@
-import { ProviderAvailabilitySection } from '@/components/features/admin/ProvidersTab';
+import { redirect } from 'next/navigation';
 
+import { PROVIDERS_PATH } from '@/components/features/admin/providerRoutes';
+
+/**
+ * Availability became the registry's Routing column on Providers → Overview.
+ * An old link or bookmark lands there.
+ */
 export default function Page() {
-  return <ProviderAvailabilitySection />;
+  redirect(PROVIDERS_PATH);
 }

@@ -17,6 +17,7 @@ describe('loadRuntimeSiteConfig', () => {
     forgetRuntimeSiteConfig();
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     vi.stubEnv('AGENT_PUBLIC_URL', '');
+    vi.stubEnv('OPENINFRA_PUBLIC_URL', '');
     vi.stubEnv('AGENT_WEB_INTERNAL_URL', '');
     vi.stubEnv('AGENT_CONTROL_PLANE_INTERNAL_URL', '');
   });
@@ -98,6 +99,51 @@ describe('loadRuntimeSiteConfig', () => {
     expect(resolved.features.agents).toBe(true);
     expect(resolved.agentsUrl).toBe('https://agents.example.test/');
   });
+
+  it('links OpenInfra to another deployment and turns its links on', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: async () => runtimeDocument }),
+    );
+    vi.stubEnv('OPENINFRA_PUBLIC_URL', ' https://prod.example.test/openinfra ');
+
+    const resolved = await loadRuntimeSiteConfig();
+
+    expect(resolved.features.openinfra).toBe(true);
+    expect(resolved.openinfraUrl).toBe('https://prod.example.test/openinfra');
+  });
+
+  it('serves the local OpenInfra page when no other deployment is named', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: async () => runtimeDocument }),
+    );
+
+    const resolved = await loadRuntimeSiteConfig();
+
+    expect(resolved.openinfraUrl).toBe('');
+    expect(resolved.features.openinfra).toBe(false);
+  });
+
+  it.each(['http://prod.example.test/openinfra', 'https://user:pw@prod.example.test/openinfra'])(
+    'ignores an OpenInfra address that is not a public HTTPS URL: %s',
+    async (url) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({ ok: true, json: async () => runtimeDocument }),
+      );
+      vi.stubEnv('OPENINFRA_PUBLIC_URL', url);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      const resolved = await loadRuntimeSiteConfig();
+
+      expect(resolved.openinfraUrl).toBe('');
+      expect(JSON.stringify(resolved)).not.toContain(url);
+      expect(warn).toHaveBeenCalledWith(
+        'Ignoring OPENINFRA_PUBLIC_URL: expected an HTTPS URL without credentials.',
+      );
+    },
+  );
 
   it('prefers the public address while a deployment still has proxy targets', async () => {
     vi.stubGlobal(

@@ -75,16 +75,20 @@ import {
   CUSTOM_KEY_PATTERN,
   applicableEntries,
   buildPatch,
+  categoryOf as categoryOfGroup,
   errorForKey,
   groupEntries,
   isDirty,
   looksSecret,
   matchesQuery,
+  sectionOf,
+  splitGroups,
   withoutKeys,
   withoutMootDrafts,
   type ConfigDraft,
   type ConfigDrafts,
   type ConfigGroup,
+  type ConfigSectionSplit,
 } from '@/components/features/configuration/configDrafts';
 import {
   exportConfigBackup,
@@ -221,10 +225,13 @@ function groupKeys(group: ConfigGroup, record: Readonly<Record<string, unknown>>
   return group.entries.map((entry) => entry.key).filter((key) => key in record);
 }
 
+/** No category is split: every one is a single section. */
+const NO_SPLITS: readonly ConfigSectionSplit[] = [];
+
 /**
  * The database-backed configuration, grouped by category: on Admin → Settings
  * every category but the model catalog, spread over the page's sub-tabs, and
- * on Admin → Providers → Models the catalog.
+ * on Admin → Routing → Models the catalog.
  *
  * One editor holds every category's state, so a change waits unsaved while
  * the administrator looks at another sub-tab. Settings are edited in place,
@@ -234,12 +241,18 @@ function groupKeys(group: ConfigGroup, record: Readonly<Record<string, unknown>>
  * page asks the server components to re-render, which re-reads the public site
  * configuration and so updates the "required settings are missing" banner.
  *
+ * A page may also split some settings of a category into a section of their
+ * own (`sections`): Admin → Settings lists a category's tuning settings under
+ * Advanced. Such a section is a group like any category's, with its own Save,
+ * Discard, unsaved count and version, so a save writes only what it shows.
+ *
  * The components below draw the editor's parts: its notices, its filters, a
  * category, the Add variable form and the backup.
  */
 export function useConfigurationEditor({
   initialMissingOnly = false,
   excludeCategories,
+  sections = NO_SPLITS,
 }: {
   initialMissingOnly?: boolean;
   /**
@@ -247,6 +260,11 @@ export function useConfigurationEditor({
    * counts them. A constant, so the categories are not regrouped every render.
    */
   excludeCategories?: ReadonlySet<string>;
+  /**
+   * Settings edited as a section of their own, apart from the rest of their
+   * category. A constant, like `excludeCategories`.
+   */
+  sections?: readonly ConfigSectionSplit[];
 } = {}) {
   const toast = useAccountToast();
   const router = useRouter();
@@ -291,17 +309,24 @@ export function useConfigurationEditor({
   useEffect(() => {
     shownVersion.current = config?.source_version ?? null;
   }, [config]);
+  // The group each setting is edited in: its category, or a section split from it.
+  const groupOfKey = useMemo(
+    () => new Map((config?.entries ?? []).map((entry) => [entry.key, sectionOf(entry, sections)])),
+    [config, sections],
+  );
   const categoryOf = useRef<Map<string, string>>(new Map());
+  const groupOf = useRef<ReadonlyMap<string, string>>(new Map());
   useEffect(() => {
     categoryOf.current = new Map(
       (config?.entries ?? []).map((entry) => [entry.key, entry.category]),
     );
-  }, [config]);
-  /** A change is staged in the categories of `keys`: they keep the version shown now. */
+    groupOf.current = groupOfKey;
+  }, [config, groupOfKey]);
+  /** A change is staged in the groups of `keys`: they keep the version shown now. */
   const noteEdits = useCallback((keys: readonly string[]) => {
     setDraftVersions((prev) =>
       keys.reduce((versions, key) => {
-        const groupId = categoryOf.current.get(key);
+        const groupId = groupOf.current.get(key);
         return groupId === undefined ? versions : noteEdit(versions, groupId, shownVersion.current);
       }, prev),
     );
@@ -376,7 +401,7 @@ export function useConfigurationEditor({
     setEntryErrors((prev) => withoutKeys(prev, ALERT_WEBHOOK_KEYS));
     // A reset staged under the old channel would delete the row the new one writes.
     setPendingResets((prev) => withoutKeys(prev, ALERT_WEBHOOK_KEYS));
-    setGroupErrors((prev) => withoutKeys(prev, [webhookEntries.slack.category]));
+    setGroupErrors((prev) => withoutKeys(prev, [sectionOf(webhookEntries.slack, sections)]));
     setAlertTestResult(null);
   };
 
@@ -431,11 +456,14 @@ export function useConfigurationEditor({
   const groups = useMemo(
     () =>
       config
-        ? groupEntries(config.categories, applicableEntries(config.entries, drafts)).filter(
-            (group) => !excludeCategories?.has(group.id),
+        ? splitGroups(
+            groupEntries(config.categories, applicableEntries(config.entries, drafts)).filter(
+              (group) => !excludeCategories?.has(group.id),
+            ),
+            sections,
           )
         : [],
-    [config, drafts, excludeCategories],
+    [config, drafts, excludeCategories, sections],
   );
 
   /**
@@ -473,10 +501,11 @@ export function useConfigurationEditor({
   const visibleGroups = useMemo(
     () =>
       groups.flatMap((group) => {
+        // A section split from a category is found by the category's name, as the rest of it is.
         const entries = group.entries.filter(
           (entry) =>
             (!missingOnly || entry.missing) &&
-            (matchesQuery(entry, query, group.label) ||
+            (matchesQuery(entry, query, group.category?.label ?? group.label) ||
               emailFieldMatches(entry, query) ||
               (isAlertWebhook(entry.key) &&
                 'notification channel'.includes(query.trim().toLowerCase()))),
@@ -736,10 +765,11 @@ export function useConfigurationEditor({
       setAlertChannelDraft(null);
       setAlertTestResult(null);
     }
-    // Every setting of the category, the ones another choice hides included:
-    // an SMTP edit made before switching to Cloudflare is discarded too.
+    // Every setting of the group, the ones another choice hides included: an
+    // SMTP edit made before switching to Cloudflare is discarded too. A section
+    // split from a category discards only its own; the rest of the category keeps its edits.
     const keys = (config?.entries ?? group.entries)
-      .filter((entry) => entry.category === group.id)
+      .filter((entry) => sectionOf(entry, sections) === group.id)
       .map((entry) => entry.key);
     setDrafts((prev) => withoutKeys(prev, keys));
     setEntryErrors((prev) => withoutKeys(prev, keys));
@@ -1032,6 +1062,9 @@ export function useConfigurationEditor({
     groups,
     /** The categories the filters leave, each with the entries they leave. */
     visibleGroups,
+    /** The id of the group a setting is edited in: its category, or a section split from it. */
+    groupIdOf: (entry: Pick<ConfigEntry, 'key' | 'category'>) =>
+      groupOfKey.get(entry.key) ?? sectionOf(entry, sections),
     dirtyCount,
     drafts,
     entryErrors,
@@ -1212,6 +1245,7 @@ function configSectionId(categoryId: string): string {
 /**
  * One configuration category, edited in place, with its own Save. Nothing
  * when the backend has no such category or the filters leave nothing of it.
+ * A section split from a category (`ConfigSectionSplit`) is drawn the same way.
  */
 export function ConfigCategorySection({
   editor,
@@ -1219,6 +1253,7 @@ export function ConfigCategorySection({
   tag,
 }: {
   editor: ConfigurationEditor;
+  /** The category, or the id of a section split from one. */
   categoryId: string;
   /** Shown beside the title: the sub-tab the category belongs to, while a filter lists every tab's. */
   tag?: ReactNode;
@@ -1243,9 +1278,10 @@ export function ConfigCategorySection({
   const channelEntries = alertWebhookEntries(group.entries);
   // The Email category is one card, shown whole whenever a filter leaves any
   // of it: Missing only then shows the service choice beside what is missing.
-  const categoryEntries = (editor.config?.entries ?? []).filter(
-    (entry) => entry.category === group.id,
-  );
+  const categoryEntries =
+    group.id === EMAIL_CATEGORY
+      ? (editor.config?.entries ?? []).filter((entry) => editor.groupIdOf(entry) === group.id)
+      : [];
   const emailCard =
     group.id === EMAIL_CATEGORY &&
     emailProviderEntry(categoryEntries) !== null &&
@@ -1351,13 +1387,24 @@ export function ConfigCategorySection({
         {group.entries.some((entry) => entry.key === 'MODEL_CATALOG') ? (
           <LiveConfigStatus groupName="routing.runtime" />
         ) : null}
-        {liveGroupNames(group).map((name) => (
-          <LiveConfigStatus
-            key={name}
-            groupName={name}
-            refreshKey={editor.config?.source_version?.revision ?? null}
-          />
-        ))}
+        {liveGroupNames(group)
+          // Once per category: a live group whose keys a split shares with the
+          // rest of its category is shown in the first of them to hold one.
+          .filter(
+            (name) =>
+              editor.groups.find(
+                (candidate) =>
+                  categoryOfGroup(candidate) === categoryOfGroup(group) &&
+                  candidate.entries.some((entry) => entry.group === name),
+              )?.id === group.id,
+          )
+          .map((name) => (
+            <LiveConfigStatus
+              key={name}
+              groupName={name}
+              refreshKey={editor.config?.source_version?.revision ?? null}
+            />
+          ))}
         <div className={`${PANEL} ${dirty > 0 ? 'border-gray-400 shadow-sm' : ''}`}>
           <div className="divide-y divide-gray-100 px-4">
             {emailCard ? (

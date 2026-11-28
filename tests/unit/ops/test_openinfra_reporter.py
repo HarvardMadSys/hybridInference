@@ -13,6 +13,13 @@ from serving.openinfra.store import SnapshotWrite
 from serving.openinfra.wire import parse_snapshot
 
 
+@pytest.fixture(autouse=True)
+def _no_real_docker(monkeypatch):
+    """No test runs the host's docker; each starts with nothing said about engine logs."""
+    monkeypatch.setattr(reporter, "docker_cmd", lambda: None)
+    monkeypatch.setattr(reporter, "_no_logs_noted", set())
+
+
 def test_the_snapshot_goes_to_the_gateways_ingest_route():
     assert reporter.ingest_url("https://gateway.example.org/") == (
         "https://gateway.example.org/internal/openinfra/ingest"
@@ -212,3 +219,174 @@ def test_the_gateway_accepts_what_a_flush_sends(monkeypatch):
     assert chat_metrics["sm_util_pct"] == 70.0
     # Two requests in 5 s is 24 a minute.
     assert chat_metrics["req_per_min"] == pytest.approx(24.0)
+
+
+def test_one_second_flushes_count_their_counters(monkeypatch):
+    """A flush that comes a little early still gets rates from its counters."""
+    monkeypatch.setattr(reporter, "container_for_port", lambda port: None)
+    sent: list[dict] = []
+    monkeypatch.setattr(
+        reporter, "post", lambda url, token, body: sent.append(body) or {"ok": True}
+    )
+    args = argparse.Namespace(
+        node_id="node-a", dashboard="https://gateway.example.org", token="t", skip_gpu=True
+    )
+    node = {"id": "node-a", "hostname": "node-a", "region": None, "cluster": None}
+    chat = {
+        "url": "http://127.0.0.1:30000/metrics",
+        "id": "chat",
+        "name": "chat",
+        "engine": "sglang",
+        "endpoint": "",
+    }
+
+    def scrape(requests: int) -> dict:
+        text = SGLANG_METRICS.format(prompt=0, generated=0, requests=requests, ttft_sum=0)
+        return {"chat": _scraped(chat, text)}
+
+    prev = reporter.flush(args, node, [], scrape(10), None, {}, 1.0, False)
+    reporter.flush(args, node, [], scrape(11), None, prev, 0.97, False, taken=1_700_000_000.5)
+
+    # One request in 0.97 s.
+    assert sent[-1]["sglang"][0]["metrics"]["req_per_min"] == pytest.approx(61.9, abs=0.1)
+    assert sent[-1]["ts"] == 1_700_000_000_500
+    assert "ts" not in sent[0]
+
+
+@pytest.mark.parametrize(
+    ("now", "interval", "slot"),
+    [
+        (100.2, 1.0, 100.5),
+        (100.5, 1.0, 101.5),  # its own slot has begun: the next one
+        (100.9, 1.0, 101.5),
+        (101.0, 5.0, 102.5),
+        (103.0, 5.0, 107.5),
+        (100.1, 0.5, 100.25),
+    ],
+)
+def test_snapshots_are_taken_mid_interval(now, interval, slot):
+    assert reporter.next_slot(now, interval) == pytest.approx(slot)
+
+
+def test_a_slow_snapshot_skips_the_slots_it_overran():
+    # A snapshot taken at 100.5 that took 2.3 s: 101.5 and 102.5 have gone.
+    assert reporter.next_slot(102.8, 1.0) == pytest.approx(103.5)
+
+
+def test_the_flush_interval_must_be_positive(monkeypatch, capsys):
+    with pytest.raises(SystemExit):
+        _parse(monkeypatch, "--flush-interval", "0", OPENINFRA_URL="https://g.example.org")
+    assert "positive" in capsys.readouterr().err
+
+
+def test_flushes_are_one_second_apart_and_logged_once_a_minute_by_default(monkeypatch):
+    args = _parse(monkeypatch, OPENINFRA_URL="https://g.example.org")
+    assert (args.flush_interval, args.log_interval) == (1.0, 60.0)
+
+
+def test_a_repeating_failure_is_reported_once_per_interval(monkeypatch, capsys):
+    clock = iter([0.0, 1.0, 2.0, 61.0])
+    monkeypatch.setattr(reporter.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(reporter, "_error_log", {})
+    monkeypatch.setattr(reporter, "_error_interval", 60.0)
+    for _ in range(4):
+        reporter.log_error("flush", "flush error: refused")
+    assert capsys.readouterr().err.splitlines() == [
+        "flush error: refused",
+        "flush error: refused (2 more since the last report)",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("line", "parsed"),
+    [
+        ("    0    1200    3400", (0, {"pcie_rx_bps": 1.2e9, "pcie_tx_bps": 3.4e9})),
+        ("# gpu  rxpci  txpci", None),
+        ("# Idx   MB/s   MB/s", None),
+        ("    1      -      -", None),
+        ("", None),
+    ],
+)
+def test_a_dmon_line(line, parsed):
+    assert reporter.parse_dmon_line(line) == parsed
+
+
+def test_the_pcie_monitor_reports_recent_readings(monkeypatch):
+    lines = ["# gpu rxpci txpci\n", "    0  100  200\n", "    1  300  400\n"]
+
+    class Process:
+        terminated = False
+
+        def __init__(self, *args, **kwargs):
+            self.stdout = iter(lines)
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            Process.terminated = True
+
+        def wait(self):
+            raise SystemExit  # ends the reader thread
+
+    monkeypatch.setattr(reporter.subprocess, "Popen", Process)
+    monitor = reporter.PcieMonitor()
+    monitor.latest()  # starts the reader
+    monitor._thread.join(timeout=5)
+    assert monitor.latest() == {
+        0: {"pcie_rx_bps": 1e8, "pcie_tx_bps": 2e8},
+        1: {"pcie_rx_bps": 3e8, "pcie_tx_bps": 4e8},
+    }
+    # Readings go stale.
+    monkeypatch.setattr(reporter.PcieMonitor, "MAX_AGE_S", -1.0)
+    assert monitor.latest() == {}
+    # The reporter's exit ends it.
+    monitor.stop()
+    assert Process.terminated
+
+
+def test_an_account_without_docker_is_told_once_why_requests_are_missing(capsys):
+    assert reporter.summarize_engine_logs(1001, 60) is None
+    assert reporter.summarize_engine_logs(1001, 60) is None
+    err = capsys.readouterr().err
+    assert err.count("engine logs for port 1001") == 1
+    assert "cannot run docker" in err
+    assert "docker group" in err
+    assert "recent requests" in err
+
+
+def test_a_port_no_container_publishes_is_named(monkeypatch, capsys):
+    monkeypatch.setattr(reporter, "docker_cmd", lambda: ["docker"])
+    monkeypatch.setattr(reporter, "container_for_port", lambda port: None)
+    assert reporter.summarize_engine_logs(1002, 60) is None
+    assert "port 1002: no running container publishes that port" in capsys.readouterr().err
+
+
+def test_a_failed_docker_logs_is_reported_with_its_error(monkeypatch, capsys):
+    monkeypatch.setattr(reporter, "docker_cmd", lambda: ["docker"])
+    monkeypatch.setattr(reporter, "container_for_port", lambda port: "engine-a")
+
+    class Failed:
+        returncode = 1
+        stdout = ""
+        stderr = "permission denied while trying to connect to the Docker daemon socket\n"
+
+    monkeypatch.setattr(reporter.subprocess, "run", lambda *a, **k: Failed())
+    assert reporter.summarize_engine_logs(1001, 60) is None
+    err = capsys.readouterr().err
+    assert "`docker logs engine-a` failed: permission denied" in err
+
+
+def test_readable_engine_logs_give_request_events_and_say_nothing(monkeypatch, capsys):
+    monkeypatch.setattr(reporter, "docker_cmd", lambda: ["docker"])
+    monkeypatch.setattr(reporter, "container_for_port", lambda port: "engine-a")
+
+    class Logs:
+        returncode = 0
+        stdout = ""
+        stderr = "Finish: meta_info={'prompt_tokens': 812, 'completion_tokens': 30}\n"
+
+    monkeypatch.setattr(reporter.subprocess, "run", lambda *a, **k: Logs())
+    stats = reporter.summarize_engine_logs(1001, 60)
+    assert [r["input_len"] for r in stats["requests"]] == [812]
+    assert capsys.readouterr().err == ""

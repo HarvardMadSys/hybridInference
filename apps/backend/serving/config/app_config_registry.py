@@ -132,7 +132,8 @@ CATEGORIES: tuple[Category, ...] = (
     Category(
         "integrations",
         "Integrations",
-        "Cloud agent identity, the documentation assistant, Qdrant and the OpenInfra reporters.",
+        "Cloud agent identity, API key authorization for applications, the documentation "
+        "assistant, Qdrant and OpenInfra collection.",
         one_time=True,
     ),
     Category("privacy", "Privacy", "Request content storage and account deletion."),
@@ -313,6 +314,13 @@ def _document_validator(key: str) -> Callable[[str], None]:
         validate_document(key, text)
 
     return validate
+
+
+def _callbacks_validator(text: str) -> None:
+    """Refuse an API key authorization callback that could never match a request."""
+    from serving.utils.key_authorization import validate_callbacks_setting
+
+    validate_callbacks_setting(text)
 
 
 _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
@@ -1010,7 +1018,10 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "routing",
         "Seconds after one caller's counted failure on an endpoint during which its "
         "repeat failures there do not count toward opening the circuit, if the "
-        "endpoint has served another caller since. 0 counts every failure.",
+        "endpoint has served another caller since. Also how recent another "
+        "caller's failure must be, unless it is part of the current run of "
+        "failures, for one caller's failures to open the circuit. 0 stops telling "
+        "callers apart: every failure counts and can open the circuit.",
         type="float",
         default="60",
         restart_required=True,
@@ -1640,6 +1651,17 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         type="list",
     ),
     ConfigEntry(
+        "API_KEY_AUTHORIZATION_CALLBACKS",
+        "integrations",
+        "Comma-separated callback URLs of the applications that may ask a signed-in user to "
+        "create an API key on their account, such as https://app.example.org/callback. A "
+        "callback must match one in scheme, host, port and path; its query string is the "
+        "application's own. https only, http for localhost and 127.0.0.1. Empty turns API key "
+        "authorization off.",
+        type="list",
+        validator=_callbacks_validator,
+    ),
+    ConfigEntry(
         "GATEWAY_GRANT_DISPATCH_TOKEN",
         "integrations",
         "Shared secret the cloud agent's control plane presents to mint inference grants "
@@ -1658,7 +1680,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "OPENINFRA_ENGINE_ORDER",
         "integrations",
         "Engine names, comma-separated, in the order the /openinfra page shows their tabs. "
-        "Engines not listed follow, alphabetically.",
+        "Engines not listed follow, the one that served the most tokens in the last day first.",
         type="list",
     ),
     ConfigEntry(
@@ -1667,6 +1689,26 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Engine ids, comma-separated, left out of the /openinfra page, its served totals, "
         "history and exports. What they reported stays stored.",
         type="list",
+    ),
+    ConfigEntry(
+        "OPENINFRA_RETENTION_DAYS",
+        "integrations",
+        "Days the per-second OpenInfra samples and request events stay in the database "
+        "once their week is archived to OPENINFRA_ARCHIVE_DIR. Rollups are kept. 0 keeps "
+        "everything.",
+        type="int",
+        default="7",
+        minimum=0,
+    ),
+    ConfigEntry(
+        "OPENINFRA_DELETE_UNARCHIVED",
+        "integrations",
+        "Delete OpenInfra samples and request events past OPENINFRA_RETENTION_DAYS even "
+        "while OPENINFRA_ARCHIVE_DIR is unset, so they are never archived. Off, a gateway "
+        "without an archive directory keeps them all.",
+        type="bool",
+        default="0",
+        flag=True,
     ),
     ConfigEntry(
         "RAG_API_KEY",
@@ -1806,6 +1848,7 @@ ENVIRONMENT_ONLY: Mapping[str, str] = {
     "BACKEND_EXTENSIONS": "process wiring: imports code at boot",
     "GEOIP_COUNTRY_DB": "process wiring",
     "GEOIP_COUNTRY_PROVIDER": "process wiring",
+    "OPENINFRA_ARCHIVE_DIR": "process wiring: a directory on the gateway's filesystem",
     "WEB_CONCURRENCY": "process wiring",
     "UVICORN_WORKERS": "process wiring",
     "GUNICORN_WORKERS": "process wiring",

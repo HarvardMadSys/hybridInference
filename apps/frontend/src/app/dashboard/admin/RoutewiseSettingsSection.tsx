@@ -24,9 +24,10 @@ interface RoutewiseSettingsSectionProps {
   /** Called with the number of unsaved changes whenever it changes. */
   onUnsavedChange?: (count: number) => void;
   /**
-   * Whether this section's sub-tab is the one on screen. Settings keeps every
-   * sub-tab mounted, so without this the routes, settings and probe samples
-   * would load on every Settings visit, opened or not. Defaults to shown.
+   * Whether this section is on screen: its tab is open, and so is the
+   * Advanced it sits under. Settings keeps every tab and every Advanced
+   * mounted, so without this the routes, settings and probe samples would load
+   * on every Settings visit, opened or not. Defaults to shown.
    */
   active?: boolean;
 }
@@ -51,12 +52,13 @@ function routewiseModels(byModel: Map<string, ProviderRoute[]>): string[] {
 }
 
 /**
- * Admin → Settings → Providers & Routing: the RouteWise parameters and probes of one
- * model, split out of Admin → Routing. Only models whose routing policy is
- * RouteWise are offered; the routes, their limits and the policy stay on
- * Routing, and the RouteWise decisions stay there with them.
+ * Admin → Settings → Providers & Routing, under Advanced: the RouteWise
+ * parameters and probes of one model, split out of Admin → Routing. Only
+ * models whose routing policy is RouteWise are offered; the routes, their
+ * limits and the policy stay on Routing, and the RouteWise decisions stay
+ * there with them.
  *
- * Nothing loads until the sub-tab is first shown.
+ * Nothing loads until the section is first shown.
  */
 export function RoutewiseSettingsSection({
   onUnsavedChange,
@@ -91,7 +93,7 @@ export function RoutewiseSettingsSection({
     }
   }, []);
 
-  // Load once, the first time the sub-tab is shown.
+  // Load once, the first time the section is shown.
   useEffect(() => {
     if (!active || started) return;
     setStarted(true);

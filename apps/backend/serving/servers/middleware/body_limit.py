@@ -23,7 +23,8 @@ exempt: they stream to storage under their own limit, ``BATCH_MAX_BODY_MB``,
 and refuse an oversized body themselves.
 
 Control routes -- sign-in and the console's own account, the identity hand-off,
-administration and service-to-service calls -- get a much smaller limit
+API key authorization, administration and service-to-service calls -- get a
+much smaller limit
 (:data:`CONTROL_MAX_BODY_BYTES`, :data:`ADMIN_MAX_BODY_BYTES`). FastAPI reads
 and decodes a route's declared body model before any dependency runs,
 authentication included, so on these routes an anonymous caller's body is
@@ -80,6 +81,7 @@ CONTROL_PREFIXES: tuple[tuple[str, int], ...] = (
     ("/user/", CONTROL_MAX_BODY_BYTES),
     ("/internal/", CONTROL_MAX_BODY_BYTES),
     ("/v1/identity/", CONTROL_MAX_BODY_BYTES),
+    ("/v1/auth/", CONTROL_MAX_BODY_BYTES),
 )
 
 #: Control routes outside those prefixes, matched exactly.

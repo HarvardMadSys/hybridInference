@@ -3,7 +3,7 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ProviderOverviewTab } from './ProviderOverviewTab';
+import { ProviderOverviewTab, type ProviderRouting } from './ProviderOverviewTab';
 
 vi.mock('@/lib/api/admin', () => ({
   createProviderDefinition: vi.fn(),
@@ -134,6 +134,92 @@ describe('ProviderOverviewTab', () => {
     }
   });
 
+  it('shows whether routing may use each provider, with its switch, in a Routing column', async () => {
+    const onToggle = vi.fn();
+    const routing: ProviderRouting = {
+      providers: [
+        {
+          provider: 'openrouter',
+          display_name: 'OpenRouter',
+          model_count: 2,
+          endpoint_count: 3,
+          disabled: true,
+        },
+        // Known to routing, but not listed in the registry.
+        {
+          provider: 'legacy',
+          display_name: 'Legacy',
+          model_count: 0,
+          endpoint_count: 0,
+          disabled: true,
+        },
+      ],
+      busy: false,
+      onToggle,
+      reload: vi.fn(),
+    };
+    render(<ProviderOverviewTab onManageKeys={vi.fn()} routing={routing} />);
+
+    expect(await screen.findByRole('columnheader', { name: 'Routing' })).toBeInTheDocument();
+    const openrouter = screen.getByText('OpenRouter').closest('tr')!;
+    expect(within(openrouter).getByText('Disabled')).toBeInTheDocument();
+    expect(within(openrouter).getByText('3 endpoints')).toBeInTheDocument();
+    fireEvent.click(within(openrouter).getByRole('switch', { name: 'Enable openrouter' }));
+    expect(onToggle).toHaveBeenCalledWith(routing.providers![0]);
+
+    // No model routes through Acme: nothing to switch.
+    const acme = screen.getByText('Acme').closest('tr')!;
+    expect(within(acme).getByText('No routes')).toBeInTheDocument();
+    expect(within(acme).queryByRole('switch')).toBeNull();
+
+    // One the registry does not list can still be switched back on.
+    expect(
+      screen.getByRole('heading', { name: 'In routing, not in the registry' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Legacy').closest('tr')).toBeNull();
+    fireEvent.click(screen.getByRole('switch', { name: 'Enable legacy' }));
+    expect(onToggle).toHaveBeenLastCalledWith(routing.providers![1]);
+  });
+
+  it('holds every routing switch while one is in flight, and refreshes routing with the registry', async () => {
+    const reload = vi.fn();
+    render(
+      <ProviderOverviewTab
+        onManageKeys={vi.fn()}
+        routing={{
+          providers: [
+            {
+              provider: 'acme',
+              display_name: 'Acme',
+              model_count: 3,
+              endpoint_count: 1,
+              disabled: false,
+            },
+          ],
+          busy: true,
+          onToggle: vi.fn(),
+          reload,
+        }}
+      />,
+    );
+
+    expect(await screen.findByRole('switch', { name: 'Disable acme' })).toBeDisabled();
+    expect(screen.getByText('1 endpoint')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'In routing, not in the registry' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(reload).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(listProviderDefinitions).toHaveBeenCalledTimes(2));
+  });
+
+  it('shows no Routing column without the routing table', async () => {
+    render(<ProviderOverviewTab onManageKeys={vi.fn()} />);
+
+    await screen.findByText('OpenRouter');
+    expect(screen.queryByRole('columnheader', { name: 'Routing' })).toBeNull();
+    expect(screen.queryByRole('switch')).toBeNull();
+  });
+
   it('does not open deletion confirmation for a provider with linked models', async () => {
     render(<ProviderOverviewTab onManageKeys={vi.fn()} />);
 
@@ -180,7 +266,8 @@ describe('ProviderOverviewTab', () => {
       removed_routes: 4,
       removed_models: 1,
     });
-    render(<ProviderOverviewTab onManageKeys={vi.fn()} />);
+    const onRegistryChange = vi.fn();
+    render(<ProviderOverviewTab onManageKeys={vi.fn()} onRegistryChange={onRegistryChange} />);
 
     const deleteButton = await screen.findByRole('button', { name: 'Delete Kimi' });
     expect(deleteButton).toBeEnabled();
@@ -195,6 +282,17 @@ describe('ProviderOverviewTab', () => {
     clickInDialog('Delete provider');
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(vi.mocked(deleteProviderDefinition).mock.calls).toEqual([['kimi']]);
+    // The keys below list the registry's providers: they read it again.
+    await waitFor(() => expect(onRegistryChange).toHaveBeenCalledTimes(1));
+  });
+
+  it('reads the registry again when the keys below it change', async () => {
+    const { rerender } = render(<ProviderOverviewTab onManageKeys={vi.fn()} refreshKey={0} />);
+    await screen.findByText('OpenRouter');
+    expect(listProviderDefinitions).toHaveBeenCalledTimes(1);
+
+    rerender(<ProviderOverviewTab onManageKeys={vi.fn()} refreshKey={1} />);
+    await waitFor(() => expect(listProviderDefinitions).toHaveBeenCalledTimes(2));
   });
 
   describe('deleting', () => {

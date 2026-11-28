@@ -570,6 +570,33 @@ def test_every_default_satisfies_its_own_limits() -> None:
         assert _value_problem(entry, entry.default) is None, entry.key
 
 
+def test_api_key_authorization_callbacks_are_an_integration_list_admin_checks() -> None:
+    """Beside the identity redirects, off by default, and refused when unusable."""
+    from serving.config.app_config import _value_problem, security_relevant
+
+    entry = {e.key: e for e in registry.static_entries()}["API_KEY_AUTHORIZATION_CALLBACKS"]
+    assert (entry.category, entry.type, entry.default, entry.secret) == (
+        "integrations",
+        "list",
+        None,
+        False,
+    )
+    assert security_relevant(entry.key)
+    assert _value_problem(entry, "") is None
+    assert (
+        _value_problem(entry, "https://app.example.org/callback, http://localhost:3000/cb") is None
+    )
+    for bad in (
+        "http://app.example.org/callback",
+        "https://app.example.org/callback?state=fixed",
+        "https://app.example.org/callback#top",
+        "https://user@app.example.org/callback",
+        "app.example.org/callback",
+    ):
+        problem = _value_problem(entry, f"https://ok.example.org/cb, {bad}")
+        assert problem is not None and problem.startswith("callback 2 "), bad
+
+
 def test_the_jwt_algorithms_offered_are_the_ones_a_shared_secret_can_sign() -> None:
     import jwt
 

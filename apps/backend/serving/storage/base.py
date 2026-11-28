@@ -595,12 +595,16 @@ class OperationalStore(ABC):
         include_usage_totals: bool = True,
         tag: str | None = None,
         role: str | None = None,
+        service_account: bool | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Return ``(total_count, user_rows, status_counts_row)``.
 
         *tag* keeps only the users that tag applies to.
         *role* keeps only accounts in that tier (``free``, ``pro``,
         ``internal``, ``admin``).
+        *service_account* keeps only service accounts (``True``) or only the
+        other accounts (``False``); ``status_counts["service_accounts"]``
+        counts them, unfiltered.
 
         *sort_by* values that reference cost (``cost_today``, ``cost_month``,
         ``cost_alltime``) or usage (``requests``, ``tokens``) require joining
@@ -1523,6 +1527,38 @@ class OperationalStore(ABC):
 
         Must be a single statement. Reading the row and then marking it used is
         a race in which two concurrent exchanges both observe an unused code.
+        """
+
+    # -- API key authorization codes ----------------------------------------
+
+    @abstractmethod
+    async def create_api_key_authorization_code(
+        self,
+        *,
+        code_hash: str,
+        user_id: str,
+        callback_url: str,
+        code_challenge: str,
+        expires_at: datetime,
+    ) -> None:
+        """Insert a one-time code a user approved for an application.
+
+        The code is stored hashed: a read of this table must not yield codes
+        that can be exchanged for an API key. *callback_url* is stored without
+        its query string, which is the application's own state.
+        """
+
+    @abstractmethod
+    async def consume_api_key_authorization_code(self, code_hash: str) -> Row | None:
+        """Atomically claim an unused, unexpired API key authorization code.
+
+        Returns ``user_id, callback_url, code_challenge`` on a successful
+        claim, or ``None`` when the code is unknown, expired or already used;
+        the caller cannot tell those apart, and should not.
+
+        Must be a single statement, as for identity codes: reading the row and
+        then marking it consumed lets two concurrent exchanges both find it
+        unused, and each would create a key.
         """
 
     # -- inference grants ----------------------------------------------------

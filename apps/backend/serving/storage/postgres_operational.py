@@ -1685,6 +1685,7 @@ class PostgresOperationalStore(
         include_usage_totals: bool = True,
         tag: str | None = None,
         role: str | None = None,
+        service_account: bool | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Return ``(total_count, user_rows, status_counts_row)``.
 
@@ -1715,6 +1716,8 @@ class PostgresOperationalStore(
         - ``tag``: keep only users the tag applies to (a manual or automatic
           member; not a dismissed one).
         - ``role``: keep only accounts in that tier (``users.role``).
+        - ``service_account``: keep only service accounts (``True``) or only
+          the other accounts (``False``), by ``users.is_service_account``.
         - ``anomaly``: when ``True``, keep only *active* users whose today's
           spend is anomalously high vs. their prior 7-day average (today >=
           $1, history >= 3 days, today >= 5x avg). Uses ``user_daily_cost``
@@ -1726,7 +1729,8 @@ class PostgresOperationalStore(
         showing how many users exist per status across the whole dataset,
         independent of the table view's filters. ``status_counts["roles"]``
         is the same kind of aid for tiers (``free``, ``pro``, ``internal``,
-        ``admin``).
+        ``admin``), and ``status_counts["service_accounts"]`` for service
+        accounts.
         """
         # ──────────────────────────────────────────────────────────────────
         # Shared SQL fragments used by both the count query and the row
@@ -1752,6 +1756,9 @@ class PostgresOperationalStore(
         if role:
             where_clauses.append(f"u.role = ${len(filter_params) + 1}")
             filter_params.append(role)
+        if service_account is not None:
+            where_clauses.append(f"u.is_service_account = ${len(filter_params) + 1}")
+            filter_params.append(service_account)
         if search:
             # Search matches email, login name, phone and display name as
             # substrings, plus a user.id prefix and an active key_prefix
@@ -1930,10 +1937,12 @@ class PostgresOperationalStore(
             # Each row is one (status, role) pair, so both totals sum. Rows from
             # unit doubles may carry only status; a missing key is skipped.
             count_rows = await conn.fetch(
-                "SELECT status, role, COUNT(*) AS cnt FROM users GROUP BY status, role"
+                "SELECT status, role, is_service_account, COUNT(*) AS cnt "
+                "FROM users GROUP BY status, role, is_service_account"
             )
             sc: dict[str, int] = {}
             by_role: dict[str, int] = {}
+            service_accounts = 0
             for row in count_rows:
                 count = row["cnt"]
                 status_name = row.get("status")
@@ -1942,6 +1951,8 @@ class PostgresOperationalStore(
                 tier = row.get("role")
                 if tier:
                     by_role[tier] = by_role.get(tier, 0) + count
+                if row.get("is_service_account"):
+                    service_accounts += count
             status_counts: Row = {
                 "all": sum(sc.values()),
                 "pending_approval": sc.get("pending_approval", 0),
@@ -1950,6 +1961,7 @@ class PostgresOperationalStore(
                 "rejected": sc.get("rejected", 0),
                 "deleted": sc.get("deleted", 0),
                 "roles": {tier: by_role.get(tier, 0) for tier in VALID_ROLES},
+                "service_accounts": service_accounts,
             }
 
             # Main query — always uses CTE form (filtered_users) so we can
@@ -3583,6 +3595,48 @@ class PostgresOperationalStore(
                 "UPDATE identity_auth_codes SET used_at = NOW() "
                 "WHERE code_hash = $1 AND used_at IS NULL AND expires_at > NOW() "
                 "RETURNING user_id, client_id, redirect_uri, code_challenge",
+                code_hash,
+            )
+        return dict(row) if row else None
+
+    # -- API key authorization codes -----------------------------------------
+
+    async def create_api_key_authorization_code(
+        self,
+        *,
+        code_hash: str,
+        user_id: str,
+        callback_url: str,
+        code_challenge: str,
+        expires_at: datetime,
+    ) -> None:
+        """Insert a one-time code a user approved for an application."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO api_key_authorization_codes "
+                "(code_hash, user_id, callback_url, code_challenge, expires_at) "
+                "VALUES ($1, $2, $3, $4, $5)",
+                code_hash,
+                user_id,
+                callback_url,
+                code_challenge,
+                expires_at,
+            )
+            # Codes live minutes and are written once per approval, so the
+            # sweep rides on issuance, as for identity codes, rather than on a
+            # scheduled job.
+            await conn.execute(
+                "DELETE FROM api_key_authorization_codes "
+                "WHERE expires_at < NOW() - INTERVAL '1 hour'"
+            )
+
+    async def consume_api_key_authorization_code(self, code_hash: str) -> Row | None:
+        """Atomically claim an unused, unexpired API key authorization code."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE api_key_authorization_codes SET consumed_at = NOW() "
+                "WHERE code_hash = $1 AND consumed_at IS NULL AND expires_at > NOW() "
+                "RETURNING user_id, callback_url, code_challenge",
                 code_hash,
             )
         return dict(row) if row else None

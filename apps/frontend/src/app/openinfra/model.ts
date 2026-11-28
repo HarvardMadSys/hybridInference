@@ -11,8 +11,9 @@ import type {
   ServedBucket,
 } from '@/lib/api/openinfra';
 
-/** The time ranges the page offers, and the grain of the points each draws. */
+/** The time ranges the page offers, and the spacing of the points each draws. */
 export const RANGES = [
+  { hours: 0.25, grain: 'five_seconds' },
   { hours: 2, grain: 'minute' },
   { hours: 24, grain: 'twenty_minutes' },
   { hours: 168, grain: 'hour' },

@@ -2284,9 +2284,10 @@ SECURITY_CATEGORIES: frozenset[str] = frozenset(
 
 #: Security-relevant settings outside :data:`SECURITY_CATEGORIES`: where mail goes,
 #: who hears about new accounts and where users are told to write, the identity
-#: issuer's keys and redirects, private batch webhook targets and who may submit
-#: batches, request content storage, whether alerts are sent at all, and the
-#: request body limit.
+#: issuer's keys and redirects, which applications may be handed an API key on
+#: a user's account, private batch webhook targets and who may submit batches,
+#: request content storage, whether alerts are sent at all, and the request body
+#: limit.
 SECURITY_SETTING_KEYS: frozenset[str] = frozenset(
     {
         "EMAIL_PROVIDER",
@@ -2299,6 +2300,7 @@ SECURITY_SETTING_KEYS: frozenset[str] = frozenset(
         "SITE_SUPPORT_EMAIL",
         "IDENTITY_ISSUER",
         "IDENTITY_ALLOWED_REDIRECTS",
+        "API_KEY_AUTHORIZATION_CALLBACKS",
         "IDENTITY_JWT_RETIRING_PUBLIC_KEYS",
         "BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS",
         "BATCH_MIN_ROLE",

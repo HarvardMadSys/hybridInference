@@ -810,6 +810,7 @@ class CachedOperationalStore(OperationalStore):
         include_usage_totals: bool = True,
         tag: str | None = None,
         role: str | None = None,
+        service_account: bool | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Delegate to wrapped store."""
         return await self._store.list_users(
@@ -827,6 +828,7 @@ class CachedOperationalStore(OperationalStore):
             include_usage_totals=include_usage_totals,
             tag=tag,
             role=role,
+            service_account=service_account,
         )
 
     async def update_key_last_used(self, key_id: int) -> None:
@@ -1482,6 +1484,33 @@ class CachedOperationalStore(OperationalStore):
     async def consume_identity_auth_code(self, code_hash: str) -> Row | None:
         """Delegate to wrapped store."""
         return await self._store.consume_identity_auth_code(code_hash)
+
+    # -- API key authorization codes (never cached) --------------------------
+    #
+    # Single-use for the same reason as identity codes: a cached "unused"
+    # would let a code already exchanged create a second key.
+
+    async def create_api_key_authorization_code(
+        self,
+        *,
+        code_hash: str,
+        user_id: str,
+        callback_url: str,
+        code_challenge: str,
+        expires_at: datetime,
+    ) -> None:
+        """Delegate to wrapped store."""
+        return await self._store.create_api_key_authorization_code(
+            code_hash=code_hash,
+            user_id=user_id,
+            callback_url=callback_url,
+            code_challenge=code_challenge,
+            expires_at=expires_at,
+        )
+
+    async def consume_api_key_authorization_code(self, code_hash: str) -> Row | None:
+        """Delegate to wrapped store."""
+        return await self._store.consume_api_key_authorization_code(code_hash)
 
     # -- inference grants (never cached) -------------------------------------
     #

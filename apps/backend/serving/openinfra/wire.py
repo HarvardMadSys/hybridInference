@@ -2,7 +2,8 @@
 
 A reporter posts one body per flush::
 
-    {"node": {"id": "node-a", "hostname": "node-a", "region": "...", "cluster": "...",
+    {"ts": 1700000000000,
+     "node": {"id": "node-a", "hostname": "node-a", "region": "...", "cluster": "...",
               "metadata": {...}, "cpu": {"cpu_util_pct": 12.5, ...}},
      "gpus": [{"index": 0, "name": "...", "utilization_pct": 91.2, ...}],
      "sglang": [{"server": {"id": "...", "name": "...", "engine": "vllm", ...},
@@ -10,8 +11,9 @@ A reporter posts one body per flush::
                  "prometheus": "<text of the engine's /metrics>",
                  "requests": [{"ts": 1700000000000, "input_len": 812, ...}]}]}
 
-``sglang`` holds every engine on the host, SGLang and vLLM alike (``engine``
-says which), and may also be a single object. An engine sends ``metrics``,
+``ts`` is when the reporter took the snapshot, by its own clock, and may be
+left out. ``sglang`` holds every engine on the host, SGLang and vLLM alike
+(``engine`` says which), and may also be a single object. An engine sends ``metrics``,
 raw ``prometheus`` text, or both. Parsing is lenient, as the dashboard's
 original Worker was, so a reporter of any age keeps working: a number may
 arrive as a numeric string, an unknown field is ignored, and a field of the
@@ -33,8 +35,11 @@ MAX_GPUS = 64
 MAX_ENGINES = 16
 #: Request events kept per engine and body; the rest are ignored.
 MAX_REQUESTS = 20
-#: Request times below this are seconds, not milliseconds.
+#: Times below this are seconds, not milliseconds.
 _MS_THRESHOLD = 1e12
+#: Times from here on are refused: past what a double holds exactly, and far
+#: past any real clock.
+_MAX_TIME = 2**53
 #: Largest GPU index accepted (an INTEGER column).
 _MAX_GPU_INDEX = 2**31 - 1
 #: Largest token count a request event stores (a BIGINT column).
@@ -102,6 +107,8 @@ class Snapshot:
     node: NodeIngest | None = None
     gpus: tuple[GpuIngest, ...] = ()
     engines: tuple[EngineIngest, ...] = ()
+    #: When the reporter took it, by the reporter's clock; ``None`` if not sent.
+    ts: int | None = None
 
 
 def _given(value: Any) -> bool:
@@ -210,12 +217,23 @@ def parse_metrics(raw: Any) -> dict[str, Any]:
     return metrics
 
 
+def parse_time(raw: Any) -> int | None:
+    """A time in milliseconds, or ``None`` when absent or unusable.
+
+    A value below 10^12 is taken as seconds. Zero, negative and far-future
+    values are unusable.
+    """
+    ts = number(raw)
+    if ts is None or ts <= 0:
+        return None
+    if ts < _MS_THRESHOLD:
+        ts *= 1000
+    return int(ts) if ts < _MAX_TIME else None
+
+
 def _parse_request(raw: Any) -> dict[str, Any]:
     obj = _object(raw, "sglang.requests[]")
-    ts = number(obj.get("ts"))
-    if ts is not None and ts < _MS_THRESHOLD:
-        ts *= 1000
-    event: dict[str, Any] = {"ts": int(ts) if ts is not None else None}
+    event: dict[str, Any] = {"ts": parse_time(obj.get("ts"))}
     for name in (
         "input_len",
         "output_len",
@@ -279,4 +297,4 @@ def parse_snapshot(body: Any) -> Snapshot:
         raise IngestError("body must include node, gpus, or sglang")
     if gpus and node is None:
         raise IngestError("node is required when ingesting gpus")
-    return Snapshot(node=node, gpus=gpus, engines=engines)
+    return Snapshot(node=node, gpus=gpus, engines=engines, ts=parse_time(obj.get("ts")))

@@ -38,4 +38,25 @@ describe('TierFilter', () => {
     expect(screen.getByRole('button', { name: 'Free' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Free \d/ })).toBeNull();
   });
+
+  it('lists service accounts next to Pro', () => {
+    const onChange = vi.fn();
+    render(<TierFilter value={null} counts={COUNTS} serviceAccountCount={3} onChange={onChange} />);
+
+    const labels = screen.getAllByRole('button').map((b) => b.getAttribute('aria-label'));
+    expect(labels.indexOf('Service 3')).toBe(labels.indexOf('Pro 2') + 1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Service 3' }));
+    expect(onChange).toHaveBeenCalledWith('service_account');
+  });
+
+  it('returns to every account when service accounts are chosen again', () => {
+    const onChange = vi.fn();
+    render(<TierFilter value="service_account" counts={COUNTS} onChange={onChange} />);
+
+    const chip = screen.getByRole('button', { name: 'Service' });
+    expect(chip).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(chip);
+    expect(onChange).toHaveBeenCalledWith(null);
+  });
 });

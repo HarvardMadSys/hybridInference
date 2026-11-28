@@ -2,15 +2,16 @@
 
 A reporter on each GPU host (``ops/openinfra/reporter.py``) scrapes
 ``nvidia-smi``, DCGM, ``/proc`` and its SGLang or vLLM engines, and posts one
-snapshot every few seconds to ``POST /internal/openinfra/ingest``, which takes
-the shared ``OPENINFRA_INGEST_TOKEN``. The snapshots land in the ``openinfra_*``
-tables (:mod:`serving.openinfra.store`); the scheduler rolls them up every five
-minutes (:mod:`serving.openinfra.maintenance`).
+snapshot every second to ``POST /internal/openinfra/ingest``, which takes the
+shared ``OPENINFRA_INGEST_TOKEN``. The snapshots land in the ``openinfra_*``
+tables (:mod:`serving.openinfra.store`), one sample per second; every five
+minutes the scheduler rolls them up, archives each ended week and deletes
+samples past the retention (:mod:`serving.openinfra.maintenance`).
 
 A deployment publishes them with ``features.openinfra: true``: the console's
 ``/openinfra`` page then reads ``GET /public-openinfra`` (the current snapshot,
 served totals and recent requests) and ``GET /public-openinfra/history``
-(time series from two hours to seven days). Collecting needs only the token;
+(time series from fifteen minutes to seven days). Collecting needs only the token;
 publishing needs the flag, so a deployment can collect before it publishes.
 
 Modules:
@@ -21,7 +22,8 @@ Modules:
 - :mod:`~serving.openinfra.store`: the SQL;
 - :mod:`~serving.openinfra.dashboard`: the documents the routes serve;
 - :mod:`~serving.openinfra.config`: the settings;
-- :mod:`~serving.openinfra.maintenance`: the rollup job;
+- :mod:`~serving.openinfra.maintenance`: the scheduled job;
+- :mod:`~serving.openinfra.archive`: the weekly archives and the retention;
 - :mod:`~serving.openinfra.import_d1`: a one-off import of the Cloudflare D1
   database the dashboard used before it moved into the gateway.
 """

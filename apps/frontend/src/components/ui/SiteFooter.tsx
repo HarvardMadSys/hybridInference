@@ -10,7 +10,7 @@ import { useConsoleWidth } from '@/components/ui/consoleWidth';
 export function SiteFooter(): JSX.Element {
   const consoleWidth = useConsoleWidth();
   const branding = useBranding();
-  const { features } = useSiteConfig();
+  const { features, openinfraUrl } = useSiteConfig();
   const t = useT();
 
   // Built as a list so a deployment that has no operating organization, docs
@@ -89,11 +89,22 @@ export function SiteFooter(): JSX.Element {
   }
 
   if (features.openinfra) {
+    const label = t('chrome.footer.openinfra', 'OpenInfra');
     entries.push({
       key: 'openinfra',
-      node: (
+      // Another deployment's page when this one links there (openinfraUrl).
+      node: openinfraUrl ? (
+        <a
+          href={openinfraUrl}
+          className="hover:text-crimson"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          {label}
+        </a>
+      ) : (
         <Link href="/openinfra" prefetch={false} className="hover:text-crimson">
-          {t('chrome.footer.openinfra', 'OpenInfra')}
+          {label}
         </Link>
       ),
     });

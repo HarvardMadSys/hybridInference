@@ -13,7 +13,7 @@ def _engine(engine_id: str, name: str | None = None) -> dict:
     return {"id": engine_id, "name": name}
 
 
-def test_engines_follow_the_configured_order_then_the_alphabet():
+def test_engines_follow_the_configured_order_then_the_busiest():
     engines = [
         _engine("e1", "Zeta"),
         _engine("e2", "alpha"),
@@ -23,8 +23,39 @@ def test_engines_follow_the_configured_order_then_the_alphabet():
     ]
     ordered = dashboard.order_engines(engines, ("embed", "e4", "missing"))
     assert [e["id"] for e in ordered] == ["e3", "e4", "e2", "e5", "e1"]
-    # Unnamed engines sort by id: "e4" before "embed".
+    # Without traffic the rest keep a stable order by name; unnamed engines
+    # sort by id: "e4" before "embed".
     assert [e["id"] for e in dashboard.order_engines(engines)] == ["e2", "e5", "e4", "e3", "e1"]
+    # With traffic the busiest come first, and the configured ones stay ahead.
+    tokens = {"e1": 50.0, "e5": 900.0, "e3": 10_000.0}
+    busiest = dashboard.order_engines(engines, (), tokens)
+    assert [e["id"] for e in busiest] == ["e3", "e5", "e1", "e2", "e4"]
+    pinned = dashboard.order_engines(engines, ("e4",), tokens)
+    assert [e["id"] for e in pinned] == ["e4", "e3", "e5", "e1", "e2"]
+
+
+def test_a_tab_is_as_busy_as_every_engine_under_its_name():
+    engines = [_engine("a1", "chat"), _engine("b1", "embed"), _engine("a2", "chat")]
+    # chat's two replicas served 600 between them, more than embed's 500.
+    tokens = {"a1": 300.0, "a2": 300.0, "b1": 500.0}
+    assert [e["id"] for e in dashboard.order_engines(engines, (), tokens)] == ["a1", "a2", "b1"]
+
+
+def test_served_tokens_add_cached_computed_and_generated_tokens():
+    zero = {"reqs": 0, "cache_tokens": 0, "prefill_tokens": 0, "decode_tokens": 0}
+    served = {
+        "servers": [
+            {
+                "id": "e1",
+                "hour": zero,
+                "day": {"reqs": 9.5, "cache_tokens": 100, "prefill_tokens": 20, "decode_tokens": 3},
+            },
+            {"id": "e2", "hour": {**zero, "decode_tokens": 7}, "day": zero},
+        ]
+    }
+    assert dashboard.served_tokens(served) == {"e1": 123.0, "e2": 0.0}
+    assert dashboard.served_tokens(served, "hour") == {"e1": 0.0, "e2": 7.0}
+    assert dashboard.served_tokens({}) == {}
 
 
 @pytest.mark.parametrize(
@@ -55,9 +86,12 @@ def test_clamp_hours(hours, clamped):
 @pytest.mark.parametrize(
     ("hours", "grain"),
     [
-        (0.25, store.GRAIN_1M),
+        (0.25, 5_000),
+        (0.5, 10_000),
+        (1, 20_000),
         (2, store.GRAIN_1M),
-        (2.25, store.GRAIN_20M),
+        (3, store.GRAIN_1M),
+        (3.25, store.GRAIN_20M),
         (24, store.GRAIN_20M),
         (25, store.GRAIN_1H),
         (168, store.GRAIN_1H),

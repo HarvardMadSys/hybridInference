@@ -3,12 +3,15 @@
 Every time is milliseconds since the Unix epoch. The schema is revision
 ``0026_openinfra``'s; its docstring describes the tables.
 
-**Samples.** Each host, GPU and engine keeps at most one sample per 6-second
-bucket (:data:`SAMPLE_MS`): the bucket is part of the primary key and a second
+**Samples.** Each host, GPU and engine keeps at most one sample per second
+(:data:`SAMPLE_MS`): the bucket is part of the primary key and a second
 sample in it is dropped, so two flushes racing each other cannot both land.
-At a 5-second reporting interval every bucket still gets a sample, so the
-one-minute history and the rollups keep all their points, and the served
-totals integrate rates over a spacing of 6 seconds.
+A sample is stored at the time the reporter took it (the snapshot's ``ts``)
+while the reporter's clock is within :data:`MAX_CLOCK_SKEW_MS` of the
+gateway's, so network delay cannot move two consecutive snapshots into the
+same second; otherwise at the gateway's time. A history point longer than a
+second is the mean of the samples in it, and the served totals integrate the
+samples' rates over their spacing.
 
 **Status.** A snapshot stores ``online`` or ``degraded`` (a GPU at 85 °C or
 with ECC errors; an engine with more than 2000 queued requests or its SMs at
@@ -20,9 +23,11 @@ from the newest one that has a row (and always the one before it, for a late
 flush) up to the current one: a 20-minute bucket from its samples, an hour
 from its three 20-minute rollups. A grain with no rollups yet, or that has
 fallen behind, starts from its backfill horizon instead, and an hour older
-than the 20-minute horizon is computed from its samples. A rollup keeps its
-bucket's last sample, the number of samples, and for engines the sums of the
-request, cached-prefill, uncached-prefill and decode rates.
+than the 20-minute horizon is computed from its samples. A rollup keeps the
+means of its bucket's samples, the number of samples, and for engines the
+sums of the request, cached-prefill, uncached-prefill and decode rates. A
+bucket whose samples have been deleted (:func:`serving.openinfra.archive.prune`)
+is never recomputed, so its rollup stays as it was.
 
 **Retired engines** (:func:`serving.openinfra.config.retired_engines`) stay
 out of every read: live rows, served totals, history and request events.
@@ -55,7 +60,14 @@ if TYPE_CHECKING:
     from serving.openinfra.wire import EngineIngest, ServerIngest, Snapshot
 
 #: One sample per host, GPU and engine per bucket of this many milliseconds.
-SAMPLE_MS = 6_000
+SAMPLE_MS = 1_000
+#: A snapshot's own time is used for its samples while it is this close to
+#: the gateway's clock; otherwise the gateway's time is.
+MAX_CLOCK_SKEW_MS = 60_000
+#: A request event older than this against its snapshot's time, both by the
+#: reporter's clock, is dropped: it is not recent, and its week may already be
+#: archived. One newer than :data:`MAX_CLOCK_SKEW_MS` past it is dropped too.
+MAX_REQUEST_AGE_MS = 15 * 60_000
 GRAIN_1M = 60_000
 GRAIN_20M = 20 * 60_000
 GRAIN_1H = 60 * 60_000
@@ -281,6 +293,32 @@ def _engine_rows(engine: EngineIngest) -> list[tuple[ServerIngest, str, dict[str
     return rows
 
 
+def sample_time(sent: int | None, now: int) -> int:
+    """When a snapshot's samples are stored: when it was taken, unless the reporter's clock is off.
+
+    *sent* is the snapshot's ``ts``, by the reporter's clock, and *now* the
+    gateway's; both in milliseconds.
+    """
+    if sent is not None and abs(sent - now) <= MAX_CLOCK_SKEW_MS:
+        return sent
+    return now
+
+
+def _request_time(ts: int | None, taken: int, shift: int) -> int | None:
+    """Where a request event is stored, or ``None`` when it is out of bounds.
+
+    *taken* is when its snapshot was taken and *ts* the event's own time, both
+    by the reporter's clock, which is what bounds it; an event without a time
+    takes the snapshot's. *shift* moves the result onto the time the
+    snapshot's samples are stored at: 0 unless the reporter's clock is off.
+    """
+    if ts is None:
+        return taken + shift
+    if ts < taken - MAX_REQUEST_AGE_MS or ts > taken + MAX_CLOCK_SKEW_MS:
+        return None
+    return ts + shift
+
+
 class SnapshotWrite:
     """A parsed snapshot as the statements that store it, built before anything is written.
 
@@ -289,12 +327,21 @@ class SnapshotWrite:
     """
 
     def __init__(self, snapshot: Snapshot, now: int) -> None:
-        """Lay out *snapshot*'s rows as of *now* (milliseconds).
+        """Lay out *snapshot*'s rows as of *now* (milliseconds, the gateway's clock).
+
+        Live rows are seen at *now*; samples are stored at
+        :func:`sample_time`. Request events are bounded by the reporter's
+        clock, which they share with the snapshot's ``ts``, and moved with
+        the samples when that clock is off; :attr:`requests_dropped` counts
+        those out of bounds.
 
         Raises:
             IngestError: An engine sent neither metrics nor Prometheus text.
         """
-        bucket = now // SAMPLE_MS
+        at = sample_time(snapshot.ts, now)
+        bucket = at // SAMPLE_MS
+        taken = snapshot.ts if snapshot.ts is not None else at
+        shift = at - taken
         self.node: tuple[Any, ...] | None = None
         self.cpu_sample: tuple[Any, ...] | None = None
         self.gpus: list[tuple[Any, ...]] = []
@@ -302,6 +349,7 @@ class SnapshotWrite:
         self.engines: list[tuple[Any, ...]] = []
         self.engine_samples: list[tuple[Any, ...]] = []
         self.requests: list[tuple[Any, ...]] = []
+        self.requests_dropped = 0
 
         node = snapshot.node
         if node is not None:
@@ -319,7 +367,7 @@ class SnapshotWrite:
                 self.cpu_sample = (
                     node.id,
                     bucket,
-                    now,
+                    at,
                     *(cpu.get(name) for name in CPU_FIELDS),
                 )
             for gpu in snapshot.gpus:
@@ -340,7 +388,7 @@ class SnapshotWrite:
                     )
                 )
                 self.gpu_samples.append(
-                    (gid, bucket, now, *(gpu.numbers.get(name) for name in GPU_SAMPLE_FIELDS))
+                    (gid, bucket, at, *(gpu.numbers.get(name) for name in GPU_SAMPLE_FIELDS))
                 )
 
         for engine in snapshot.engines:
@@ -361,11 +409,14 @@ class SnapshotWrite:
                     )
                 )
                 self.engine_samples.append(
-                    (row_id, bucket, now, *(metrics.get(name) for name in ENGINE_METRICS))
+                    (row_id, bucket, at, *(metrics.get(name) for name in ENGINE_METRICS))
                 )
             model = engine.server.model_name or (engine.metrics or {}).get("model_name")
             for event in engine.requests:
-                ts = event["ts"] if event["ts"] and event["ts"] > 0 else now
+                ts = _request_time(event["ts"], taken, shift)
+                if ts is None:
+                    self.requests_dropped += 1
+                    continue
                 self.requests.append(
                     (
                         engine.server.id,
@@ -470,24 +521,45 @@ def _served(reqs: Any, cache: Any, prefill: Any, decode: Any) -> dict[str, float
 _ZERO_SERVED = {"reqs": 0, "cache_tokens": 0, "prefill_tokens": 0, "decode_tokens": 0}
 
 
+#: The ids a samples query reads, as an array for ``= ANY``: the sample
+#: tables' primary key then serves each one as an index range, and a long
+#: retention does not turn a window of minutes into a scan of the table. $3 is
+#: a host id or ``''`` for all, $4 the retired engine ids.
+_GPU_IDS = "ARRAY(SELECT id FROM openinfra_gpus WHERE $3 = '' OR node_id = $3)"
+_ENGINE_IDS = (
+    "ARRAY(SELECT id FROM openinfra_engines "
+    "WHERE ($3 = '' OR node_id = $3) AND NOT (id = ANY($4::text[])))"
+)
+_NODE_IDS = "ARRAY(SELECT id FROM openinfra_nodes WHERE $3 = '' OR id = $3)"
+
+
+def _without_id(row: Any) -> dict[str, Any]:
+    """A history row without the join's ``id``."""
+    item = dict(row)
+    del item["id"]
+    return item
+
+
 async def _served_from_samples(
     conn: Any, since: int, retired: Sequence[str]
 ) -> dict[str, dict[str, Any]]:
     """Requests and tokens per engine since *since*: each sample's rates times their spacing."""
     rows = await conn.fetch(
-        "SELECT sv.id AS server_id, sv.name, "
+        "SELECT sv.id AS server_id, sv.name, t.reqs, t.cached_tps, t.prefill_tps, t.decode_tps, "
+        "t.n, t.t0, t.t1 FROM ("
+        "SELECT s.engine_id, "
         "SUM(COALESCE(s.req_per_min, 0)) AS reqs, "
         "SUM(COALESCE(s.cached_prefill_tps, 0)) AS cached_tps, "
         f"SUM({_uncached_prefill('s')}) AS prefill_tps, "
         "SUM(COALESCE(s.gen_throughput, 0)) AS decode_tps, "
         "COUNT(*) AS n, MIN(s.ts) AS t0, MAX(s.ts) AS t1 "
-        "FROM openinfra_engines sv "
-        "JOIN openinfra_engine_samples s "
-        "ON s.engine_id = sv.id AND s.bucket >= $1 AND s.ts >= $2 "
-        "WHERE NOT (sv.id = ANY($3::text[])) "
-        "GROUP BY sv.id, sv.name",
+        "FROM openinfra_engine_samples s "
+        f"WHERE s.engine_id = ANY({_ENGINE_IDS}) AND s.bucket >= $1 AND s.ts >= $2 "
+        "GROUP BY s.engine_id"
+        ") t JOIN openinfra_engines sv ON sv.id = t.engine_id",
         since // SAMPLE_MS,
         since,
+        "",
         list(retired),
     )
     out: dict[str, dict[str, Any]] = {}
@@ -600,74 +672,75 @@ async def load_served(conn: Any, *, retired: Sequence[str] = (), now: int) -> di
     }
 
 
-_GPU_HISTORY_FROM_SAMPLE = (
-    "s.utilization_pct",
-    "CASE WHEN s.memory_total_mb > 0 THEN 100.0 * s.memory_used_mb / s.memory_total_mb END "
-    "AS memory_pct",
-    *(f"s.{name}" for name in GPU_ROLLUP_FIELDS[2:]),
+#: A GPU's history values as the means of a bucket's samples (alias ``s``).
+_GPU_MEANS = (
+    "AVG(s.utilization_pct)",
+    "AVG(CASE WHEN s.memory_total_mb > 0 THEN 100.0 * s.memory_used_mb / s.memory_total_mb END)",
+    *(f"AVG(s.{name})" for name in GPU_ROLLUP_FIELDS[2:]),
 )
-_ENGINE_HISTORY_FROM_SAMPLE = tuple(f"s.{source} AS {name}" for name, source in ENGINE_HISTORY)
+_ENGINE_MEANS = tuple(f"AVG(s.{source})" for _, source in ENGINE_HISTORY)
+_CPU_MEANS = tuple(f"AVG(s.{name})" for name in CPU_HISTORY)
 
 
-def _history_names(names: Iterable[str]) -> str:
-    return _columns(names)
+def _named(expressions: Iterable[str], names: Iterable[str]) -> str:
+    return ", ".join(
+        f"{expression} AS {name}" for expression, name in zip(expressions, names, strict=True)
+    )
 
 
 async def _history_from_samples(
-    conn: Any, since: int, node: str, retired: Sequence[str], bucket_ms: int = GRAIN_1M
+    conn: Any, since: int, node: str, retired: Sequence[str], bucket_ms: int
 ) -> dict[str, list[dict[str, Any]]]:
-    """One point per GPU, engine and host and *bucket_ms* bucket: its newest sample."""
+    """One point per GPU, engine and host and *bucket_ms* bucket: the means of its samples.
+
+    A point's ``ts`` is its bucket's start.
+    """
     lower = since // SAMPLE_MS
     gpu = await conn.fetch(
-        "SELECT node_id, gpu_index, gpu_id, ts, "
-        f"{_history_names(GPU_ROLLUP_FIELDS)} FROM ("
-        "SELECT DISTINCT ON (s.gpu_id, s.ts / $3) g.node_id, g.gpu_index, s.gpu_id, s.ts, "
-        f"{_columns(_GPU_HISTORY_FROM_SAMPLE)} "
-        "FROM openinfra_gpus g "
-        "JOIN openinfra_gpu_samples s ON s.gpu_id = g.id AND s.bucket >= $1 AND s.ts >= $2 "
-        "WHERE ($4 = '' OR g.node_id = $4) "
-        "ORDER BY s.gpu_id, s.ts / $3, s.ts DESC"
-        ") h ORDER BY node_id, gpu_index, ts",
+        "SELECT g.node_id, g.gpu_index, g.id AS gpu_id, h.* FROM ("
+        f"SELECT s.gpu_id AS id, s.ts / $4 * $4 AS ts, {_named(_GPU_MEANS, GPU_ROLLUP_FIELDS)} "
+        "FROM openinfra_gpu_samples s "
+        f"WHERE s.gpu_id = ANY({_GPU_IDS}) AND s.bucket >= $1 AND s.ts >= $2 "
+        "GROUP BY s.gpu_id, s.ts / $4"
+        ") h JOIN openinfra_gpus g ON g.id = h.id "
+        "ORDER BY g.node_id, g.gpu_index, g.id, h.ts",
         lower,
         since,
-        bucket_ms,
         node,
+        bucket_ms,
     )
     engine = await conn.fetch(
-        "SELECT node_id, server_id, name, ts, "
-        f"{_history_names(name for name, _ in ENGINE_HISTORY)} FROM ("
-        "SELECT DISTINCT ON (s.engine_id, s.ts / $3) "
-        "sv.node_id, s.engine_id AS server_id, sv.name, s.ts, "
-        f"{_columns(_ENGINE_HISTORY_FROM_SAMPLE)} "
-        "FROM openinfra_engines sv "
-        "JOIN openinfra_engine_samples s ON s.engine_id = sv.id AND s.bucket >= $1 AND s.ts >= $2 "
-        "WHERE ($4 = '' OR sv.node_id = $4) AND NOT (sv.id = ANY($5::text[])) "
-        "ORDER BY s.engine_id, s.ts / $3, s.ts DESC"
-        ") h ORDER BY name NULLS FIRST, ts",
+        "SELECT sv.node_id, sv.id AS server_id, sv.name, h.* FROM ("
+        "SELECT s.engine_id AS id, s.ts / $5 * $5 AS ts, "
+        f"{_named(_ENGINE_MEANS, (name for name, _ in ENGINE_HISTORY))} "
+        "FROM openinfra_engine_samples s "
+        f"WHERE s.engine_id = ANY({_ENGINE_IDS}) AND s.bucket >= $1 AND s.ts >= $2 "
+        "GROUP BY s.engine_id, s.ts / $5"
+        ") h JOIN openinfra_engines sv ON sv.id = h.id "
+        "ORDER BY sv.name NULLS FIRST, sv.id, h.ts",
         lower,
         since,
-        bucket_ms,
         node,
         list(retired),
+        bucket_ms,
     )
     cpu = await conn.fetch(
-        f"SELECT node_id, ts, {_history_names(CPU_HISTORY)} FROM ("
-        "SELECT DISTINCT ON (s.node_id, s.ts / $3) s.node_id, s.ts, "
-        f"{_columns(f's.{name}' for name in CPU_HISTORY)} "
-        "FROM openinfra_nodes n "
-        "JOIN openinfra_cpu_samples s ON s.node_id = n.id AND s.bucket >= $1 AND s.ts >= $2 "
-        "WHERE ($4 = '' OR n.id = $4) "
-        "ORDER BY s.node_id, s.ts / $3, s.ts DESC"
-        ") h ORDER BY node_id, ts",
+        "SELECT n.id AS node_id, h.* FROM ("
+        f"SELECT s.node_id AS id, s.ts / $4 * $4 AS ts, {_named(_CPU_MEANS, CPU_HISTORY)} "
+        "FROM openinfra_cpu_samples s "
+        f"WHERE s.node_id = ANY({_NODE_IDS}) AND s.bucket >= $1 AND s.ts >= $2 "
+        "GROUP BY s.node_id, s.ts / $4"
+        ") h JOIN openinfra_nodes n ON n.id = h.id "
+        "ORDER BY n.id, h.ts",
         lower,
         since,
-        bucket_ms,
         node,
+        bucket_ms,
     )
     return {
-        "gpu": [dict(row) for row in gpu],
-        "sglang": [dict(row) for row in engine],
-        "cpu": [dict(row) for row in cpu],
+        "gpu": [_without_id(row) for row in gpu],
+        "sglang": [_without_id(row) for row in engine],
+        "cpu": [_without_id(row) for row in cpu],
     }
 
 
@@ -713,11 +786,24 @@ async def _history_from_rollups(
     }
 
 
+#: The spacing of a history window's points, by the longest window drawn at
+#: it; longer windows are drawn an hour apart. Up to three hours they are
+#: computed from the samples, beyond from the rollups.
+HISTORY_GRAINS: tuple[tuple[float, int], ...] = (
+    (0.25, 5_000),
+    (0.5, 10_000),
+    (1.0, 20_000),
+    (3.0, GRAIN_1M),
+    (24.0, GRAIN_20M),
+)
+
+
 def history_grain(hours: float) -> int:
-    """The grain a window is drawn at: a minute up to 2 hours, 20 minutes up to a day, then hours."""
-    if hours <= 2:
-        return GRAIN_1M
-    return GRAIN_20M if hours <= 24 else GRAIN_1H
+    """The spacing of the points of a window of *hours* (:data:`HISTORY_GRAINS`)."""
+    for longest, grain in HISTORY_GRAINS:
+        if hours <= longest:
+            return grain
+    return GRAIN_1H
 
 
 async def load_history(
@@ -725,43 +811,47 @@ async def load_history(
 ) -> dict[str, Any]:
     """The time series of the last *hours*, with ``grain_ms``, the spacing of their points.
 
-    A window longer than two hours is drawn from the rollups; while they hold
-    nothing for it, from the samples at a one-minute grain instead.
+    Each point is the mean of the samples in it. A window drawn 20 minutes
+    apart or more comes from the rollups, or while they hold nothing for it,
+    from the samples a minute apart.
     """
     since = now - int(hours * 3_600_000)
     grain = history_grain(hours)
-    if grain == GRAIN_1M:
-        rows = await _history_from_samples(conn, since, node, retired)
+    if grain < GRAIN_20M:
+        rows = await _history_from_samples(conn, bucket_start(since, grain), node, retired, grain)
     else:
         rows = await _history_from_rollups(conn, grain, since, node, retired)
         if not any(rows.values()):
             grain = GRAIN_1M
-            rows = await _history_from_samples(conn, since, node, retired)
+            rows = await _history_from_samples(
+                conn, bucket_start(since, grain), node, retired, grain
+            )
     return {"grain_ms": grain, **rows}
 
 
 # --- rollups -----------------------------------------------------------------
 
-_GPU_ROLLUP_VALUES = (
-    "s.utilization_pct",
-    "CASE WHEN s.memory_total_mb > 0 THEN 100.0 * s.memory_used_mb / s.memory_total_mb END",
-    *(f"s.{name}" for name in GPU_ROLLUP_FIELDS[2:]),
-)
 _ENGINE_ROLLUP_COLUMNS = (*(name for name, _ in ENGINE_HISTORY), *ENGINE_SUMS)
+#: The four rate sums a rollup keeps for the served totals, in ENGINE_SUMS order.
+_ENGINE_ROLLUP_SUMS = (
+    "SUM(COALESCE(s.req_per_min, 0))",
+    "SUM(COALESCE(s.cached_prefill_tps, 0))",
+    f"SUM({_uncached_prefill('s')})",
+    "SUM(COALESCE(s.gen_throughput, 0))",
+)
 
-#: A grain's buckets in [$2, $3) (sample buckets), from their samples: each
-#: bucket's last sample and its count, for engines also the four rate sums.
+#: A grain's buckets in [$2, $3) (sample buckets), from their samples: the
+#: means of each bucket's samples and their count, for engines also the four
+#: rate sums and the span the samples cover.
 _FROM_SAMPLES: dict[str, str] = {
     "gpu": (
         "INSERT INTO openinfra_gpu_rollups "
         f"(grain, bucket_ts, gpu_id, samples, {_columns(GPU_ROLLUP_FIELDS)}) "
-        f"SELECT $1, t.bucket_ts, s.gpu_id, t.samples, {_columns(_GPU_ROLLUP_VALUES)} FROM ("
-        "SELECT x.gpu_id, x.ts / $1 * $1 AS bucket_ts, COUNT(*)::int AS samples, "
-        "MAX(x.bucket) AS last_bucket "
-        "FROM openinfra_gpus g "
-        "JOIN openinfra_gpu_samples x ON x.gpu_id = g.id AND x.bucket >= $2 AND x.bucket < $3 "
-        "GROUP BY x.gpu_id, x.ts / $1"
-        ") t JOIN openinfra_gpu_samples s ON s.gpu_id = t.gpu_id AND s.bucket = t.last_bucket "
+        f"SELECT $1, s.ts / $1 * $1, s.gpu_id, COUNT(*)::int, {_columns(_GPU_MEANS)} "
+        "FROM openinfra_gpu_samples s "
+        "WHERE s.gpu_id = ANY(ARRAY(SELECT id FROM openinfra_gpus)) "
+        "AND s.bucket >= $2 AND s.bucket < $3 "
+        "GROUP BY s.gpu_id, s.ts / $1 "
         "ON CONFLICT (grain, bucket_ts, gpu_id) DO UPDATE SET samples = EXCLUDED.samples, "
         + _excluded(GPU_ROLLUP_FIELDS)
     ),
@@ -769,35 +859,23 @@ _FROM_SAMPLES: dict[str, str] = {
         "INSERT INTO openinfra_engine_rollups "
         f"(grain, bucket_ts, engine_id, samples, {_columns(_ENGINE_ROLLUP_COLUMNS)}, "
         "first_ts, last_ts) "
-        "SELECT $1, t.bucket_ts, s.engine_id, t.samples, "
-        f"{_columns(f's.{source}' for _, source in ENGINE_HISTORY)}, "
-        f"{_columns(f't.{name}' for name in ENGINE_SUMS)}, t.first_ts, t.last_ts FROM ("
-        "SELECT x.engine_id, x.ts / $1 * $1 AS bucket_ts, COUNT(*)::int AS samples, "
-        "MAX(x.bucket) AS last_bucket, MIN(x.ts) AS first_ts, MAX(x.ts) AS last_ts, "
-        "SUM(COALESCE(x.req_per_min, 0)) AS reqs_sum, "
-        "SUM(COALESCE(x.cached_prefill_tps, 0)) AS cached_tps_sum, "
-        f"SUM({_uncached_prefill('x')}) AS prefill_tps_sum, "
-        "SUM(COALESCE(x.gen_throughput, 0)) AS decode_tps_sum "
-        "FROM openinfra_engines sv "
-        "JOIN openinfra_engine_samples x "
-        "ON x.engine_id = sv.id AND x.bucket >= $2 AND x.bucket < $3 "
-        "GROUP BY x.engine_id, x.ts / $1"
-        ") t JOIN openinfra_engine_samples s "
-        "ON s.engine_id = t.engine_id AND s.bucket = t.last_bucket "
+        "SELECT $1, s.ts / $1 * $1, s.engine_id, COUNT(*)::int, "
+        f"{_columns((*_ENGINE_MEANS, *_ENGINE_ROLLUP_SUMS))}, MIN(s.ts), MAX(s.ts) "
+        "FROM openinfra_engine_samples s "
+        "WHERE s.engine_id = ANY(ARRAY(SELECT id FROM openinfra_engines)) "
+        "AND s.bucket >= $2 AND s.bucket < $3 "
+        "GROUP BY s.engine_id, s.ts / $1 "
         "ON CONFLICT (grain, bucket_ts, engine_id) DO UPDATE SET samples = EXCLUDED.samples, "
         + _excluded((*_ENGINE_ROLLUP_COLUMNS, "first_ts", "last_ts"))
     ),
     "cpu": (
         "INSERT INTO openinfra_cpu_rollups "
         f"(grain, bucket_ts, node_id, samples, {_columns(CPU_HISTORY)}) "
-        "SELECT $1, t.bucket_ts, s.node_id, t.samples, "
-        f"{_columns(f's.{name}' for name in CPU_HISTORY)} FROM ("
-        "SELECT x.node_id, x.ts / $1 * $1 AS bucket_ts, COUNT(*)::int AS samples, "
-        "MAX(x.bucket) AS last_bucket "
-        "FROM openinfra_nodes n "
-        "JOIN openinfra_cpu_samples x ON x.node_id = n.id AND x.bucket >= $2 AND x.bucket < $3 "
-        "GROUP BY x.node_id, x.ts / $1"
-        ") t JOIN openinfra_cpu_samples s ON s.node_id = t.node_id AND s.bucket = t.last_bucket "
+        f"SELECT $1, s.ts / $1 * $1, s.node_id, COUNT(*)::int, {_columns(_CPU_MEANS)} "
+        "FROM openinfra_cpu_samples s "
+        "WHERE s.node_id = ANY(ARRAY(SELECT id FROM openinfra_nodes)) "
+        "AND s.bucket >= $2 AND s.bucket < $3 "
+        "GROUP BY s.node_id, s.ts / $1 "
         "ON CONFLICT (grain, bucket_ts, node_id) DO UPDATE SET samples = EXCLUDED.samples, "
         + _excluded(CPU_HISTORY)
     ),
@@ -812,27 +890,26 @@ def _hourly(
     *,
     spans: bool = False,
 ) -> str:
-    """Hours from bucket $3 on, from their 20-minute rollups ($2): the last one's values.
+    """Hours from bucket $3 on, from their 20-minute rollups ($2): their means, weighted by samples.
 
-    The samples are the 20-minute rollups' sum, as are the rate sums; with
-    *spans*, the hour's span runs from its first rollup's first sample to its
-    last rollup's last.
+    A value's mean counts only the rollups that have it. The samples are the
+    20-minute rollups' sum, as are the rate sums; with *spans*, the hour's span
+    runs from its first rollup's first sample to its last rollup's last.
     """
     aggregated = (*sums, *(("first_ts", "last_ts") if spans else ()))
     aggregate = {"first_ts": "MIN", "last_ts": "MAX"}
-    extra = "".join(f", {aggregate.get(name, 'SUM')}({name}) AS {name}" for name in aggregated)
+    means = (
+        f"SUM({name} * samples) / NULLIF(SUM(samples) FILTER (WHERE {name} IS NOT NULL), 0)"
+        for name in values
+    )
+    totals = (f"{aggregate.get(name, 'SUM')}({name})" for name in aggregated)
     return (
         f"INSERT INTO {table} (grain, bucket_ts, {key}, samples, "
         f"{_columns((*values, *aggregated))}) "
-        f"SELECT $1, t.hour_ts, r.{key}, t.samples, "
-        f"{_columns((*(f'r.{name}' for name in values), *(f't.{name}' for name in aggregated)))} "
-        "FROM ("
-        f"SELECT {key}, bucket_ts / $1 * $1 AS hour_ts, MAX(bucket_ts) AS last_bucket_ts, "
-        f"SUM(samples)::int AS samples{extra} "
+        f"SELECT $1, bucket_ts / $1 * $1, {key}, SUM(samples)::int, "
+        f"{_columns((*means, *totals))} "
         f"FROM {table} WHERE grain = $2 AND bucket_ts >= $3 "
-        f"GROUP BY {key}, bucket_ts / $1"
-        f") t JOIN {table} r "
-        f"ON r.grain = $2 AND r.bucket_ts = t.last_bucket_ts AND r.{key} = t.{key} "
+        f"GROUP BY {key}, bucket_ts / $1 "
         f"ON CONFLICT (grain, bucket_ts, {key}) DO UPDATE SET samples = EXCLUDED.samples, "
         + _excluded((*values, *aggregated))
     )
@@ -893,3 +970,49 @@ async def refresh_rollups(conn: Any, now: int) -> None:
                 continue
             end = bucket_start(now, grain) + grain
             await conn.execute(_FROM_SAMPLES[kind], grain, since // SAMPLE_MS, end // SAMPLE_MS)
+
+
+#: Every per-second bucket of a time since 2001 is at least this, and every
+#: 6-second bucket of a time before 2160 below it.
+_PER_SECOND_FLOOR = 1_000_000_000
+_SAMPLE_TABLES = (
+    ("openinfra_cpu_samples", "node_id", "openinfra_nodes"),
+    ("openinfra_gpu_samples", "gpu_id", "openinfra_gpus"),
+    ("openinfra_engine_samples", "engine_id", "openinfra_engines"),
+)
+
+
+def _count(status: str) -> int:
+    """The row count of a ``DELETE n`` or ``UPDATE n`` status."""
+    return int(status.split()[-1])
+
+
+async def convert_six_second_buckets(conn: Any) -> int:
+    """Give samples with a 6-second bucket their second's; how many there were.
+
+    Revision ``0027_openinfra_archives`` converted those stored before it. The
+    release before writes more if it runs again after it, as in a rollback;
+    left as they are they would read as decades old. They all sit below every
+    per-second bucket, so each key costs one index probe while there are none.
+    A sample whose second already has one of its own gives way to it.
+    """
+    found = 0
+    for table, key, identities in _SAMPLE_TABLES:
+        keys = f"ARRAY(SELECT id FROM {identities})"
+        found += _count(
+            await conn.execute(
+                f"DELETE FROM {table} o WHERE o.{key} = ANY({keys}) AND o.bucket < $1 "
+                "AND o.bucket = o.ts / 6000 "
+                f"AND EXISTS (SELECT 1 FROM {table} n WHERE n.{key} = o.{key} "
+                "AND n.bucket = o.ts / 1000)",
+                _PER_SECOND_FLOOR,
+            )
+        )
+        found += _count(
+            await conn.execute(
+                f"UPDATE {table} SET bucket = ts / 1000 "
+                f"WHERE {key} = ANY({keys}) AND bucket < $1 AND bucket = ts / 6000",
+                _PER_SECOND_FLOOR,
+            )
+        )
+    return found

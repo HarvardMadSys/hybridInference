@@ -114,6 +114,7 @@ describe('seriesCsv', () => {
 
 describe('time labels', () => {
   it('write the clock within a day and a half, then the date, then the year', () => {
+    expect(formatTick(T0, 15 * 60_000)).toMatch(/^\d{2}:\d{2}:\d{2}$/);
     expect(formatTick(T0, 2 * 3_600_000)).toMatch(/^\d{2}:\d{2}$/);
     expect(formatTick(T0, 7 * 86_400_000)).toMatch(/^\d{1,2}\/\d{1,2} \d{2}:\d{2}$/);
     expect(formatTick(T0, 90 * 86_400_000)).toMatch(/^\d{4}-\d{2}-\d{2}$/);

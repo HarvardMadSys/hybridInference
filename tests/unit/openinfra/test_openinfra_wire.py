@@ -118,3 +118,33 @@ def test_a_body_of_the_wrong_shape_is_refused(body, message):
 def test_requests_that_are_not_a_list_are_ignored():
     snapshot = parse_snapshot({"sglang": {"server": {"id": "e"}, "requests": {"ts": 1}}})
     assert snapshot.engines[0].requests == ()
+
+
+@pytest.mark.parametrize(
+    ("raw", "ms"),
+    [
+        (1_700_000_000_000, 1_700_000_000_000),
+        (1_700_000_000.5, 1_700_000_000_500),  # seconds
+        ("1700000000000", 1_700_000_000_000),
+        (None, None),
+        (0, None),
+        (-5, None),
+        ("soon", None),
+        (True, None),
+        (1e300, None),  # past any clock, and past a BIGINT
+    ],
+)
+def test_a_time(raw, ms):
+    assert wire.parse_time(raw) == ms
+
+
+def test_a_snapshot_carries_when_it_was_taken():
+    assert parse_snapshot({"ts": 1_700_000_000, "node": {"id": "n"}}).ts == 1_700_000_000_000
+    assert parse_snapshot({"node": {"id": "n"}}).ts is None
+
+
+def test_a_request_time_out_of_range_is_none():
+    snapshot = parse_snapshot(
+        {"sglang": {"server": {"id": "e"}, "metrics": {}, "requests": [{"ts": 1e300}]}}
+    )
+    assert snapshot.engines[0].requests[0]["ts"] is None

@@ -1,5 +1,5 @@
-import { ProviderOverviewSection } from '@/components/features/admin/ProvidersTab';
+import { ProvidersOverviewPage } from '@/components/features/admin/ProvidersTab';
 
 export default function Page() {
-  return <ProviderOverviewSection />;
+  return <ProvidersOverviewPage />;
 }

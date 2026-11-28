@@ -423,6 +423,118 @@
     "source": "Forgot Password",
     "text": "忘记密码"
   },
+  "auth.key_authorize.allow": {
+    "source": "Allow",
+    "text": "允许"
+  },
+  "auth.key_authorize.cancel": {
+    "source": "Cancel",
+    "text": "取消"
+  },
+  "auth.key_authorize.check_failed": {
+    "source": "This request could not be checked: {reason}",
+    "text": "无法核验这个请求：{reason}"
+  },
+  "auth.key_authorize.choose_account": {
+    "source": "Choose the account {app} gets an API key for",
+    "text": "选择要让 {app} 获得 API key 的账户"
+  },
+  "auth.key_authorize.explain_key": {
+    "source": "{app} will get a new API key for this account. The application keeps the key and uses it to make requests for you; what it uses counts against this account’s usage and quota.",
+    "text": "{app} 将获得这个账户的一个新 API key。应用会保存这个 key，并用它代你发出请求；它产生的用量计入这个账户的用量和额度。"
+  },
+  "auth.key_authorize.explain_revoke": {
+    "source": "You can revoke the key at any time on your API keys page.",
+    "text": "你可以随时在 API key 页面吊销这个 key。"
+  },
+  "auth.key_authorize.failed_title": {
+    "source": "Cannot create an API key",
+    "text": "无法创建 API key"
+  },
+  "auth.key_authorize.incomplete": {
+    "source": "This link is incomplete. Please start again from the application.",
+    "text": "这个链接不完整，请回到应用里重新发起。"
+  },
+  "auth.key_authorize.invalid": {
+    "source": "This link is not valid. Please start again from the application.",
+    "text": "这个链接无效，请回到应用里重新发起。"
+  },
+  "auth.key_authorize.key_limit": {
+    "source": "This account already holds as many API keys as it may. Revoke one on the API keys page, then press Allow again.",
+    "text": "这个账户的 API key 数量已达上限。请先在 API key 页面吊销一个，然后再点一次“允许”。"
+  },
+  "auth.key_authorize.not_allowed": {
+    "source": "This link is not valid for this deployment. Please start again from the application.",
+    "text": "这个链接在本站无效，请回到应用里重新发起。"
+  },
+  "auth.key_authorize.not_offered": {
+    "source": "This deployment does not let applications create API keys.",
+    "text": "本站不允许应用创建 API key。"
+  },
+  "auth.key_authorize.open_keys": {
+    "source": "Open API keys",
+    "text": "打开 API key 页面"
+  },
+  "auth.key_authorize.recheck": {
+    "source": "I have verified my email",
+    "text": "我已完成邮箱验证"
+  },
+  "auth.key_authorize.refused_inactive": {
+    "source": "The account is not active, so no application can get an API key for it.",
+    "text": "这个账户当前不可用，任何应用都不能为它获取 API key。"
+  },
+  "auth.key_authorize.refused_pending": {
+    "source": "The account is waiting for an administrator to approve it. Once it is approved, start again from the application.",
+    "text": "这个账户还在等待管理员审核。审核通过后，请回到应用里重新发起。"
+  },
+  "auth.key_authorize.refused_suspended": {
+    "source": "The account is suspended, so no application can get an API key for it.",
+    "text": "这个账户已被停用，任何应用都不能为它获取 API key。"
+  },
+  "auth.key_authorize.refused_title": {
+    "source": "This account cannot create API keys",
+    "text": "这个账户不能创建 API key"
+  },
+  "auth.key_authorize.resend": {
+    "source": "Resend verification email",
+    "text": "重新发送验证邮件"
+  },
+  "auth.key_authorize.resent": {
+    "source": "A new verification email is on its way to {email}.",
+    "text": "新的验证邮件正在发往 {email}。"
+  },
+  "auth.key_authorize.signed_in_as": {
+    "source": "Signed in as {account}",
+    "text": "当前登录账户：{account}"
+  },
+  "auth.key_authorize.still_unverified": {
+    "source": "This email address is not verified yet. Open the link in the verification email, then try again.",
+    "text": "这个邮箱地址还没有完成验证。请打开验证邮件里的链接，然后再试一次。"
+  },
+  "auth.key_authorize.title": {
+    "source": "Allow {app} to create an API key?",
+    "text": "允许 {app} 创建 API key 吗？"
+  },
+  "auth.key_authorize.try_again": {
+    "source": "Try again",
+    "text": "再试一次"
+  },
+  "auth.key_authorize.use_another": {
+    "source": "Use another account",
+    "text": "使用其他账户"
+  },
+  "auth.key_authorize.verify_body": {
+    "source": "Before an application can get an API key for this account, confirm that {email} is yours: open the link in the verification email, then come back to this page.",
+    "text": "在应用获得这个账户的 API key 之前，需要先确认 {email} 是你的邮箱：请打开验证邮件里的链接，然后回到这个页面。"
+  },
+  "auth.key_authorize.verify_body_no_email": {
+    "source": "Before an application can get an API key for this account, verify its email address, then come back to this page.",
+    "text": "在应用获得这个账户的 API key 之前，需要先验证这个账户的邮箱地址，然后回到这个页面。"
+  },
+  "auth.key_authorize.verify_title": {
+    "source": "Verify your email to continue",
+    "text": "请先验证邮箱再继续"
+  },
   "auth.legal.see": {
     "source": "See",
     "text": "详见"
@@ -2736,8 +2848,8 @@
     "text": "{count} 秒前"
   },
   "openinfra.chart.cache_hit.desc": {
-    "source": "Prefix-cache hit rate in percent this sample: 100 × cached prefill tokens / (cached + new). Idle intervals with no tokens are left blank.",
-    "text": "本次采样的前缀缓存命中率（百分比）：100 × 命中缓存的预填充 token /（命中 + 新算）。没有 token 的空闲时段留空。"
+    "source": "Prefix-cache hit rate in percent: 100 × cached prefill tokens / (cached + new), averaged over each point’s interval. Idle intervals with no tokens are left blank.",
+    "text": "前缀缓存命中率（百分比）：100 × 命中缓存的预填充 token /（命中 + 新算），按每个点的时间段取平均。没有 token 的空闲时段留空。"
   },
   "openinfra.chart.cache_hit.title": {
     "source": "Cache hit",
@@ -2772,8 +2884,8 @@
     "text": "关闭"
   },
   "openinfra.chart.cpu.desc": {
-    "source": "Host CPU utilization in percent and 1-minute load average from /proc. Load1 is not a percent. Each point is one scrape, not a window average.",
-    "text": "主机 CPU 利用率（百分比）和来自 /proc 的 1 分钟平均负载。load1 不是百分比。每个点是一次采集，不是窗口平均值。"
+    "source": "Host CPU utilization in percent and 1-minute load average from /proc. Load1 is not a percent. Each point is the mean of the per-second samples in its interval.",
+    "text": "主机 CPU 利用率（百分比）和来自 /proc 的 1 分钟平均负载。load1 不是百分比。每个点是其时间段内每秒样本的平均值。"
   },
   "openinfra.chart.cpu.title": {
     "source": "CPU",
@@ -2824,8 +2936,8 @@
     "text": "DCGM Tensor"
   },
   "openinfra.chart.e2e.desc": {
-    "source": "End-to-end request latency in seconds, from arrival to completion, over requests finished in this sample.",
-    "text": "端到端请求延迟（秒），从到达到完成，统计本次采样内完成的请求。"
+    "source": "End-to-end request latency in seconds, from arrival to completion, over requests finished in each point’s interval.",
+    "text": "端到端请求延迟（秒），从到达到完成，统计每个点的时间段内完成的请求。"
   },
   "openinfra.chart.e2e.title": {
     "source": "E2E latency",
@@ -2860,8 +2972,8 @@
     "text": "GPU 功耗"
   },
   "openinfra.chart.gpu_sm.desc": {
-    "source": "SM (streaming multiprocessor) utilization in percent from nvidia-smi. Each point is one scrape, not a window average.",
-    "text": "来自 nvidia-smi 的 SM（流式多处理器）利用率百分比。每个点是一次采集，不是窗口平均值。"
+    "source": "SM (streaming multiprocessor) utilization in percent from nvidia-smi. Each point is the mean of the per-second samples in its interval.",
+    "text": "来自 nvidia-smi 的 SM（流式多处理器）利用率百分比。每个点是其时间段内每秒样本的平均值。"
   },
   "openinfra.chart.gpu_sm.title": {
     "source": "GPU SM",
@@ -2952,8 +3064,8 @@
     "text": "GB"
   },
   "openinfra.chart.requests.desc": {
-    "source": "Count of requests currently running vs waiting in the engine queue. Each point is one scrape, not a window peak.",
-    "text": "引擎中正在运行与排队等待的请求数。每个点是一次采集，不是窗口峰值。"
+    "source": "Count of requests currently running vs waiting in the engine queue. Each point is the mean of its interval, so a brief peak is flattened.",
+    "text": "引擎中正在运行与排队等待的请求数。每个点是其时间段内的平均值，短暂的峰值会被拉平。"
   },
   "openinfra.chart.requests.title": {
     "source": "Requests",
@@ -2992,8 +3104,8 @@
     "text": "请求/分钟"
   },
   "openinfra.chart.shape.desc": {
-    "source": "Mean token counts per request this sample: the full prompt, the uncached (computed) prompt, and the generation length.",
-    "text": "本次采样每个请求的平均 token 数：完整提示词、未命中缓存（需要计算）的提示词，以及生成长度。"
+    "source": "Mean token counts per request in each point’s interval: the full prompt, the uncached (computed) prompt, and the generation length.",
+    "text": "每个点的时间段内每个请求的平均 token 数：完整提示词、未命中缓存（需要计算）的提示词，以及生成长度。"
   },
   "openinfra.chart.shape.title": {
     "source": "Request shape",
@@ -3036,8 +3148,8 @@
     "text": "token/分钟"
   },
   "openinfra.chart.ttft.desc": {
-    "source": "Time to first token in seconds this sample. Queue is the wait before compute, prefill is the prefill forward pass, and the total is TTFT (queue + prefill plus scheduling and tokenizing).",
-    "text": "本次采样的首 token 延迟（秒）。排队是开始计算前的等待，预填充是预填充前向计算，总计就是 TTFT（排队 + 预填充，再加上调度和分词）。"
+    "source": "Time to first token in seconds, averaged over each point’s interval. Queue is the wait before compute, prefill is the prefill forward pass, and the total is TTFT (queue + prefill plus scheduling and tokenizing).",
+    "text": "首 token 延迟（秒），按每个点的时间段取平均。排队是开始计算前的等待，预填充是预填充前向计算，总计就是 TTFT（排队 + 预填充，再加上调度和分词）。"
   },
   "openinfra.chart.ttft.title": {
     "source": "TTFT",
@@ -3288,8 +3400,8 @@
     "text": "GPU 集群"
   },
   "openinfra.footer": {
-    "source": "Refreshed every 30 seconds · hover a chart for values · Ctrl or ⌘ + scroll to zoom · drag to pan · double-click to reset · Zoom opens a chart larger",
-    "text": "每 30 秒刷新 · 悬停图表查看数值 · 按住 Ctrl 或 ⌘ 滚动以缩放 · 拖动平移 · 双击复原 · 点“放大”查看大图"
+    "source": "Refreshed every {seconds} seconds · hover a chart for values · Ctrl or ⌘ + scroll to zoom · drag to pan · double-click to reset · Zoom opens a chart larger",
+    "text": "每 {seconds} 秒刷新 · 悬停图表查看数值 · 按住 Ctrl 或 ⌘ 滚动以缩放 · 拖动平移 · 双击复原 · 点“放大”查看大图"
   },
   "openinfra.gpu.kpis": {
     "source": "GPU figures",
@@ -3432,24 +3544,32 @@
     "text": "24 小时"
   },
   "openinfra.range.24h_title": {
-    "source": "20-minute samples",
-    "text": "每 20 分钟一个样本"
+    "source": "20-minute averages",
+    "text": "每 20 分钟平均"
+  },
+  "openinfra.range.15m": {
+    "source": "15m",
+    "text": "15 分钟"
+  },
+  "openinfra.range.15m_title": {
+    "source": "5-second averages",
+    "text": "每 5 秒平均"
   },
   "openinfra.range.2h": {
     "source": "2h",
     "text": "2 小时"
   },
   "openinfra.range.2h_title": {
-    "source": "1-minute samples",
-    "text": "每分钟一个样本"
+    "source": "1-minute averages",
+    "text": "每分钟平均"
   },
   "openinfra.range.7d": {
     "source": "7d",
     "text": "7 天"
   },
   "openinfra.range.7d_title": {
-    "source": "hourly samples",
-    "text": "每小时一个样本"
+    "source": "hourly averages",
+    "text": "每小时平均"
   },
   "openinfra.range.avg_days": {
     "source": "{days}d avg",
@@ -3458,6 +3578,10 @@
   "openinfra.range.avg_hours": {
     "source": "{hours}h avg",
     "text": "{hours} 小时平均"
+  },
+  "openinfra.range.avg_minutes": {
+    "source": "{minutes}m avg",
+    "text": "{minutes} 分钟平均"
   },
   "openinfra.range.live": {
     "source": "live",

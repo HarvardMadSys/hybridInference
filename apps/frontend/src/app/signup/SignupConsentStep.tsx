@@ -104,10 +104,13 @@ export function SignupConsentStep({
   progress,
   onProgress,
   onContinue,
+  loginHref = '/login',
 }: {
   progress: ConsentProgress;
   onProgress: (update: (current: ConsentProgress) => ConsentProgress) => void;
   onContinue: () => void;
+  /** Where "Log In" leads: `/login`, carrying the page's `next` when it has one. */
+  loginHref?: string;
 }): JSX.Element {
   const t = useT();
   const skin = useAuthAppearance();
@@ -198,7 +201,7 @@ export function SignupConsentStep({
       topbar={
         <>
           {t('auth.signup.have_account', 'Already have an account?')}{' '}
-          <Link href="/login" prefetch={false}>
+          <Link href={loginHref} prefetch={false}>
             {t('auth.signup.login_link', 'Log In')}
           </Link>
         </>

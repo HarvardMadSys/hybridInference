@@ -5,6 +5,7 @@ import Link from 'next/link';
 import toast from 'react-hot-toast';
 import { resendVerification, verifyEmail } from '@/lib/api/auth';
 import { useLinkToken } from '@/lib/hooks/useLinkToken';
+import { loginHref, recallAuthNext, signupHref } from '@/lib/utils/authNext';
 import { getErrorMessage, APIError } from '@/lib/utils/errors';
 import { useT } from '@/components/providers/useT';
 import { AuthField, AuthLoading, AuthNotice } from '@/components/auth/AuthForm';
@@ -28,6 +29,13 @@ function VerifyEmailContent(): JSX.Element {
   const [resendEmail, setResendEmail] = useState('');
   const [isResending, setIsResending] = useState(false);
   const [resendDone, setResendDone] = useState(false);
+  // Where the visitor was going when they signed up, if this browser kept it
+  // (see authNext): logging in after verifying goes on there. Read after
+  // mount, since the server has no storage to render it from.
+  const [next, setNext] = useState<string | null>(null);
+  useEffect(() => {
+    setNext(recallAuthNext());
+  }, []);
 
   const handleResend = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
@@ -118,7 +126,7 @@ function VerifyEmailContent(): JSX.Element {
         {verified && message ? <AuthNotice tone="ok">{message}</AuthNotice> : null}
 
         {verified && (
-          <Link href="/login" className={skin.submit} data-auth="submit" prefetch={false}>
+          <Link href={loginHref(next)} className={skin.submit} data-auth="submit" prefetch={false}>
             {t('auth.verify.go_to_login', 'Go to Login')}
           </Link>
         )}
@@ -177,10 +185,10 @@ function VerifyEmailContent(): JSX.Element {
 
         {status === 'error' && (
           <div className="flex items-center justify-center gap-4" data-auth="secondary-actions">
-            <Link href="/signup" className={skin.linkButton} prefetch={false}>
+            <Link href={signupHref(next)} className={skin.linkButton} prefetch={false}>
               {t('auth.verify.signup_again', 'Sign Up Again')}
             </Link>
-            <Link href="/login" className={skin.linkButton} prefetch={false}>
+            <Link href={loginHref(next)} className={skin.linkButton} prefetch={false}>
               {t('auth.verify.back_to_login', 'Back to Login')}
             </Link>
           </div>
