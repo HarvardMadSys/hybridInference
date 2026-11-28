@@ -16,7 +16,9 @@ import pytest
 
 from routing.routers import FixedRouter
 from serving.batch import validation
+from serving.batch.admission import MAX_JSON_DEPTH
 from serving.batch.config import BatchConfig
+from serving.storage import batch_store
 from serving.storage.batch_file_store import BatchFileStore
 from serving.storage.batch_store import BatchStore
 from tests.fixtures import postgres
@@ -289,6 +291,137 @@ async def test_an_embeddings_file_the_owner_may_not_use_fails_with_nothing_stage
         assert error["message"] == f"Line 1: Embedding model '{alias}' not found"
         assert (row["request_count"], row["model_ids"]) == (0, [])
         assert await store.list_results(batch_id) == []
+    finally:
+        await store.delete_user_batches(owner)
+        await pool.close()
+
+
+# -- a line nested to the depth limit, or past it -------------------------------------
+
+
+def _nested_line(custom_id: str, levels: int, leaf: str = "") -> str:
+    """A chat line nesting arrays and objects exactly *levels* deep, *leaf* innermost."""
+    lists = levels - 2  # the line and its body are the first two levels
+    line = json.dumps(
+        {
+            "custom_id": custom_id,
+            "method": "POST",
+            "url": "/v1/chat/completions",
+            "body": {"model": "review-model", "metadata": "DEEP"},
+        }
+    )
+    return line.replace('"DEEP"', "[" * lists + leaf + "]" * lists)
+
+
+async def _validate_lines(
+    monkeypatch, pool: Any, store: BatchStore, files: BatchFileStore, owner: str, lines: list[str]
+) -> tuple[str, dict[str, Any]]:
+    """Upload *lines* as a file batch of *owner*'s, lease it and validate it."""
+    raw = "".join(line + "\n" for line in lines).encode("ascii")
+    file_id = await files.create_upload(
+        user_id=owner,
+        filename="nested.jsonl",
+        purpose="batch",
+        max_total_bytes=100_000,
+        max_uploads_per_hour=10,
+    )
+    await files.append_chunk(
+        file_id=file_id, user_id=owner, seq=0, data=raw, max_total_bytes=100_000
+    )
+    await files.finish_upload(
+        file_id=file_id,
+        user_id=owner,
+        sha256=hashlib.sha256(raw).hexdigest(),
+        line_count=len(lines),
+        retention_seconds=3600,
+        check_owner=False,
+    )
+    batch = await store.create_batch(
+        batch_id=f"batch_{uuid.uuid4().hex}",
+        user_id=owner,
+        key_hash=None,
+        endpoint="/v1/chat/completions",
+        model_ids=[],
+        items=[],
+        metadata=None,
+        completion_window_seconds=3600,
+        api_surface="openai_file",
+        phase="validating",
+        input_file_id=file_id,
+    )
+    worker_id = f"review-validator-{uuid.uuid4().hex}"
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE batch_jobs SET work_owner = $2, work_expires_at = now() + interval '1 min' "
+            "WHERE id = $1",
+            batch["id"],
+            worker_id,
+        )
+    monkeypatch.setattr(
+        validation, "authenticate_stored_key", AsyncMock(return_value={"user_id": owner})
+    )
+    monkeypatch.setattr(validation, "admit_item", AsyncMock(return_value="review-model"))
+    result = await validation.validate_file_batch(
+        store=store,
+        file_store=files,
+        batch=batch,
+        worker_id=worker_id,
+        services=SimpleNamespace(),
+        cfg=BatchConfig(),
+        lease_seconds=60,
+    )
+    return result, batch
+
+
+async def test_a_line_at_the_depth_limit_holding_a_nul_is_validated_and_stored(monkeypatch):
+    pool = await postgres.create_pool(min_size=1, max_size=6)
+    store, files = BatchStore(pool), BatchFileStore(pool)
+    owner = f"review-nested-{uuid.uuid4().hex}"
+    lines = [_nested_line("flat", 3), _nested_line("deep", MAX_JSON_DEPTH, '"a\\u0000b"')]
+    try:
+        result, batch = await _validate_lines(monkeypatch, pool, store, files, owner, lines)
+        assert result == "published"
+        async with pool.acquire() as conn:
+            stored = await conn.fetchval(
+                "SELECT request FROM batch_items WHERE batch_id = $1 AND custom_id = 'deep'",
+                batch["id"],
+            )
+        metadata: Any = "a\x00b"
+        for _ in range(MAX_JSON_DEPTH - 2):
+            metadata = [metadata]
+        assert batch_store._load_json(stored) == {"model": "review-model", "metadata": metadata}
+    finally:
+        await store.delete_user_batches(owner)
+        await pool.close()
+
+
+async def test_a_line_nested_past_the_depth_limit_fails_validation_by_line(monkeypatch):
+    """Such a line once raised ``RecursionError`` in the NUL walk and kept its lease."""
+    pool = await postgres.create_pool(min_size=1, max_size=6)
+    store, files = BatchStore(pool), BatchFileStore(pool)
+    owner = f"review-nested-{uuid.uuid4().hex}"
+    lines = [_nested_line("flat", 3), _nested_line("deep", 5_000, '"a\\u0000b"')]
+    try:
+        result, batch = await _validate_lines(monkeypatch, pool, store, files, owner, lines)
+        assert result == "failed"
+        row = await store.get_batch(batch["id"])
+        assert row["validation_error"]["data"] == [
+            {
+                "code": "invalid_json_line",
+                "message": "Line 2 nests arrays and objects more than 128 levels deep.",
+                "param": None,
+                "line": 2,
+            }
+        ]
+        async with pool.acquire() as conn:
+            lease = await conn.fetchrow(
+                "SELECT work_owner, work_expires_at FROM batch_jobs WHERE id = $1", batch["id"]
+            )
+            items = await conn.fetchval(
+                "SELECT count(*) FROM batch_items WHERE batch_id = $1", batch["id"]
+            )
+        assert tuple(lease) == (None, None)
+        assert items == 0
     finally:
         await store.delete_user_batches(owner)
         await pool.close()

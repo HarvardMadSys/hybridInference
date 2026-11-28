@@ -41,6 +41,7 @@ from fastapi import HTTPException, Request
 
 from serving.storage.batch_store import (
     BatchInputUnavailable,
+    BatchItemUnstorable,
     BatchLimitExceeded,
     BatchOwnerUnavailable,
     IdempotencyConflict,
@@ -187,6 +188,40 @@ def has_invalid_unicode(value: Any) -> bool:
     return False
 
 
+#: How many levels a create call's body, or one line of an input file, may nest
+#: arrays and objects. No real request comes near: a request log row already
+#: elides past 64 levels (``MAX_STORED_DEPTH``). Without a limit of its own a
+#: request was refused wherever a recursive step first ran out of stack, which
+#: depends on the interpreter (``json`` itself on Python 3.11, ``copy.deepcopy``
+#: on the Messages path) and on how deep the caller's stack already is: the
+#: validator, an inline create and the worker drew the line in different places.
+#: This is well inside every one of them.
+MAX_JSON_DEPTH = 128
+
+
+def nests_too_deeply(value: Any, limit: int = MAX_JSON_DEPTH) -> bool:
+    """Whether a decoded JSON value nests arrays and objects more than *limit* levels.
+
+    The outermost array or object is level 1. The walk keeps its own stack, so
+    it holds for any nesting ``json.loads`` accepted.
+    """
+    stack = [(value, 1)]
+    while stack:
+        current, depth = stack.pop()
+        if isinstance(current, dict):
+            children: Any = current.values()
+        elif isinstance(current, list):
+            children = current
+        else:
+            continue
+        if depth > limit:
+            return True
+        for child in children:
+            if isinstance(child, (dict, list)):
+                stack.append((child, depth + 1))
+    return False
+
+
 def reject_json_constant(name: str) -> Any:
     """``parse_constant`` refusing ``NaN`` and ``Infinity`` (not JSON; Postgres refuses them)."""
     raise ValueError(f"{name} is not valid JSON")
@@ -243,6 +278,10 @@ async def create(store: Any, **kwargs: Any) -> dict[str, Any]:
         raise conflict_error() from None
     except IdempotencyTombstoned:
         raise gone_error() from None
+    except BatchItemUnstorable as exc:
+        raise HTTPException(
+            400, f"custom_id {exc.custom_id!r}: body is nested too deeply to store"
+        ) from None
     except ValueError as exc:
         # The store refuses what it cannot hold (a repeated or unstorable
         # custom_id). Validation catches those first; this keeps a 400, with
