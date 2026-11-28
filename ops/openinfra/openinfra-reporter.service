@@ -1,0 +1,31 @@
+# OpenInfra reporter: posts this GPU host's metrics to the gateway every 5 s.
+#
+# Install (see docs/developer/openinfra.md):
+#   sudo install -d /opt/openinfra /etc/openinfra
+#   sudo install -m 0644 reporter.py /opt/openinfra/
+#   sudo install -m 0640 -g openinfra node.json /etc/openinfra/node.json
+#   sudo install -m 0640 -g openinfra reporter.env.example /etc/openinfra/reporter.env
+#   sudo install -m 0644 openinfra-reporter.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now openinfra-reporter
+[Unit]
+Description=OpenInfra reporter (GPU, host and inference-engine metrics)
+After=network-online.target nvidia-dcgm-exporter.service
+Wants=network-online.target nvidia-dcgm-exporter.service
+
+[Service]
+Type=simple
+# Any account that can run nvidia-smi. To read request shapes from the
+# engines' container logs it also needs docker (the docker group, or
+# `sudo -n docker`); without it the rest is still reported.
+User=openinfra
+Group=openinfra
+# OPENINFRA_URL, OPENINFRA_TOKEN and OPENINFRA_NODE_CONFIG.
+EnvironmentFile=/etc/openinfra/reporter.env
+ExecStart=/usr/bin/python3 /opt/openinfra/reporter.py --flush-interval 5
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

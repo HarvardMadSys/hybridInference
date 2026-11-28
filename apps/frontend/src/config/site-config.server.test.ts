@@ -229,6 +229,7 @@ describe('loadRuntimeSiteConfig', () => {
       rag: false,
       agents: false,
       publicStats: false,
+      openinfra: false,
     });
     expect(recovered.agentsUrl).toBe('');
     expect(fetchMock).toHaveBeenCalledTimes(2);

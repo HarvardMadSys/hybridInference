@@ -151,6 +151,31 @@ describe('resolveRuntimeSiteConfig', () => {
       }),
     ).toThrow();
   });
+
+  it('publishes the OpenInfra page only when the gateway sends an explicit true', () => {
+    // The gateway leaves the key out while the page is off.
+    expect(resolveRuntimeSiteConfig(runtimeDocument).features.openinfra).toBe(false);
+    for (const openinfra of [false, null]) {
+      expect(
+        resolveRuntimeSiteConfig({
+          ...runtimeDocument,
+          features: { ...runtimeDocument.features, openinfra },
+        }).features.openinfra,
+      ).toBe(false);
+    }
+    expect(
+      resolveRuntimeSiteConfig({
+        ...runtimeDocument,
+        features: { ...runtimeDocument.features, openinfra: true },
+      }).features.openinfra,
+    ).toBe(true);
+    expect(() =>
+      resolveRuntimeSiteConfig({
+        ...runtimeDocument,
+        features: { ...runtimeDocument.features, openinfra: 'yes' },
+      }),
+    ).toThrow();
+  });
   it('maps the complete v1 runtime branding document', () => {
     const resolved = resolveRuntimeSiteConfig(runtimeDocument);
 
@@ -200,6 +225,7 @@ describe('resolveRuntimeSiteConfig', () => {
       rag: false,
       agents: false,
       publicStats: false,
+      openinfra: false,
     });
   });
 
@@ -431,6 +457,7 @@ describe('first-run setup and configuration health', () => {
       rag: false,
       agents: false,
       publicStats: false,
+      openinfra: false,
     });
   });
 

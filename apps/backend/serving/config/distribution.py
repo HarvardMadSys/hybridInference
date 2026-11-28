@@ -61,6 +61,10 @@ class DistributionFeatures(_ManifestModel):
     # Opt-in: publish aggregate usage stats at /stats (GET /public-stats).
     # None and False keep them private.
     public_stats: bool | None = None
+    # Opt-in: publish the GPU fleet and engine metrics the OpenInfra reporters
+    # collect at /openinfra (GET /public-openinfra and its history). None and
+    # False keep them private; collecting needs only OPENINFRA_INGEST_TOKEN.
+    openinfra: bool | None = None
 
 
 class DistributionPaths(_ManifestModel):

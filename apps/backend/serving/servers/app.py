@@ -42,6 +42,7 @@ from .routers import (
     internal,
     internal_lookups,
     models,
+    openinfra,
     playground,
     playground_mcp,
     projects,
@@ -185,6 +186,7 @@ def create_app() -> FastAPI:
     app.include_router(site_config.router)
     app.include_router(site_updates.router)
     app.include_router(public_stats.router)
+    app.include_router(openinfra.router)
     app.include_router(compat.router)
     app.include_router(billing.router)
     app.include_router(admin.router)

@@ -1099,3 +1099,14 @@ msgstr "`make up DISTRIBUTION=example` 显式选择本地教学示例，并为�
 
 msgid "`accounting.currency` defaults to `USD`. Selecting `CNY` requires an offline ledger migration first; changing this field alone does not convert prices, usage or quotas, and once the gateway runs on a ledger, Admin refuses a change to it. Follow [Accounting Currency](accounting.md) for the migration, fixed-rate policy and backup-based rollback procedure."
 msgstr "`accounting.currency` 默认为 `USD`。选择 `CNY` 时，必须先完成账本离线迁移；仅修改此字段不会转换价格、用量或额度，网关在账本上运行后，Admin 会拒绝修改该字段。迁移、固定汇率策略和基于备份的回滚流程见[记账币种](accounting.md)。"
+
+#: ../developer/distribution-customization.md:122
+msgid ""
+"`features.openinfra: true` publishes the GPU fleet and engine metrics "
+"that OpenInfra reporters collect, at `/openinfra`; collecting is the "
+"separate `OPENINFRA_INGEST_TOKEN` setting (see "
+"[OpenInfra](openinfra.md))."
+msgstr ""
+"`features.openinfra: true` 会在 `/openinfra` 发布 OpenInfra reporter 采集的 GPU "
+"集群和引擎指标；采集本身由单独的 `OPENINFRA_INGEST_TOKEN` 设置控制（参见 "
+"[OpenInfra](openinfra.md)）。"

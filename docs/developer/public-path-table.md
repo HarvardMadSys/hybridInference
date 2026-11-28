@@ -175,6 +175,7 @@ handler streams the body to the gateway as it arrives and holds none of it.
 | `/internal/agent-grants` | `src/app/internal/agent-grants/[[...path]]/route.ts` | mint an inference grant (`POST`) |
 | `/internal/agent-grants/:path*` | `src/app/internal/agent-grants/[[...path]]/route.ts` | renew / usage / revoke for one grant |
 | `/internal/alert-history/events` | `src/app/internal/alert-history/events/route.ts` | alert-history ingestion from external sources (`POST`; scoped writer token, `404` while off — see [Alert history](alert-history.md)) |
+| `/internal/openinfra/ingest` | `src/app/internal/openinfra/ingest/route.ts` | OpenInfra snapshots from the reporters on the deployment's GPU servers (`POST`; ingest token, `404` while none is configured — see [OpenInfra](openinfra.md)) |
 
 Note on `/internal`: each published path has a route file of its own rather
 than one handler for all of `/internal`, and that is deliberate. The prefix is
@@ -228,6 +229,8 @@ sends anyway, Next keeps at most `middlewareClientMaxBodySize` (16 KiB).
 | `/site-updates` | the public site banner |
 | `/site-config` | public deployment identity, consumed by the console's `SiteConfigProvider` |
 | `/public-stats` | the daily usage snapshot behind the public `/stats` page |
+| `/public-openinfra` | the live GPU, host and engine snapshot behind the public `/openinfra` page |
+| `/public-openinfra/history` | that page's charts, for the range it asks for |
 
 ## Why `/pgadmin` is a route handler and not a rewrite
 

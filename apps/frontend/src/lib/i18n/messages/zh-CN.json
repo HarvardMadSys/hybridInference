@@ -2419,6 +2419,10 @@
     "source": "Stats",
     "text": "统计"
   },
+  "chrome.footer.openinfra": {
+    "source": "OpenInfra",
+    "text": "OpenInfra"
+  },
   "chrome.footer.status": {
     "source": "Status",
     "text": "服务状态"
@@ -2466,6 +2470,10 @@
   "chrome.header.stats": {
     "source": "Stats",
     "text": "统计"
+  },
+  "chrome.header.openinfra": {
+    "source": "OpenInfra",
+    "text": "OpenInfra"
   },
   "chrome.language.label": {
     "source": "Interface language",
@@ -2706,6 +2714,1010 @@
   "dashboard.keys.more_actions": {
     "source": "Actions for {name}",
     "text": "{name} 的操作"
+  },
+  "openinfra.ago.hours": {
+    "source": "{count}h ago",
+    "text": "{count} 小时前"
+  },
+  "openinfra.ago.just_now": {
+    "source": "just now",
+    "text": "刚刚"
+  },
+  "openinfra.ago.minutes": {
+    "source": "{count}m ago",
+    "text": "{count} 分钟前"
+  },
+  "openinfra.ago.never": {
+    "source": "never",
+    "text": "从未"
+  },
+  "openinfra.ago.seconds": {
+    "source": "{count}s ago",
+    "text": "{count} 秒前"
+  },
+  "openinfra.chart.cache_hit.desc": {
+    "source": "Prefix-cache hit rate in percent this sample: 100 × cached prefill tokens / (cached + new). Idle intervals with no tokens are left blank.",
+    "text": "本次采样的前缀缓存命中率（百分比）：100 × 命中缓存的预填充 token /（命中 + 新算）。没有 token 的空闲时段留空。"
+  },
+  "openinfra.chart.cache_hit.title": {
+    "source": "Cache hit",
+    "text": "缓存命中"
+  },
+  "openinfra.chart.cache_source.desc": {
+    "source": "Cached prompt tokens per minute by source: the GPU radix cache vs the host cache.",
+    "text": "每分钟命中缓存的提示词 token，按来源分：GPU 上的基数树缓存与主机缓存。"
+  },
+  "openinfra.chart.cache_source.title": {
+    "source": "Cache source",
+    "text": "缓存来源"
+  },
+  "openinfra.chart.cache_source.unit": {
+    "source": "tokens/min",
+    "text": "token/分钟"
+  },
+  "openinfra.chart.chunked.desc": {
+    "source": "Wall time of one prefill chunk in seconds, not the whole request. Long prompts are split so decode can run between chunks; each chunk is one sample. The full prefill is the prefill series on TTFT.",
+    "text": "一个预填充分块的耗时（秒），不是整个请求。长提示词会被切成块，让解码能在块之间运行；每个分块是一个样本。完整的预填充见 TTFT 图里的预填充曲线。"
+  },
+  "openinfra.chart.chunked.title": {
+    "source": "Chunked prefill",
+    "text": "分块预填充"
+  },
+  "openinfra.chart.chunked.unit": {
+    "source": "s / chunk",
+    "text": "秒/块"
+  },
+  "openinfra.chart.close": {
+    "source": "Close",
+    "text": "关闭"
+  },
+  "openinfra.chart.cpu.desc": {
+    "source": "Host CPU utilization in percent and 1-minute load average from /proc. Load1 is not a percent. Each point is one scrape, not a window average.",
+    "text": "主机 CPU 利用率（百分比）和来自 /proc 的 1 分钟平均负载。load1 不是百分比。每个点是一次采集，不是窗口平均值。"
+  },
+  "openinfra.chart.cpu.title": {
+    "source": "CPU",
+    "text": "CPU"
+  },
+  "openinfra.chart.cpu.unit": {
+    "source": "% util · load (dimensionless)",
+    "text": "利用率 % · 负载（无量纲）"
+  },
+  "openinfra.chart.csv": {
+    "source": "CSV",
+    "text": "CSV"
+  },
+  "openinfra.chart.csv_label": {
+    "source": "CSV: {chart}",
+    "text": "CSV：{chart}"
+  },
+  "openinfra.chart.dcgm_dram.desc": {
+    "source": "DCGM DRAM/HBM active time in percent: memory-pipe utilization × 100.",
+    "text": "DCGM 统计的显存（DRAM/HBM）活跃时间百分比：内存管线利用率 × 100。"
+  },
+  "openinfra.chart.dcgm_dram.title": {
+    "source": "DCGM DRAM",
+    "text": "DCGM 显存活跃"
+  },
+  "openinfra.chart.dcgm_nvlink.desc": {
+    "source": "NVLink transmit and receive throughput in gigabytes per second.",
+    "text": "NVLink 发送和接收吞吐量，单位为 GB/秒。"
+  },
+  "openinfra.chart.dcgm_nvlink.title": {
+    "source": "DCGM NVLink",
+    "text": "DCGM NVLink"
+  },
+  "openinfra.chart.dcgm_pcie.desc": {
+    "source": "PCIe transmit and receive throughput in gigabytes per second.",
+    "text": "PCIe 发送和接收吞吐量，单位为 GB/秒。"
+  },
+  "openinfra.chart.dcgm_pcie.title": {
+    "source": "DCGM PCIe",
+    "text": "DCGM PCIe"
+  },
+  "openinfra.chart.dcgm_tensor.desc": {
+    "source": "DCGM tensor-pipe active time in percent: fraction of time Tensor Cores were busy, × 100.",
+    "text": "DCGM 统计的 Tensor 管线活跃时间百分比：Tensor Core 忙碌时间的占比 × 100。"
+  },
+  "openinfra.chart.dcgm_tensor.title": {
+    "source": "DCGM tensor",
+    "text": "DCGM Tensor"
+  },
+  "openinfra.chart.e2e.desc": {
+    "source": "End-to-end request latency in seconds, from arrival to completion, over requests finished in this sample.",
+    "text": "端到端请求延迟（秒），从到达到完成，统计本次采样内完成的请求。"
+  },
+  "openinfra.chart.e2e.title": {
+    "source": "E2E latency",
+    "text": "端到端延迟"
+  },
+  "openinfra.chart.empty": {
+    "source": "No samples",
+    "text": "暂无样本"
+  },
+  "openinfra.chart.gpu_clock.desc": {
+    "source": "SM clock frequency in megahertz.",
+    "text": "SM 时钟频率，单位为 MHz。"
+  },
+  "openinfra.chart.gpu_clock.title": {
+    "source": "GPU clocks",
+    "text": "GPU 时钟"
+  },
+  "openinfra.chart.gpu_membw.desc": {
+    "source": "Memory-controller / HBM bandwidth utilization in percent from nvidia-smi. This is not VRAM occupancy.",
+    "text": "来自 nvidia-smi 的显存控制器（HBM）带宽利用率百分比。这不是显存占用。"
+  },
+  "openinfra.chart.gpu_membw.title": {
+    "source": "GPU memory bandwidth",
+    "text": "GPU 显存带宽"
+  },
+  "openinfra.chart.gpu_power.desc": {
+    "source": "GPU board power draw in watts.",
+    "text": "GPU 板卡功耗，单位为瓦。"
+  },
+  "openinfra.chart.gpu_power.title": {
+    "source": "GPU power",
+    "text": "GPU 功耗"
+  },
+  "openinfra.chart.gpu_sm.desc": {
+    "source": "SM (streaming multiprocessor) utilization in percent from nvidia-smi. Each point is one scrape, not a window average.",
+    "text": "来自 nvidia-smi 的 SM（流式多处理器）利用率百分比。每个点是一次采集，不是窗口平均值。"
+  },
+  "openinfra.chart.gpu_sm.title": {
+    "source": "GPU SM",
+    "text": "GPU SM"
+  },
+  "openinfra.chart.gpu_temp.desc": {
+    "source": "GPU temperature in degrees Celsius.",
+    "text": "GPU 温度，单位为摄氏度。"
+  },
+  "openinfra.chart.gpu_temp.title": {
+    "source": "GPU temperature",
+    "text": "GPU 温度"
+  },
+  "openinfra.chart.gpu_vram.desc": {
+    "source": "GPU VRAM used as a percent of the card’s total memory.",
+    "text": "已用显存占这张卡总显存的百分比。"
+  },
+  "openinfra.chart.gpu_vram.title": {
+    "source": "GPU VRAM",
+    "text": "GPU 显存"
+  },
+  "openinfra.chart.help": {
+    "source": "Hover for values · scroll to zoom · drag to pan · double-click to reset",
+    "text": "悬停查看数值 · 滚轮缩放 · 拖动平移 · 双击复原"
+  },
+  "openinfra.chart.hicache.desc": {
+    "source": "Host (CPU DRAM) hierarchical KV cache fill in percent. 100% means the host cache is full and further GPU evictions may drop or overwrite.",
+    "text": "主机（CPU 内存）上分层 KV 缓存的占用百分比。100% 表示主机缓存已满，之后 GPU 驱逐的数据可能被丢弃或覆盖。"
+  },
+  "openinfra.chart.hicache.title": {
+    "source": "HiCache host",
+    "text": "HiCache 主机缓存"
+  },
+  "openinfra.chart.hicache_traffic.desc": {
+    "source": "HiCache movement in tokens per minute: backup GPU→host, load-back host→GPU, and device KV slots freed by eviction.",
+    "text": "HiCache 每分钟搬运的 token：备份（GPU→主机）、回载（主机→GPU），以及驱逐释放的设备 KV 槽位。"
+  },
+  "openinfra.chart.hicache_traffic.title": {
+    "source": "HiCache traffic",
+    "text": "HiCache 流量"
+  },
+  "openinfra.chart.hicache_traffic.unit": {
+    "source": "tokens/min",
+    "text": "token/分钟"
+  },
+  "openinfra.chart.http_errors.desc": {
+    "source": "HTTP 4xx and 5xx responses per minute from the engine’s metrics counters.",
+    "text": "引擎指标计数器统计的每分钟 HTTP 4xx 和 5xx 响应数。"
+  },
+  "openinfra.chart.http_errors.title": {
+    "source": "HTTP errors",
+    "text": "HTTP 错误"
+  },
+  "openinfra.chart.http_errors.unit": {
+    "source": "responses/min",
+    "text": "响应/分钟"
+  },
+  "openinfra.chart.itl.desc": {
+    "source": "Inter-token latency after the first token, in milliseconds per output token (decode streaming speed).",
+    "text": "首个 token 之后的 token 间延迟，单位为毫秒/输出 token（解码的流式速度）。"
+  },
+  "openinfra.chart.itl.title": {
+    "source": "ITL",
+    "text": "ITL"
+  },
+  "openinfra.chart.itl.unit": {
+    "source": "ms / token",
+    "text": "毫秒/token"
+  },
+  "openinfra.chart.kv.desc": {
+    "source": "KV cache fill in percent: 100 × used tokens / token capacity.",
+    "text": "KV 缓存占用百分比：100 × 已用 token / token 容量。"
+  },
+  "openinfra.chart.kv.title": {
+    "source": "KV cache",
+    "text": "KV 缓存"
+  },
+  "openinfra.chart.ram.desc": {
+    "source": "Host RAM in use, in gigabytes, from (MemTotal − MemAvailable) / 1024.",
+    "text": "主机已用内存（GB），按 (MemTotal − MemAvailable) / 1024 计算。"
+  },
+  "openinfra.chart.ram.title": {
+    "source": "Host RAM",
+    "text": "主机内存"
+  },
+  "openinfra.chart.ram.unit": {
+    "source": "GB",
+    "text": "GB"
+  },
+  "openinfra.chart.requests.desc": {
+    "source": "Count of requests currently running vs waiting in the engine queue. Each point is one scrape, not a window peak.",
+    "text": "引擎中正在运行与排队等待的请求数。每个点是一次采集，不是窗口峰值。"
+  },
+  "openinfra.chart.requests.title": {
+    "source": "Requests",
+    "text": "请求"
+  },
+  "openinfra.chart.requests.unit": {
+    "source": "requests",
+    "text": "请求数"
+  },
+  "openinfra.chart.reset": {
+    "source": "Reset",
+    "text": "复原"
+  },
+  "openinfra.chart.retracts.desc": {
+    "source": "Count of requests currently retracted because the KV cache ran out of space. A spike means cache pressure.",
+    "text": "因 KV 缓存空间不足而被撤回的请求数。数值陡增说明缓存吃紧。"
+  },
+  "openinfra.chart.retracts.title": {
+    "source": "KV retracts",
+    "text": "KV 撤回"
+  },
+  "openinfra.chart.retracts.unit": {
+    "source": "requests",
+    "text": "请求数"
+  },
+  "openinfra.chart.rpm.desc": {
+    "source": "Completed requests per minute from the engine request counter (or prefill log lines if the counter is missing).",
+    "text": "每分钟完成的请求数，来自引擎的请求计数器（没有计数器时来自预填充日志）。"
+  },
+  "openinfra.chart.rpm.title": {
+    "source": "Requests / min",
+    "text": "每分钟请求"
+  },
+  "openinfra.chart.rpm.unit": {
+    "source": "requests/min",
+    "text": "请求/分钟"
+  },
+  "openinfra.chart.shape.desc": {
+    "source": "Mean token counts per request this sample: the full prompt, the uncached (computed) prompt, and the generation length.",
+    "text": "本次采样每个请求的平均 token 数：完整提示词、未命中缓存（需要计算）的提示词，以及生成长度。"
+  },
+  "openinfra.chart.shape.title": {
+    "source": "Request shape",
+    "text": "请求形态"
+  },
+  "openinfra.chart.shape.unit": {
+    "source": "tokens / request",
+    "text": "token/请求"
+  },
+  "openinfra.chart.spec_length.desc": {
+    "source": "Speculative decoding accept length in tokens per verify step, including the bonus token.",
+    "text": "投机解码的接受长度，单位为每次验证接受的 token 数，包括额外奖励的那个 token。"
+  },
+  "openinfra.chart.spec_length.title": {
+    "source": "Spec accept length",
+    "text": "投机解码接受长度"
+  },
+  "openinfra.chart.spec_length.unit": {
+    "source": "tokens / verify",
+    "text": "token/次验证"
+  },
+  "openinfra.chart.spec_rate.desc": {
+    "source": "Speculative accept rate in percent: 100 × accepted draft tokens / proposed draft tokens.",
+    "text": "投机解码接受率（百分比）：100 × 被接受的草稿 token / 提出的草稿 token。"
+  },
+  "openinfra.chart.spec_rate.title": {
+    "source": "Spec accept rate",
+    "text": "投机解码接受率"
+  },
+  "openinfra.chart.tokens.desc": {
+    "source": "Total tokens per minute: cached prefill + uncached prefill + decode.",
+    "text": "每分钟 token 总数：命中缓存的预填充 + 未命中缓存的预填充 + 解码。"
+  },
+  "openinfra.chart.tokens.title": {
+    "source": "Total tokens/min",
+    "text": "每分钟 token 总数"
+  },
+  "openinfra.chart.tokens.unit": {
+    "source": "tokens/min",
+    "text": "token/分钟"
+  },
+  "openinfra.chart.ttft.desc": {
+    "source": "Time to first token in seconds this sample. Queue is the wait before compute, prefill is the prefill forward pass, and the total is TTFT (queue + prefill plus scheduling and tokenizing).",
+    "text": "本次采样的首 token 延迟（秒）。排队是开始计算前的等待，预填充是预填充前向计算，总计就是 TTFT（排队 + 预填充，再加上调度和分词）。"
+  },
+  "openinfra.chart.ttft.title": {
+    "source": "TTFT",
+    "text": "TTFT"
+  },
+  "openinfra.chart.unit": {
+    "source": "Unit",
+    "text": "单位"
+  },
+  "openinfra.chart.waiting.desc": {
+    "source": "Uncached tokens waiting in the prefill queue (token count, not requests).",
+    "text": "预填充队列里等待的未命中缓存 token（是 token 数，不是请求数）。"
+  },
+  "openinfra.chart.waiting.title": {
+    "source": "Waiting tokens",
+    "text": "等待中的 token"
+  },
+  "openinfra.chart.waiting.unit": {
+    "source": "tokens",
+    "text": "token"
+  },
+  "openinfra.chart.zoom": {
+    "source": "Zoom",
+    "text": "放大"
+  },
+  "openinfra.chart.zoom_label": {
+    "source": "Zoom: {chart}",
+    "text": "放大：{chart}"
+  },
+  "openinfra.deploy.empty": {
+    "source": "No engine has reported yet.",
+    "text": "还没有引擎上报数据。"
+  },
+  "openinfra.deploy.title": {
+    "source": "Deployment",
+    "text": "部署"
+  },
+  "openinfra.deploy.waiting": {
+    "source": "{count} waiting",
+    "text": "{count} 个排队中"
+  },
+  "openinfra.deploy_line": {
+    "source": "{name} · GPU {gpus} · {host}",
+    "text": "{name} · GPU {gpus} · {host}"
+  },
+  "openinfra.engine.kpis": {
+    "source": "Engine figures",
+    "text": "推理引擎指标"
+  },
+  "openinfra.engine.subtitle": {
+    "source": "SGLang and vLLM serving",
+    "text": "SGLang 与 vLLM 推理服务"
+  },
+  "openinfra.engine.title": {
+    "source": "Engine",
+    "text": "推理引擎"
+  },
+  "openinfra.engine_card.backup": {
+    "source": "backup/min",
+    "text": "备份/分钟"
+  },
+  "openinfra.engine_card.cache_hit": {
+    "source": "cache hit",
+    "text": "缓存命中"
+  },
+  "openinfra.engine_card.cached_prefill_min": {
+    "source": "cached prefill/min",
+    "text": "缓存预填充/分钟"
+  },
+  "openinfra.engine_card.chunked": {
+    "source": "chunked prefill",
+    "text": "分块预填充"
+  },
+  "openinfra.engine_card.decode_min": {
+    "source": "decode/min",
+    "text": "解码/分钟"
+  },
+  "openinfra.engine_card.device_cache": {
+    "source": "device cache/min",
+    "text": "设备缓存/分钟"
+  },
+  "openinfra.engine_card.e2e": {
+    "source": "e2e",
+    "text": "端到端"
+  },
+  "openinfra.engine_card.engine_util": {
+    "source": "engine util",
+    "text": "引擎利用率"
+  },
+  "openinfra.engine_card.evict": {
+    "source": "evict/min",
+    "text": "驱逐/分钟"
+  },
+  "openinfra.engine_card.generation_tokens": {
+    "source": "gen toks",
+    "text": "生成 token"
+  },
+  "openinfra.engine_card.gpus": {
+    "source": "GPU {indexes}",
+    "text": "GPU {indexes}"
+  },
+  "openinfra.engine_card.hicache": {
+    "source": "HiCache",
+    "text": "HiCache"
+  },
+  "openinfra.engine_card.host_cache": {
+    "source": "host cache/min",
+    "text": "主机缓存/分钟"
+  },
+  "openinfra.engine_card.http_errors": {
+    "source": "HTTP err/min",
+    "text": "HTTP 错误/分钟"
+  },
+  "openinfra.engine_card.in_queue": {
+    "source": "in queue",
+    "text": "排队中"
+  },
+  "openinfra.engine_card.itl": {
+    "source": "ITL",
+    "text": "ITL"
+  },
+  "openinfra.engine_card.kv_fill": {
+    "source": "KV fill",
+    "text": "KV 占用"
+  },
+  "openinfra.engine_card.kv_tokens": {
+    "source": "KV tokens",
+    "text": "KV token"
+  },
+  "openinfra.engine_card.loadback": {
+    "source": "load-back/min",
+    "text": "回载/分钟"
+  },
+  "openinfra.engine_card.prefill": {
+    "source": "prefill",
+    "text": "预填充"
+  },
+  "openinfra.engine_card.prefill_min": {
+    "source": "prefill/min",
+    "text": "预填充/分钟"
+  },
+  "openinfra.engine_card.prompt_tokens": {
+    "source": "prompt toks",
+    "text": "提示词 token"
+  },
+  "openinfra.engine_card.queue": {
+    "source": "queue",
+    "text": "排队"
+  },
+  "openinfra.engine_card.queued": {
+    "source": "queued",
+    "text": "排队中"
+  },
+  "openinfra.engine_card.retracts": {
+    "source": "retracts",
+    "text": "撤回"
+  },
+  "openinfra.engine_card.rpm": {
+    "source": "req/min",
+    "text": "请求/分钟"
+  },
+  "openinfra.engine_card.running": {
+    "source": "running",
+    "text": "运行中"
+  },
+  "openinfra.engine_card.spec_accept": {
+    "source": "spec accept",
+    "text": "投机接受长度"
+  },
+  "openinfra.engine_card.spec_rate": {
+    "source": "spec rate",
+    "text": "投机接受率"
+  },
+  "openinfra.engine_card.total_min": {
+    "source": "total tok/min",
+    "text": "总 token/分钟"
+  },
+  "openinfra.engine_card.ttft": {
+    "source": "TTFT",
+    "text": "TTFT"
+  },
+  "openinfra.engine_card.uncached_prompt": {
+    "source": "uncached prompt",
+    "text": "未缓存提示词"
+  },
+  "openinfra.engine_card.unknown_model": {
+    "source": "unknown model",
+    "text": "未知模型"
+  },
+  "openinfra.error": {
+    "source": "OpenInfra could not be loaded. Try again in a few minutes.",
+    "text": "OpenInfra 加载失败，请过几分钟再试。"
+  },
+  "openinfra.export.cancel": {
+    "source": "Cancel",
+    "text": "取消"
+  },
+  "openinfra.export.days": {
+    "source": "Days",
+    "text": "天数"
+  },
+  "openinfra.export.desc": {
+    "source": "Download up to 30 days of hourly rollups, the current snapshot and the served totals as JSON. Administrators only.",
+    "text": "以 JSON 下载最多 30 天的小时汇总、当前快照和服务量合计。仅限管理员。"
+  },
+  "openinfra.export.download": {
+    "source": "Download JSON",
+    "text": "下载 JSON"
+  },
+  "openinfra.export.downloading": {
+    "source": "Exporting…",
+    "text": "正在导出…"
+  },
+  "openinfra.export.open": {
+    "source": "Export",
+    "text": "导出"
+  },
+  "openinfra.export.title": {
+    "source": "Export data",
+    "text": "导出数据"
+  },
+  "openinfra.fleet.busy": {
+    "source": "busy",
+    "text": "繁忙"
+  },
+  "openinfra.fleet.degraded": {
+    "source": "degraded",
+    "text": "异常"
+  },
+  "openinfra.fleet.empty": {
+    "source": "No node has reported yet.",
+    "text": "还没有节点上报数据。"
+  },
+  "openinfra.fleet.healthy": {
+    "source": "healthy",
+    "text": "正常"
+  },
+  "openinfra.fleet.node_meta": {
+    "source": "{region} · {gpus} GPU · {util} · CPU {cpu} · load {load} · RAM {used}/{total} GB",
+    "text": "{region} · {gpus} 张 GPU · {util} · CPU {cpu} · 负载 {load} · 内存 {used}/{total} GB"
+  },
+  "openinfra.fleet.offline": {
+    "source": "offline",
+    "text": "离线"
+  },
+  "openinfra.fleet.title": {
+    "source": "GPU fleet",
+    "text": "GPU 集群"
+  },
+  "openinfra.footer": {
+    "source": "Refreshed every 30 seconds · hover a chart for values · Ctrl or ⌘ + scroll to zoom · drag to pan · double-click to reset · Zoom opens a chart larger",
+    "text": "每 30 秒刷新 · 悬停图表查看数值 · 按住 Ctrl 或 ⌘ 滚动以缩放 · 拖动平移 · 双击复原 · 点“放大”查看大图"
+  },
+  "openinfra.gpu.kpis": {
+    "source": "GPU figures",
+    "text": "GPU 指标"
+  },
+  "openinfra.gpu.subtitle": {
+    "source": "SM, memory, power and interconnect",
+    "text": "SM、显存、功耗与互联"
+  },
+  "openinfra.gpu.title": {
+    "source": "GPU",
+    "text": "GPU"
+  },
+  "openinfra.gpu_card.bar": {
+    "source": "Utilization {percent}",
+    "text": "利用率 {percent}"
+  },
+  "openinfra.gpu_card.dram": {
+    "source": "DRAM",
+    "text": "显存活跃"
+  },
+  "openinfra.gpu_card.mem_engine": {
+    "source": "mem eng",
+    "text": "显存带宽"
+  },
+  "openinfra.gpu_card.power": {
+    "source": "power",
+    "text": "功耗"
+  },
+  "openinfra.gpu_card.sm_clock": {
+    "source": "SM clk",
+    "text": "SM 时钟"
+  },
+  "openinfra.gpu_card.temp": {
+    "source": "temp",
+    "text": "温度"
+  },
+  "openinfra.gpu_card.tensor": {
+    "source": "tensor",
+    "text": "Tensor"
+  },
+  "openinfra.gpu_card.util": {
+    "source": "util",
+    "text": "利用率"
+  },
+  "openinfra.gpu_card.vram": {
+    "source": "VRAM",
+    "text": "显存"
+  },
+  "openinfra.history_error": {
+    "source": "The charts could not be refreshed; they show the last history loaded.",
+    "text": "图表未能刷新，显示的是上次加载的历史数据。"
+  },
+  "openinfra.host.kpis": {
+    "source": "Host figures",
+    "text": "主机指标"
+  },
+  "openinfra.host.subtitle": {
+    "source": "CPU and system memory",
+    "text": "CPU 与系统内存"
+  },
+  "openinfra.host.title": {
+    "source": "Host",
+    "text": "主机"
+  },
+  "openinfra.kpi.cache_hit": {
+    "source": "Cache hit",
+    "text": "缓存命中"
+  },
+  "openinfra.kpi.cache_hit_hint": {
+    "source": "{range} · prefix cache",
+    "text": "{range} · 前缀缓存"
+  },
+  "openinfra.kpi.cpu": {
+    "source": "CPU",
+    "text": "CPU"
+  },
+  "openinfra.kpi.cpu_hint": {
+    "source": "{range} · load {load}",
+    "text": "{range} · 负载 {load}"
+  },
+  "openinfra.kpi.kv_fill": {
+    "source": "KV fill",
+    "text": "KV 占用"
+  },
+  "openinfra.kpi.kv_fill_hint": {
+    "source": "{range} · {tokens} tokens",
+    "text": "{range} · {tokens} token"
+  },
+  "openinfra.kpi.memory_hint": {
+    "source": "{range} · {used} / {total} GB",
+    "text": "{range} · {used} / {total} GB"
+  },
+  "openinfra.kpi.queue": {
+    "source": "Queue",
+    "text": "排队"
+  },
+  "openinfra.kpi.queue_hint": {
+    "source": "{range} · {running} running",
+    "text": "{range} · {running} 个运行中"
+  },
+  "openinfra.kpi.ram": {
+    "source": "RAM",
+    "text": "内存"
+  },
+  "openinfra.kpi.sm": {
+    "source": "SM util",
+    "text": "SM 利用率"
+  },
+  "openinfra.kpi.sm_hint": {
+    "source": "{range} · tensor {tensor}",
+    "text": "{range} · Tensor {tensor}"
+  },
+  "openinfra.kpi.tokens": {
+    "source": "Prefill + decode",
+    "text": "预填充 + 解码"
+  },
+  "openinfra.kpi.tokens_hint": {
+    "source": "{range} · tokens / min",
+    "text": "{range} · token/分钟"
+  },
+  "openinfra.kpi.vram": {
+    "source": "VRAM",
+    "text": "显存"
+  },
+  "openinfra.loading": {
+    "source": "Loading OpenInfra…",
+    "text": "正在加载 OpenInfra…"
+  },
+  "openinfra.meta_description": {
+    "source": "Live GPU, host and inference-engine metrics from the servers behind {app_name}.",
+    "text": "{app_name} 背后服务器的实时 GPU、主机和推理引擎指标。"
+  },
+  "openinfra.meta_title": {
+    "source": "OpenInfra | {app_name}",
+    "text": "OpenInfra | {app_name}"
+  },
+  "openinfra.range.24h": {
+    "source": "24h",
+    "text": "24 小时"
+  },
+  "openinfra.range.24h_title": {
+    "source": "20-minute samples",
+    "text": "每 20 分钟一个样本"
+  },
+  "openinfra.range.2h": {
+    "source": "2h",
+    "text": "2 小时"
+  },
+  "openinfra.range.2h_title": {
+    "source": "1-minute samples",
+    "text": "每分钟一个样本"
+  },
+  "openinfra.range.7d": {
+    "source": "7d",
+    "text": "7 天"
+  },
+  "openinfra.range.7d_title": {
+    "source": "hourly samples",
+    "text": "每小时一个样本"
+  },
+  "openinfra.range.avg_days": {
+    "source": "{days}d avg",
+    "text": "{days} 天平均"
+  },
+  "openinfra.range.avg_hours": {
+    "source": "{hours}h avg",
+    "text": "{hours} 小时平均"
+  },
+  "openinfra.range.live": {
+    "source": "live",
+    "text": "实时"
+  },
+  "openinfra.refresh": {
+    "source": "Refresh",
+    "text": "刷新"
+  },
+  "openinfra.refresh_error": {
+    "source": "The latest numbers could not be loaded; the page shows the last ones.",
+    "text": "最新数据未能加载，页面显示的是上一次的数据。"
+  },
+  "openinfra.refreshing": {
+    "source": "Refreshing…",
+    "text": "正在刷新…"
+  },
+  "openinfra.requests.anonymized": {
+    "source": "anonymized · no prompts",
+    "text": "已匿名 · 不含提示词"
+  },
+  "openinfra.requests.col_batch": {
+    "source": "batch",
+    "text": "批大小"
+  },
+  "openinfra.requests.col_cache": {
+    "source": "cache",
+    "text": "缓存"
+  },
+  "openinfra.requests.col_decode": {
+    "source": "decode",
+    "text": "解码速度"
+  },
+  "openinfra.requests.col_e2e": {
+    "source": "e2e",
+    "text": "端到端"
+  },
+  "openinfra.requests.col_in": {
+    "source": "in",
+    "text": "输入"
+  },
+  "openinfra.requests.col_model": {
+    "source": "model",
+    "text": "模型"
+  },
+  "openinfra.requests.col_out": {
+    "source": "out",
+    "text": "输出"
+  },
+  "openinfra.requests.col_out_title": {
+    "source": "Generated tokens until the request leaves the decode batch, from generation throughput × time / running",
+    "text": "请求离开解码批次前生成的 token 数，按生成吞吐量 × 时间 / 运行中请求数估算"
+  },
+  "openinfra.requests.col_prefill": {
+    "source": "prefill",
+    "text": "预填充"
+  },
+  "openinfra.requests.col_spec": {
+    "source": "spec",
+    "text": "投机解码"
+  },
+  "openinfra.requests.col_time": {
+    "source": "time",
+    "text": "时间"
+  },
+  "openinfra.requests.col_tpot": {
+    "source": "TPOT",
+    "text": "TPOT"
+  },
+  "openinfra.requests.col_ttft": {
+    "source": "TTFT",
+    "text": "TTFT"
+  },
+  "openinfra.requests.col_uncached": {
+    "source": "uncached",
+    "text": "未缓存"
+  },
+  "openinfra.requests.count": {
+    "source": "{count} anonymized · no prompts",
+    "text": "{count} 条，已匿名 · 不含提示词"
+  },
+  "openinfra.requests.empty": {
+    "source": "No per-request metadata yet for this deployment. Rows appear after the next reporter flush from engine logs.",
+    "text": "这个部署还没有单个请求的数据。下次上报程序从引擎日志上报后，这里就会出现。"
+  },
+  "openinfra.requests.help": {
+    "source": "Per-request shape and latency from engine logs. No prompts, completions, IP addresses or request ids. Out is generated tokens until the request leaves the decode batch (from generation throughput × time / running).",
+    "text": "来自引擎日志的单个请求形态和延迟。不含提示词、生成内容、IP 地址或请求 ID。输出是请求离开解码批次前生成的 token 数（按生成吞吐量 × 时间 / 运行中请求数估算）。"
+  },
+  "openinfra.requests.title": {
+    "source": "Recent requests",
+    "text": "最近的请求"
+  },
+  "openinfra.series.backup": {
+    "source": "backup",
+    "text": "备份"
+  },
+  "openinfra.series.device": {
+    "source": "device",
+    "text": "设备"
+  },
+  "openinfra.series.evict": {
+    "source": "evict",
+    "text": "驱逐"
+  },
+  "openinfra.series.generation": {
+    "source": "generation",
+    "text": "生成"
+  },
+  "openinfra.series.host": {
+    "source": "host",
+    "text": "主机"
+  },
+  "openinfra.series.load1": {
+    "source": "load1",
+    "text": "负载 1 分钟"
+  },
+  "openinfra.series.loadback": {
+    "source": "load-back",
+    "text": "回载"
+  },
+  "openinfra.series.prefill": {
+    "source": "prefill",
+    "text": "预填充"
+  },
+  "openinfra.series.prompt": {
+    "source": "prompt",
+    "text": "提示词"
+  },
+  "openinfra.series.queue": {
+    "source": "queue",
+    "text": "排队"
+  },
+  "openinfra.series.queued": {
+    "source": "queued",
+    "text": "排队中"
+  },
+  "openinfra.series.running": {
+    "source": "running",
+    "text": "运行中"
+  },
+  "openinfra.series.rx": {
+    "source": "RX",
+    "text": "接收"
+  },
+  "openinfra.series.ttft": {
+    "source": "TTFT",
+    "text": "TTFT"
+  },
+  "openinfra.series.tx": {
+    "source": "TX",
+    "text": "发送"
+  },
+  "openinfra.series.uncached": {
+    "source": "uncached",
+    "text": "未缓存"
+  },
+  "openinfra.series.used_gb": {
+    "source": "used GB",
+    "text": "已用 GB"
+  },
+  "openinfra.series.util": {
+    "source": "util %",
+    "text": "利用率 %"
+  },
+  "openinfra.served.cache": {
+    "source": "cache",
+    "text": "缓存"
+  },
+  "openinfra.served.day": {
+    "source": "Last 24 hours",
+    "text": "最近 24 小时"
+  },
+  "openinfra.served.day_window": {
+    "source": "1 day",
+    "text": "1 天"
+  },
+  "openinfra.served.decode": {
+    "source": "decode",
+    "text": "解码"
+  },
+  "openinfra.served.hit": {
+    "source": "Window cache hit {percent}",
+    "text": "窗口内缓存命中率 {percent}"
+  },
+  "openinfra.served.hour": {
+    "source": "Last hour",
+    "text": "最近 1 小时"
+  },
+  "openinfra.served.hour_window": {
+    "source": "60 min",
+    "text": "60 分钟"
+  },
+  "openinfra.served.mix": {
+    "source": "Token mix: cache {cache}, prefill {prefill}, decode {decode}",
+    "text": "token 构成：缓存 {cache}，预填充 {prefill}，解码 {decode}"
+  },
+  "openinfra.served.no_prefill": {
+    "source": "No prefill tokens in this window",
+    "text": "这个窗口内没有预填充 token"
+  },
+  "openinfra.served.prefill": {
+    "source": "prefill",
+    "text": "预填充"
+  },
+  "openinfra.served.requests": {
+    "source": "requests",
+    "text": "请求"
+  },
+  "openinfra.served.subtitle": {
+    "source": "Requests and tokens delivered · last hour and last 24 hours",
+    "text": "已交付的请求和 token · 最近 1 小时与最近 24 小时"
+  },
+  "openinfra.served.title": {
+    "source": "Served",
+    "text": "服务量"
+  },
+  "openinfra.served.tokens": {
+    "source": "tokens",
+    "text": "token"
+  },
+  "openinfra.status.degraded": {
+    "source": "degraded",
+    "text": "异常"
+  },
+  "openinfra.status.offline": {
+    "source": "offline",
+    "text": "离线"
+  },
+  "openinfra.status.online": {
+    "source": "online",
+    "text": "在线"
+  },
+  "openinfra.status.unknown": {
+    "source": "unknown",
+    "text": "未知"
+  },
+  "openinfra.subtitle": {
+    "source": "Live GPU, host and inference-engine metrics from this deployment’s own servers.",
+    "text": "这个部署自有服务器的实时 GPU、主机和推理引擎指标。"
+  },
+  "openinfra.tabs.deployments": {
+    "source": "Deployments",
+    "text": "部署"
+  },
+  "openinfra.tabs.range": {
+    "source": "Time range",
+    "text": "时间范围"
+  },
+  "openinfra.title": {
+    "source": "OpenInfra",
+    "text": "OpenInfra"
+  },
+  "openinfra.unavailable": {
+    "source": "OpenInfra is not published for this site.",
+    "text": "这个站点没有公开 OpenInfra。"
+  },
+  "openinfra.updated": {
+    "source": "Updated {ago}",
+    "text": "{ago}更新"
   },
   "settings.reauth.sso_button": {
     "source": "Confirm with {name}",

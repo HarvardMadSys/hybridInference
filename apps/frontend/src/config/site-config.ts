@@ -151,6 +151,8 @@ const featuresSchema = z
     // The gateway only sends this key when the deployment enables public
     // stats, so a document without it means "off".
     public_stats: z.boolean().nullable().optional(),
+    // Likewise for the public OpenInfra page (/openinfra).
+    openinfra: z.boolean().nullable().optional(),
   })
   .strict();
 
@@ -216,6 +218,8 @@ export interface RuntimeSiteConfig {
     rag: boolean;
     agents: boolean;
     publicStats: boolean;
+    /** The public OpenInfra page: live metrics of the deployment's own servers. */
+    openinfra: boolean;
   };
   /** First-run setup: while required, every route but `/setup` redirects there. */
   setup: {
@@ -243,7 +247,14 @@ export const buildTimeSiteConfig: RuntimeSiteConfig = {
   accounting: { currency: 'USD' },
   agentsUrl: '',
   distribution: { id: 'legacy', release: '' },
-  features: { publicSignup: true, phoneAuth: false, rag: true, agents: false, publicStats: false },
+  features: {
+    publicSignup: true,
+    phoneAuth: false,
+    rag: true,
+    agents: false,
+    publicStats: false,
+    openinfra: false,
+  },
   setup: { required: false },
   configuration: { incomplete: false },
   sso: { enabled: false },
@@ -333,6 +344,8 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
       agents: false,
       // Opt-in only: publishing usage stats needs an explicit true.
       publicStats: document.features.public_stats === true,
+      // Opt-in only, the same way: publishing server metrics needs an explicit true.
+      openinfra: document.features.openinfra === true,
     },
     setup: { required: document.setup?.required === true },
     configuration: { incomplete: document.configuration?.incomplete === true },

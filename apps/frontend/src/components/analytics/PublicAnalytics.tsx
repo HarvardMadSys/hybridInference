@@ -15,7 +15,13 @@ import {
  * a form for a password, and a reset or verification token in the URL, which
  * the counter would report -- and so is everything behind a sign-in.
  */
-const ANALYTICS_PATHS: ReadonlySet<string> = new Set(['/', '/terms', '/stats', '/team']);
+const ANALYTICS_PATHS: ReadonlySet<string> = new Set([
+  '/',
+  '/terms',
+  '/stats',
+  '/openinfra',
+  '/team',
+]);
 
 export function isAnalyticsPath(pathname: string | null): boolean {
   if (!pathname) return false;

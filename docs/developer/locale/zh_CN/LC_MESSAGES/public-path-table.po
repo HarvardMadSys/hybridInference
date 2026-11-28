@@ -982,3 +982,36 @@ msgstr ""
 #: ../developer/public-path-table.md
 msgid "the daily usage snapshot behind the public `/stats` page"
 msgstr "公开的 `/stats` 页面所展示的每日用量快照"
+
+#: ../developer/public-path-table.md
+msgid "`/internal/openinfra/ingest`"
+msgstr ""
+
+#: ../developer/public-path-table.md
+msgid "`src/app/internal/openinfra/ingest/route.ts`"
+msgstr ""
+
+#: ../developer/public-path-table.md
+msgid ""
+"OpenInfra snapshots from the reporters on the deployment's GPU servers "
+"(`POST`; ingest token, `404` while none is configured — see "
+"[OpenInfra](openinfra.md))"
+msgstr ""
+"部署的 GPU 服务器上 reporter 发来的 OpenInfra 快照（`POST`；使用采集令牌，未配置令牌时返回 `404`——见 "
+"[OpenInfra](openinfra.md)）"
+
+#: ../developer/public-path-table.md
+msgid "`/public-openinfra`"
+msgstr ""
+
+#: ../developer/public-path-table.md
+msgid "the live GPU, host and engine snapshot behind the public `/openinfra` page"
+msgstr "公开的 `/openinfra` 页面所展示的 GPU、主机和引擎实时快照"
+
+#: ../developer/public-path-table.md
+msgid "`/public-openinfra/history`"
+msgstr ""
+
+#: ../developer/public-path-table.md
+msgid "that page's charts, for the range it asks for"
+msgstr "该页面图表所需的、按其请求的时间范围给出的数据"
