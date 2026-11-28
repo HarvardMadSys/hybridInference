@@ -34,9 +34,7 @@ extensions = [
 
 # MyST parser configuration
 myst_enable_extensions = [
-    "colon_fence",  # ::: fences
     "deflist",  # Definition lists
-    "tasklist",  # Task lists
 ]
 
 # Generate implicit anchors for h1-h3 headings so GitHub-style in-page links

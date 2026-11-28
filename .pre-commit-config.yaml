@@ -21,8 +21,6 @@ repos:
       - id: trailing-whitespace
       - id: mixed-line-ending
         args: ["--fix=lf"]
-      # - id: no-commit-to-branch
-      #   args: ["--branch", "main", "--branch", "master"]
 
   # Pin the same ruff version CI uses and lint the same files (whole repo) so
   # local commits can't pass while CI's repo-wide `ruff check/format .` fails.
