@@ -88,7 +88,9 @@ ATTRIBUTION: dict[str, str] = {
     "docs/developer/routing.md": (
         "links the MIT-licensed RouteWise package repository, cited the way a dependency is"
     ),
-    "docs/developer/locale/zh_CN/LC_MESSAGES/index.po": "the same URLs, inside their translation",
+    "docs/developer/locale/zh_CN/LC_MESSAGES/index.po": (
+        "the same URLs, and the lab and its citation, inside their translation"
+    ),
     "docs/developer/locale/zh_CN/LC_MESSAGES/routing.po": "the same URL, inside its translation",
     "CLAUDE.md": (
         "links to the public sibling cloud-agent repository, cited the way a dependency is"
