@@ -606,13 +606,14 @@ class BatchScheduler:
         self._enabled = enabled
 
     async def _sweep(self, cfg: BatchConfig) -> None:
+        # Each step below runs whether or not the ones before it failed.
+        counts: dict[str, int] = {}
         try:
             counts = await self._store.sweep(retention_days=cfg.retention_days)
         except Exception:
             logger.warning(
                 "batch sweep failed", extra={"event": "batch_sweep_failed"}, exc_info=True
             )
-            return
         if self._file_store is not None:
             try:
                 counts.update(await self._file_store.collect_garbage())
