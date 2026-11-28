@@ -56,6 +56,7 @@ async def test_the_model_catalog_has_a_category_of_its_own_and_still_asks_for_a_
         "SITE_CONFIGURATION": "application",
         "SITE_BRANDING": "application",
         "SSO_PROVIDERS": "application",
+        "MCP_SERVERS": "application",
     }
     # Where requests go and who may sign in: saving any document asks for the password.
     for key in DOCUMENT_KEYS.values():
