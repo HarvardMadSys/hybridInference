@@ -197,9 +197,10 @@ def _is_config_managed_provider(
 
     Deliberately excludes ``dynamic_keys.get_known_providers()``: custom
     providers register themselves there, so consulting it would misclassify a
-    custom provider as built-in and make it un-editable and un-deletable.
-    Built-in providers are read-only in this registry — they are managed via
-    config/models.yaml, the Routing tab, and the Keys tab.
+    custom provider as built-in and take the custom delete path for it.
+    Built-in providers are not editable in this registry — they are managed
+    via the model catalog, the Routing tab, and the Keys tab — but they can
+    be deleted, which removes their catalog routes (see the delete endpoint).
     """
     return provider in _config_managed_provider_names(config_specs)
 
@@ -358,6 +359,129 @@ def _declared_route_owner(route: dict[str, Any]) -> str | None:
         if isinstance(value, str) and value.strip():
             return _credential_owner(value.strip())
     return None
+
+
+def _route_provider_slug(
+    route: dict[str, Any],
+    raw_model_provider: str,
+    model_provider: str | None,
+) -> str:
+    """The registry slug one catalog route belongs to, as the specs build it.
+
+    A route's own ``provider:`` label wins; without one the route kind decides
+    (with the model's provider for a generic ``openai_compat`` kind), and a
+    declared credential owner in route metadata owns the route instead,
+    unless the route is relabelled or pinned to OpenRouter.
+    """
+    raw_kind = str(route.get("kind") or raw_model_provider or "").strip()
+    provider, _adapter_kind = _provider_spec_from_route_kind(raw_kind, model_provider)
+    route_label = str(route.get("provider") or "").strip()
+    if route_label:
+        return route_label
+    _base_kind, pinned_provider = parse_openrouter_kind(raw_kind)
+    if not pinned_provider:
+        owner = _declared_route_owner(route)
+        if owner is not None and owner != provider:
+            return owner
+    return provider
+
+
+def _remove_provider_from_document(
+    document: dict[str, Any], provider_slug: str
+) -> tuple[dict[str, Any], int, int]:
+    """Return the catalog without one provider's routes, and what was removed.
+
+    Every route the provider owns is dropped; a model left with no route is
+    dropped with it, as is a model with no ``route:`` whose synthesized route
+    is the provider's. Any other key stays, and the input is not changed.
+    """
+    models = document.get("models")
+    if not isinstance(models, list):
+        return document, 0, 0
+    kept: list[Any] = []
+    removed_routes = 0
+    removed_models = 0
+    for model in models:
+        if not isinstance(model, dict):
+            kept.append(model)
+            continue
+        raw_model_provider = str(model.get("provider") or "").strip()
+        model_provider = (
+            dynamic_keys.normalize_key_provider(raw_model_provider) if raw_model_provider else None
+        )
+        routes = model.get("route")
+        if not isinstance(routes, list):
+            if model_provider == provider_slug:
+                removed_models += 1
+                removed_routes += 1
+            else:
+                kept.append(model)
+            continue
+        remaining = [
+            route
+            for route in routes
+            if not (
+                isinstance(route, dict)
+                and _route_provider_slug(route, raw_model_provider, model_provider) == provider_slug
+            )
+        ]
+        removed_routes += len(routes) - len(remaining)
+        if remaining:
+            kept.append({**model, "route": remaining} if len(remaining) != len(routes) else model)
+        elif routes:
+            removed_models += 1
+        else:
+            kept.append(model)
+    if not removed_routes and not removed_models:
+        return document, 0, 0
+    return {**document, "models": kept}, removed_routes, removed_models
+
+
+async def _remove_provider_from_catalog(
+    provider_slug: str, *, updated_by: str | None
+) -> tuple[int, int]:
+    """Drop one provider's routes from the stored model catalog.
+
+    Mirrors ``_remove_model_from_catalog`` in provider_routes: the database
+    row then wins over a catalog the environment still holds, so the next
+    start does not register the provider's routes again. A catalog that does
+    not name the provider is left as it is.
+
+    Raises:
+        HTTPException: The catalog names the provider and cannot be saved.
+    """
+    from serving.config import app_config
+    from serving.config.documents import DocumentError, check, encode, parse
+
+    raw = app_config.configured_value("MODEL_CATALOG") or ""
+    try:
+        document = parse(raw) if raw.strip() else {}
+        updated, removed_routes, removed_models = _remove_provider_from_document(
+            document, provider_slug
+        )
+        if removed_routes or removed_models:
+            check("models", updated)
+    except DocumentError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"The model catalog cannot be updated: {exc}",
+        ) from None
+    if not removed_routes and not removed_models:
+        return 0, 0
+    if app_config.attached_store() is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Configuration storage is unavailable: the database is not connected.",
+        )
+    try:
+        await app_config.update(
+            {"MODEL_CATALOG": encode(updated)},
+            updated_by=updated_by,
+            expected_version=app_config.source_version(),
+        )
+    except app_config.ConfigUpdateError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from None
+    return removed_routes, removed_models
 
 
 def _strip_chat_completions(base_url: str) -> None:
@@ -969,43 +1093,72 @@ async def delete_provider_definition(
     op_store=Depends(get_operational_store),
     services=Depends(get_services),
 ) -> DeleteProviderDefinitionResponse:
-    """Delete an unused custom provider definition and its stored keys.
+    """Delete a provider definition, its stored keys, and its catalog routes.
 
-    Built-in providers are read-only here: they are defined in
-    config/models.yaml and cannot be deleted from the admin registry.
+    A custom provider must be unused, as before. A built-in (config-managed)
+    provider is removed from the stored model catalog instead: its routes are
+    dropped, models left without a route are dropped with them, its stored
+    keys are deleted, and it is disabled so live routing stops using it at
+    once. The catalog edit is what makes the removal survive a restart.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not configured")
 
     provider_slug = _validate_provider_slug(provider)
     config_specs = _configured_provider_specs()
-    if _is_config_managed_provider(provider_slug, config_specs):
-        raise HTTPException(
-            status_code=409,
-            detail="Built-in providers are defined in config/models.yaml and cannot be deleted here.",
-        )
     row = await op_store.get_provider_definition(provider_slug)
-    if row is None:
-        raise HTTPException(status_code=404, detail="provider not found")
 
-    models = _merge_config_models_by_provider(
-        _models_by_provider(services),
-        config_specs,
-    ).get(provider_slug, set())
-    if models:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"{row.display_name} is used by {len(models)} model(s). "
-                "Remove those routes in Routing before deleting this provider."
-            ),
+    if not _is_config_managed_provider(provider_slug, config_specs):
+        if row is None:
+            raise HTTPException(status_code=404, detail="provider not found")
+        models = _merge_config_models_by_provider(
+            _models_by_provider(services),
+            config_specs,
+        ).get(provider_slug, set())
+        if models:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{row.display_name} is used by {len(models)} model(s). "
+                    "Remove those routes in Routing before deleting this provider."
+                ),
+            )
+        deleted_keys = await op_store.delete_provider_keys_for_provider(provider_slug)
+        deleted = await op_store.delete_provider_definition(provider_slug)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="provider not found")
+        provider_registry.unregister_provider_definition(provider_slug)
+        await log_admin_action(
+            op_store,
+            action="provider_definition.delete",
+            actor=actor,
+            target=AuditTarget.provider(provider_slug),
+            details={
+                "provider": provider_slug,
+                "display_name": row.display_name,
+                "deleted_keys": deleted_keys,
+            },
         )
+        return DeleteProviderDefinitionResponse(provider=provider_slug, deleted_keys=deleted_keys)
 
+    # Built-in: remove the catalog routes first, so a refused catalog write
+    # leaves keys, routing, and the registry untouched.
+    removed_routes, removed_models = await _remove_provider_from_catalog(
+        provider_slug, updated_by=actor.id or "admin_token"
+    )
+    display_name = row.display_name if row is not None else _display_name(provider_slug)
     deleted_keys = await op_store.delete_provider_keys_for_provider(provider_slug)
-    deleted = await op_store.delete_provider_definition(provider_slug)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="provider not found")
-    provider_registry.unregister_provider_definition(provider_slug)
+    if row is not None:
+        await op_store.delete_provider_definition(provider_slug)
+        provider_registry.unregister_provider_definition(provider_slug)
+    await op_store.set_provider_disabled(provider_slug, actor.id)
+    resolver = getattr(services, "disabled_provider_resolver", None)
+    if resolver is not None:
+        resolver.set_disabled(provider_slug)
+    if getattr(services, "model_router_registry", None) is not None:
+        from serving.servers.routewise_rebuild import rebuild_routewise_routers
+
+        rebuild_routewise_routers(services)
 
     await log_admin_action(
         op_store,
@@ -1014,8 +1167,16 @@ async def delete_provider_definition(
         target=AuditTarget.provider(provider_slug),
         details={
             "provider": provider_slug,
-            "display_name": row.display_name,
+            "display_name": display_name,
             "deleted_keys": deleted_keys,
+            "source": "built_in",
+            "removed_routes": removed_routes,
+            "removed_models": removed_models,
         },
     )
-    return DeleteProviderDefinitionResponse(provider=provider_slug, deleted_keys=deleted_keys)
+    return DeleteProviderDefinitionResponse(
+        provider=provider_slug,
+        deleted_keys=deleted_keys,
+        removed_routes=removed_routes,
+        removed_models=removed_models,
+    )

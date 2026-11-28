@@ -18,6 +18,7 @@ class FakeProviderDefinitionStore:
         self.rows = rows or {}
         self.upserts: list[dict[str, object]] = []
         self.deleted_keys: list[str] = []
+        self.disabled_providers: list[str] = []
 
     async def get_provider_definition(self, provider: str):
         return self.rows.get(provider)
@@ -73,6 +74,12 @@ class FakeProviderDefinitionStore:
     async def delete_provider_definition(self, provider: str) -> bool:
         return self.rows.pop(provider, None) is not None
 
+    async def set_provider_disabled(self, provider: str, updated_by: str | None) -> None:
+        self.disabled_providers.append(provider)
+
+    async def clear_provider_disabled(self, provider: str) -> bool:
+        return False
+
 
 def _empty_services():
     return SimpleNamespace(router=SimpleNamespace(routes={}))
@@ -123,13 +130,75 @@ async def test_update_builtin_provider_is_rejected(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_delete_builtin_provider_is_rejected(monkeypatch):
+async def test_delete_builtin_provider_removes_catalog_routes_keys_and_disables(monkeypatch):
+    """A built-in provider is deleted by removing it from the stored catalog.
+
+    Its routes go, a model left routeless goes with them, its stored keys are
+    deleted, and it is disabled so live routing stops using it at once.
+    """
+    import json
+
+    from serving.config import app_config
+    from serving.config.documents import encode
+    from tests.fixtures.app_config_store import FakeAppConfigStore, row
+
     store = FakeProviderDefinitionStore()
     config_spec = provider_definitions.ConfigProviderSpec(
         provider="kimi",
         adapter_kind="kimi",
         default_base_url="https://api.moonshot.ai/v1",
-        model_ids=frozenset(),
+        model_ids=frozenset(["kimi-only", "shared"]),
+    )
+    catalog = {
+        "models": [
+            {
+                "id": "kimi-only",
+                "provider": "kimi",
+                "route": [
+                    {
+                        "kind": "kimi",
+                        "base_url": "https://api.kimi.test/v1",
+                        "provider_model_id": "kimi-only",
+                    }
+                ],
+            },
+            {
+                "id": "shared",
+                "provider": "kimi",
+                "route": [
+                    {
+                        "kind": "kimi",
+                        "base_url": "https://api.kimi.test/v1",
+                        "provider_model_id": "shared",
+                    },
+                    {
+                        "kind": "ollama",
+                        "base_url": "https://ollama.test/v1",
+                        "provider_model_id": "shared",
+                    },
+                ],
+            },
+            {
+                "id": "other",
+                "provider": "ollama",
+                "route": [
+                    {
+                        "kind": "ollama",
+                        "base_url": "https://ollama.test/v1",
+                        "provider_model_id": "other",
+                    }
+                ],
+            },
+        ]
+    }
+    config_store = FakeAppConfigStore([row("MODEL_CATALOG", encode(catalog))])
+    await app_config.load(config_store, bootstrap=False)
+    app_config.attach(config_store)
+    disabled_live: list[str] = []
+    services = SimpleNamespace(
+        router=SimpleNamespace(routes={}),
+        model_router_registry=None,
+        disabled_provider_resolver=SimpleNamespace(set_disabled=disabled_live.append),
     )
 
     async def noop_audit(*_args, **_kwargs):
@@ -140,17 +209,54 @@ async def test_delete_builtin_provider_is_rejected(monkeypatch):
     )
     monkeypatch.setattr(provider_definitions, "log_admin_action", noop_audit)
 
-    with pytest.raises(HTTPException) as exc_info:
-        await provider_definitions.delete_provider_definition(
-            "kimi",
-            actor=ADMIN_ACTOR,
-            op_store=store,
-            services=_empty_services(),
-        )
+    response = await provider_definitions.delete_provider_definition(
+        "kimi",
+        actor=ADMIN_ACTOR,
+        op_store=store,
+        services=services,
+    )
 
-    assert exc_info.value.status_code == 409
-    assert store.upserts == []
-    assert store.deleted_keys == []
+    assert response.provider == "kimi"
+    assert response.removed_routes == 2
+    assert response.removed_models == 1
+    assert response.deleted_keys == 2
+    assert store.deleted_keys == ["kimi"]
+    assert store.disabled_providers == ["kimi"]
+    assert disabled_live == ["kimi"]
+    stored = json.loads(config_store.rows["MODEL_CATALOG"].value)
+    assert [model["id"] for model in stored["models"]] == ["shared", "other"]
+    assert [route["kind"] for route in stored["models"][0]["route"]] == ["ollama"]
+
+
+def test_remove_provider_from_document_keeps_other_providers_and_keys():
+    document = {
+        "session_cookies": {"kimi": "${KIMI_COOKIE}"},
+        "models": [
+            {
+                "id": "labelled",
+                "provider": "openai_compat",
+                "route": [
+                    {"kind": "openai_compat", "provider": "kimi", "base_url": "https://x/v1"}
+                ],
+            },
+            {"id": "synthesized", "provider": "kimi"},
+            {
+                "id": "untouched",
+                "provider": "ollama",
+                "route": [{"kind": "ollama", "base_url": "https://y/v1"}],
+            },
+            "not-an-entry",
+        ],
+    }
+
+    updated, removed_routes, removed_models = provider_definitions._remove_provider_from_document(
+        document, "kimi"
+    )
+
+    assert (removed_routes, removed_models) == (2, 2)
+    assert updated["models"] == [document["models"][2], "not-an-entry"]
+    assert updated["session_cookies"] == {"kimi": "${KIMI_COOKIE}"}
+    assert len(document["models"]) == 4
 
 
 @pytest.mark.asyncio

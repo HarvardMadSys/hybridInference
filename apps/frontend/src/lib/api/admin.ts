@@ -3521,6 +3521,8 @@ export interface UpdateProviderDefinitionPayload {
 interface DeleteProviderDefinitionResponse {
   provider: string;
   deleted_keys: number;
+  removed_routes?: number;
+  removed_models?: number;
 }
 
 export async function listProviderDefinitions(): Promise<ListProviderDefinitionsResponse> {
