@@ -907,6 +907,18 @@ async def test_lowering_a_role_needs_no_password(admin_client):
 
     assert response.status_code == 200, response.text
     op_store.update_user_fields.assert_awaited_once_with("u1", role="pro")
+    assert _mock_log.await_args.kwargs["details"]["previous_role"] == "internal"
+
+
+@pytest.mark.asyncio
+async def test_an_update_without_a_role_records_no_previous_role(admin_client):
+    client, op_store, _log_store, mock_log = admin_client
+    op_store.get_user_by_id.return_value = _user_row(role="internal")
+
+    response = await client.patch("/admin/users/u1", headers=AUTH, json={"admin_note": "hi"})
+
+    assert response.status_code == 200, response.text
+    assert "previous_role" not in mock_log.await_args.kwargs["details"]
 
 
 @pytest.mark.asyncio
@@ -929,6 +941,8 @@ async def test_raising_a_role_needs_the_administrators_password(signed_in_admin)
     op_store.update_user_fields.assert_awaited_once_with("u1", role="admin")
     details = mock_log.await_args.kwargs["details"]
     assert details["values"] == {"role": "admin"}
+    # The role before the write, so a grant can be told from a resent role.
+    assert details["previous_role"] == "free"
     assert ADMIN_PASSWORD not in repr(mock_log.await_args_list)
 
 

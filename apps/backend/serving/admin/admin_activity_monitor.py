@@ -8,14 +8,17 @@ sends up to two cards to the configured Slack or WeCom channel
   An administrator signed in, or failed to sign in, from an address the
   account had not used in the previous ``lookback_days`` (neither signed in
   from nor acted from), or an administrator's session acted from such an
-  address, or the shared ``ADMIN_TOKEN`` acted from an address it had not
-  acted from in that time. An address is an IPv4 address or an IPv6 /64
+  address, on an admin route or on its own account's routes, or the shared
+  ``ADMIN_TOKEN`` acted from an address it had not acted from in that time. An
+  address is an IPv4 address or an IPv6 /64
   (:func:`serving.utils.client_addresses.address_key`), so a host's
-  rotating IPv6 privacy addresses are one address.
+  rotating IPv6 privacy addresses are one address. Only accounts with the
+  admin role are watched: an internal account cannot reach the admin routes.
 * **Dangerous administrator actions** (``admin_dangerous_action``): an audited
   action in :data:`DANGEROUS_ACTIONS`, an account given the admin or internal
-  role, or a change to a setting in :data:`SENSITIVE_SETTINGS` or to a secret
-  one, by an administrator or the admin token. Refused attempts count too.
+  role it did not have, or a change to a setting in :data:`SENSITIVE_SETTINGS`
+  or to a secret one, by an administrator or the admin token. Refused attempts
+  count too.
 
 **Each finding is reported once.** A run holds an advisory lock, so replicas
 take turns, and starts where the last report ended: once a card is delivered,
@@ -86,13 +89,19 @@ TOKEN_LABEL = "ADMIN_TOKEN"
 _TOKEN = "token"
 
 #: Audited actions that are dangerous whatever their details: they grant or
-#: remove access, expose users' data or the gateway's secrets, change where
-#: traffic goes, or silence the monitoring and the record of it.
+#: remove access, change how an administrator's own account signs in, expose
+#: users' data or the gateway's secrets, change where traffic goes, or silence
+#: the monitoring and the record of it.
 DANGEROUS_ACTIONS: dict[str, str] = {
     "hard_delete_user": "permanently deleted an account",
     "delete_user": "deleted an account",
     "two_factor.reset": "removed an account's authenticator",
     "unlink_sso_identity": "disconnected an account's single sign-on identity",
+    # An administrator's own sign-in, changed on its own account's routes.
+    "two_factor.enable": "set up an authenticator",
+    "two_factor.disable": "removed an authenticator",
+    "two_factor.recovery_codes": "made new recovery codes",
+    "link_sso_identity": "connected a single sign-on identity",
     "create_service_account": "created a service account",
     "reveal_key": "revealed an API key",
     "export_requests": "exported request logs",
@@ -265,7 +274,13 @@ def dangerous_description(action: str, details: Mapping[str, Any] | None) -> str
     if action == "update_user":
         values = details.get("values")
         role = values.get("role") if isinstance(values, dict) else None
-        return f"gave an account the {role} role" if role in RAISED_ROLES else None
+        if role not in RAISED_ROLES:
+            return None
+        # A row from before ``previous_role`` was recorded cannot tell a grant
+        # from a save that resent the role, so it is reported.
+        if details.get("previous_role") == role:
+            return None
+        return f"gave an account the {role} role"
     if action in _SETTING_VERBS:
         key = str(details.get("key") or "").upper()
         secret = details.get("changed") is True or details.get("marked_secret") is True
@@ -336,7 +351,8 @@ _SIGN_INS_SQL = """
       AND e.created_at > $1 AND e.created_at <= $2
 """
 
-#: Audited actions in the window by an administrator's session or the token.
+#: Audited actions in the window by an administrator's session -- on an admin
+#: route (``admin``) or on its own account's routes (``user``) -- or the token.
 _ACTIONS_SQL = """
     SELECT a.timestamp AS at, a.action, a.actor_type, a.actor_id, a.source_ip AS ip,
            a.success, a.details, a.target_type, a.target_id,
@@ -347,7 +363,8 @@ _ACTIONS_SQL = """
     LEFT JOIN users actor ON actor.id = a.actor_id
     LEFT JOIN users target ON target.id = a.target_user_id
     WHERE a.timestamp > $1 AND a.timestamp <= $2
-      AND a.actor_type IN ('admin', 'admin_token')
+      AND (a.actor_type IN ('admin', 'admin_token')
+           OR (a.actor_type = 'user' AND actor.role = 'admin'))
 """
 
 #: The addresses each administrator, and the token, used in the lookback:
@@ -363,7 +380,8 @@ _KNOWN_SQL = """
            source_ip
     FROM admin_audit_log
     WHERE timestamp > $2 AND timestamp <= $3 AND source_ip IS NOT NULL
-      AND (actor_type = 'admin_token' OR (actor_type = 'admin' AND actor_id = ANY($1::text[])))
+      AND (actor_type = 'admin_token'
+           OR (actor_type IN ('admin', 'user') AND actor_id = ANY($1::text[])))
     GROUP BY 1, 2
 """
 
@@ -383,9 +401,18 @@ def _who(actor_type: str, actor_id: str | None) -> str:
     return _TOKEN if actor_type == "admin_token" else f"user:{actor_id}"
 
 
+def _actor_label(row: Mapping[str, Any]) -> str:
+    return TOKEN_LABEL if row["actor_type"] == "admin_token" else row["actor_label"]
+
+
 async def _new_address(
-    conn: asyncpg.Connection, since: datetime, until: datetime, lookback: timedelta
+    conn: asyncpg.Connection,
+    since: datetime,
+    until: datetime,
+    lookback: timedelta,
+    action_rows: Iterable[Mapping[str, Any]],
 ) -> list[Finding]:
+    """The new-address findings in the window; *action_rows* are its audited actions."""
     sign_ins = [
         {
             "who": f"user:{row['user_id']}",
@@ -400,12 +427,12 @@ async def _new_address(
     actions = [
         {
             "who": _who(row["actor_type"], row["actor_id"]),
-            "label": TOKEN_LABEL if row["actor_type"] == "admin_token" else row["actor_label"],
+            "label": _actor_label(row),
             "ip": row["ip"],
             "at": row["at"],
             "action": row["action"],
         }
-        for row in await conn.fetch(_ACTIONS_SQL, since, until)
+        for row in action_rows
         if row["actor_type"] == "admin_token" or row["actor_id"]
     ]
     if not sign_ins and not actions:
@@ -421,11 +448,10 @@ async def _new_address(
     return new_address_findings(sign_ins, actions, known)
 
 
-async def _dangerous(
-    conn: asyncpg.Connection, since: datetime, until: datetime, lookback: timedelta
-) -> list[Finding]:
+def _dangerous(action_rows: Iterable[Mapping[str, Any]]) -> list[Finding]:
+    """The dangerous-action findings among the window's audited actions."""
     rows = []
-    for row in await conn.fetch(_ACTIONS_SQL, since, until):
+    for row in action_rows:
         target = row["target_user_label"] or (
             f"{row['target_type']} {row['target_id']}"
             if row["target_type"] and row["target_id"]
@@ -435,9 +461,7 @@ async def _dangerous(
             {
                 "at": row["at"],
                 "action": row["action"],
-                "actor_label": (
-                    TOKEN_LABEL if row["actor_type"] == "admin_token" else row["actor_label"]
-                ),
+                "actor_label": _actor_label(row),
                 "ip": row["ip"],
                 "target_label": target,
                 "success": row["success"],
@@ -445,9 +469,6 @@ async def _dangerous(
             }
         )
     return dangerous_findings(rows)
-
-
-_COLLECTORS = {NEW_ADDRESS_ALERT: _new_address, DANGEROUS_ACTION_ALERT: _dangerous}
 
 
 async def _start(conn: asyncpg.Connection, alert_type: str, until: datetime) -> datetime:
@@ -574,13 +595,22 @@ async def run_monitor(
             return None
         try:
             until = (now or await conn.fetchval("SELECT now()")) - SETTLE
-            reported: dict[str, int] = {}
-            for alert_type, collect in _COLLECTORS.items():
-                since = await _start(conn, alert_type, until)
-                if since >= until:
-                    reported[alert_type] = 0
-                    continue
-                findings = await collect(conn, since, until, lookback)
+            starts = {
+                alert_type: await _start(conn, alert_type, until) for alert_type in ALERT_TITLES
+            }
+            reported = dict.fromkeys(starts, 0)
+            due = {alert_type: since for alert_type, since in starts.items() if since < until}
+            if not due:
+                return reported
+            # One read of the audited actions for both types, from the earlier
+            # start; each type takes the part after its own.
+            actions = await conn.fetch(_ACTIONS_SQL, min(due.values()), until)
+            for alert_type, since in due.items():
+                window = [row for row in actions if row["at"] > since]
+                if alert_type == NEW_ADDRESS_ALERT:
+                    findings = await _new_address(conn, since, until, lookback, window)
+                else:
+                    findings = _dangerous(window)
                 reported[alert_type] = await _report(
                     conn, alert_type, findings, since=since, until=until, config=config
                 )
@@ -619,9 +649,20 @@ async def _report(
             len(findings),
         )
         return 0
-    await _record(
-        conn, alert_type, since=since, until=until, findings=len(findings), delivered=True
-    )
+    try:
+        await _record(
+            conn, alert_type, since=since, until=until, findings=len(findings), delivered=True
+        )
+    except Exception:
+        # Delivered, but not recorded: the next run starts where the last
+        # record ends, so it sends these findings again rather than lose them.
+        logger.exception(
+            "admin_activity_monitor: %s card delivered but not recorded; "
+            "the next run sends its %d finding(s) again",
+            alert_type,
+            len(findings),
+        )
+        raise
     _SCANNED_THROUGH[alert_type] = until
     return len(findings)
 

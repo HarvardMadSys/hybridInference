@@ -89,6 +89,22 @@ async def _seed(db) -> None:
         (ago(minutes=12), "admin", "root", HOME, "approve_user", "u1", True, None),
         (ago(minutes=11), "admin_token", None, "192.0.2.77", "config.restore", None, False, None),
         (ago(minutes=5), "admin", "ops", "192.0.2.60", "export_requests", None, True, None),
+        # root's session on its own account's routes, from an address with no
+        # sign-in: a revealed key.
+        (ago(minutes=8), "user", "root", "192.0.2.61", "reveal_key", "root", True, None),
+        # A save that resent the role root already had: no grant.
+        (
+            ago(minutes=7),
+            "admin",
+            "root",
+            HOME,
+            "update_user",
+            "ops",
+            True,
+            {"updated_fields": ["role"], "values": {"role": "admin"}, "previous_role": "admin"},
+        ),
+        # Not an administrator's session: never reported.
+        (ago(minutes=6), "user", "u1", "192.0.2.98", "reveal_key", "u1", True, None),
         # Not an administrator's action: never reported.
         (ago(minutes=4), "anonymous", None, "192.0.2.99", "create_user", "u1", True, None),
         (ago(minutes=3), "system", None, None, "hard_delete_user", "u1", True, None),
@@ -159,7 +175,7 @@ async def test_a_run_reports_new_addresses_and_dangerous_actions(pool):
     ) as post:
         reported = await monitor.run_monitor(pool, AdminActivity(), now=NOW)
 
-    assert reported == {"admin_new_address": 4, "admin_dangerous_action": 5}
+    assert reported == {"admin_new_address": 5, "admin_dangerous_action": 6}
     messages = _posted(post)
     access = messages["Administrator access from a new address"]
     assert f"root@example.org from {NEW}: 1 sign-in, 1 failed sign-in attempt, 2 actions" in access
@@ -167,6 +183,8 @@ async def test_a_run_reports_new_addresses_and_dangerous_actions(pool):
     assert "ops@example.org from 192.0.2.60: 1 action (export_requests)" in access
     assert "no sign-in from this address" in access
     assert "ADMIN_TOKEN from 192.0.2.77: 1 action (config.restore)" in access
+    assert "root@example.org from 192.0.2.61: 1 action (reveal_key)" in access
+    assert "192.0.2.98" not in access
     assert HOME not in access
     assert "u1@example.org" not in access
 
@@ -177,6 +195,9 @@ async def test_a_run_reports_new_addresses_and_dangerous_actions(pool):
     assert "ADMIN_TOKEN restored a configuration backup, refused, from 192.0.2.77" in actions
     assert "ops@example.org exported request logs from 192.0.2.60" in actions
     assert "approve_user" not in actions
+    assert "root@example.org revealed an API key (root@example.org) from 192.0.2.61" in actions
+    assert "u1@example.org revealed" not in actions
+    assert actions.count("gave an account the admin role") == 1  # not the resent role
     assert actions.count("permanently deleted") == 1  # the system's own row is not reported
 
     rows = await _alerted_rows(pool)
@@ -187,7 +208,7 @@ async def test_a_run_reports_new_addresses_and_dangerous_actions(pool):
     through = (NOW - monitor.SETTLE).isoformat()
     assert {row["details"]["through"] for row in rows} == {through}
     assert {row["details"]["delivered"] for row in rows} == {True}
-    assert [row["details"]["findings"] for row in rows] == [5, 4]
+    assert [row["details"]["findings"] for row in rows] == [6, 5]
     # The first run ever records where monitoring started, an hour back.
     started = await _alerted_rows(pool, "admin_activity.started")
     assert [row["target_id"] for row in started] == ["admin_dangerous_action", "admin_new_address"]
@@ -229,7 +250,7 @@ async def test_an_undelivered_card_is_reported_by_the_next_run(pool):
     ) as post:
         second = await monitor.run_monitor(pool, AdminActivity(), now=NOW + timedelta(hours=1))
 
-    assert second == {"admin_new_address": 4, "admin_dangerous_action": 5}
+    assert second == {"admin_new_address": 5, "admin_dangerous_action": 6}
     assert post.await_count == 2
     rows = await _alerted_rows(pool)
     # The second run covered both hours: it started where the first one did.
@@ -248,12 +269,12 @@ async def test_a_muted_type_is_recorded_without_a_card(pool, monkeypatch):
     ) as post:
         reported = await monitor.run_monitor(pool, AdminActivity(), now=NOW)
 
-    assert reported == {"admin_new_address": 4, "admin_dangerous_action": 0}
+    assert reported == {"admin_new_address": 5, "admin_dangerous_action": 0}
     assert list(_posted(post)) == ["Administrator access from a new address"]
     rows = {row["target_id"]: row["details"] for row in await _alerted_rows(pool)}
     assert rows["admin_dangerous_action"]["delivered"] is False
     assert rows["admin_dangerous_action"]["reason"] == "muted"
-    assert rows["admin_dangerous_action"]["findings"] == 5
+    assert rows["admin_dangerous_action"]["findings"] == 6
 
 
 async def test_a_shorter_lookback_forgets_old_addresses(pool):
@@ -276,3 +297,39 @@ async def test_a_second_replica_waits_for_the_lock(pool):
             assert await monitor.run_monitor(pool, AdminActivity(), now=NOW) is None
         finally:
             await holder.execute(monitor._UNLOCK_SQL)
+
+
+async def test_a_delivered_card_that_is_not_recorded_is_sent_again(pool, monkeypatch, caplog):
+    record = monitor._record
+    failed = False
+
+    async def fail_once(*args, **kwargs):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise RuntimeError("audit write failed")
+        await record(*args, **kwargs)
+
+    monkeypatch.setattr(monitor, "_record", fail_once)
+    with (
+        patch(
+            "serving.observability.alerts._post_to_slack", new=AsyncMock(return_value=True)
+        ) as post,
+        pytest.raises(RuntimeError, match="audit write failed"),
+    ):
+        await monitor.run_monitor(pool, AdminActivity(), now=NOW)
+
+    # The first card went out; writing its record failed, which ended the run.
+    assert list(_posted(post)) == ["Administrator access from a new address"]
+    assert await _alerted_rows(pool) == []
+    assert "admin_new_address card delivered but not recorded" in caplog.text
+
+    # The next hourly run, in the same process, sends that card again.
+    with patch(
+        "serving.observability.alerts._post_to_slack", new=AsyncMock(return_value=True)
+    ) as post:
+        again = await monitor.run_monitor(pool, AdminActivity(), now=NOW + timedelta(hours=1))
+
+    assert again == {"admin_new_address": 5, "admin_dangerous_action": 6}
+    assert sorted(_posted(post)) == sorted(monitor.ALERT_TITLES.values())
+    assert len(await _alerted_rows(pool)) == 2

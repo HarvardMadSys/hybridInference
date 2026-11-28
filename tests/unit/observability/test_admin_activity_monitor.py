@@ -175,6 +175,9 @@ def test_each_listed_action_is_dangerous_whatever_its_details(action, descriptio
     [
         ({"values": {"role": "admin"}}, "gave an account the admin role"),
         ({"values": {"role": "internal"}}, "gave an account the internal role"),
+        ({"values": {"role": "admin"}, "previous_role": "pro"}, "gave an account the admin role"),
+        # A save that sent the role the account already had grants nothing.
+        ({"values": {"role": "admin"}, "previous_role": "admin"}, None),
         ({"values": {"role": "pro"}}, None),
         ({"values": {"status": "suspended"}}, None),
         (None, None),
