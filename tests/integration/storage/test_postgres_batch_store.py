@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -2449,29 +2450,87 @@ async def test_item_contents_pages_requests_with_their_answers(store):
     assert not more
 
 
-async def test_item_contents_pages_by_the_size_of_requests_and_answers(pool, store):
-    """By count alone a page could hold a hundred megabyte-sized requests and answers."""
+async def _contents_batch(store: BatchStore, contents: list[str]) -> tuple[str, dict[str, Any]]:
+    """A batch whose requests carry *contents*, its first item answered."""
     model = _model()
-    items = _items(model, 3)
-    for item in items:
-        item["request"]["messages"][0]["content"] = "x" * 3000
+    items = _items(model, len(contents))
+    for item, content in zip(items, contents, strict=True):
+        item["request"]["messages"][0]["content"] = content
     batch = await _create(store, items)
     (first,) = await _claim(store, model, limit=1)
     assert await _complete(store, first)
-    async with pool.acquire() as conn:
-        sizes = await conn.fetch(
-            "SELECT octet_length(request::text) + COALESCE(octet_length(response::text), 0) "
-            "AS bytes FROM batch_items WHERE batch_id = $1 ORDER BY id",
-            batch["id"],
-        )
-    one, two = int(sizes[0]["bytes"]), int(sizes[1]["bytes"])
+    return batch["id"], first
 
-    page, more = await store.item_contents(batch["id"], limit=50, max_bytes=one + two)
+
+async def _content_sizes(pool: Any, batch_id: str) -> list[tuple[int, int]]:
+    """Each item's request, response and error: as stored (maybe compressed), and as text."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT COALESCE(pg_column_size(request), 0) + COALESCE(pg_column_size(response), 0)"
+            " + COALESCE(pg_column_size(error), 0) AS stored,"
+            " COALESCE(octet_length(request::text), 0)"
+            " + COALESCE(octet_length(response::text), 0)"
+            " + COALESCE(octet_length(error::text), 0) AS text"
+            " FROM batch_items WHERE batch_id = $1 ORDER BY id",
+            batch_id,
+        )
+    return [(int(row["stored"]), int(row["text"])) for row in rows]
+
+
+async def _contents_page(
+    pool: Any, batch_id: str, *, max_bytes: int, after: int = 0
+) -> tuple[list[dict[str, Any]], bool, int]:
+    """:meth:`BatchStore.item_contents`, and how many items its first read chose to render."""
+    chosen: list[int] = []
+
+    def _record(query: Any) -> None:
+        if query.query == batch_store._CONTENT_PAGE_SQL:
+            chosen.append(len(query.args[1]))
+
+    async with pool.acquire() as conn:
+        conn.add_query_logger(_record)
+        try:
+            page, more = await BatchStore(_OneConnection(conn)).item_contents(
+                batch_id, after=after, limit=50, max_bytes=max_bytes
+            )
+            await asyncio.sleep(0)
+        finally:
+            conn.remove_query_logger(_record)
+    return page, more, chosen[0]
+
+
+async def test_item_contents_pages_by_the_size_of_requests_and_answers(pool, store):
+    """By count alone a page could hold a hundred megabyte-sized requests and answers.
+
+    Random text does not compress, so the first read, by stored size, makes the cut.
+    """
+    batch_id, first = await _contents_batch(store, [secrets.token_hex(1500) for _ in range(3)])
+    sizes = await _content_sizes(pool, batch_id)
+    budget = sizes[0][0] + sizes[1][0]
+    # The text of both fits too, so the second read keeps what the first chose.
+    assert sizes[0][1] + sizes[1][1] <= budget
+
+    page, more, chosen = await _contents_page(pool, batch_id, max_bytes=budget)
+
+    assert chosen == 2
     assert [item["custom_id"] for item in page] == ["req-0", "req-1"] and more
     assert page[0]["response"] == {"id": f"chatcmpl-{first['id']}", "choices": []}
     # One item at least, however large.
-    page, more = await store.item_contents(batch["id"], after=page[-1]["id"], limit=50, max_bytes=1)
+    page, more, _ = await _contents_page(pool, batch_id, after=page[-1]["id"], max_bytes=1)
     assert [item["custom_id"] for item in page] == ["req-2"] and not more
+
+
+async def test_item_contents_cuts_compressed_content_by_its_text(pool, store):
+    """Repeated text compresses: the first read chooses every item, the second makes the cut."""
+    batch_id, _ = await _contents_batch(store, ["x" * 3000] * 3)
+    sizes = await _content_sizes(pool, batch_id)
+    budget = sizes[0][1] + sizes[1][1]
+    assert sum(stored for stored, _ in sizes) <= budget
+
+    page, more, chosen = await _contents_page(pool, batch_id, max_bytes=budget)
+
+    assert chosen == 3
+    assert [item["custom_id"] for item in page] == ["req-0", "req-1"] and more
 
 
 async def test_batch_summary_and_labels_name_each_owner(pool, store):

@@ -362,6 +362,12 @@ _RESULT_COLUMNS = (
 # ($3), so only what fits is sent. The first one is always sent, however
 # large. The innermost subquery has a LIMIT, so it is never merged into the
 # ones above it: each value is rendered once, not once more for its size.
+#
+# The budget bounds what reaches the gateway, not the database's work for a
+# page: compressible JSON can be stored at a small fraction of its text, so
+# the first read may choose up to the page's count ($4) of values whose text is
+# many times the budget, and the database renders every chosen one before it
+# cuts them.
 _RESULT_SIZES_SQL = """
     SELECT id,
            COALESCE(pg_column_size(response), 0) + COALESCE(pg_column_size(error), 0) AS stored
