@@ -2799,6 +2799,19 @@ class LogStore(ABC):
         """
 
     @abstractmethod
+    async def scan_duplicate_accounts(
+        self, *, days: int, min_score: int, limit: int
+    ) -> dict[str, Any]:
+        """Return the groups of accounts that may belong to one person.
+
+        Sweeps the trailing ``days`` of registrations, sign-ins and requests,
+        plus the console's multi-account browsers and email aliases; see
+        :mod:`serving.analytics.duplicate_accounts` for the evidence, the
+        weights and the report's shape. Groups scoring below ``min_score`` are
+        left out, and at most ``limit`` are listed. Read-only.
+        """
+
+    @abstractmethod
     async def get_key_detail_usage(
         self,
         user_id: str,

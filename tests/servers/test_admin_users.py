@@ -8,6 +8,7 @@ from decimal import Decimal
 from typing import Any, Literal, get_args, get_origin, get_type_hints
 from unittest.mock import AsyncMock, MagicMock
 
+import asyncpg
 import pytest
 from fastapi import FastAPI, Request
 from httpx import ASGITransport, AsyncClient
@@ -2652,6 +2653,150 @@ async def test_a_user_automation_score_is_returned_with_its_signals(admin_client
     log_store.get_user_automation_score.assert_awaited_once_with("u1", days=30)
     assert resp.json()["score"] == pytest.approx(0.9)
     assert resp.json()["signals"]["ua"]["available"] is False
+
+
+def _duplicate_scan(**overrides: Any) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "days": 14,
+        "since": datetime(2026, 11, 6, 12, tzinfo=UTC),
+        "accounts_scanned": 40,
+        "shared_addresses": 2,
+        "shared_browsers": 0,
+        "total_groups": 1,
+        "groups": [
+            {
+                "score": 6,
+                "user_ids": ["u1", "u2"],
+                "signals": ["signup_burst", "signup_ip"],
+                "members": [
+                    {
+                        "user_id": "u1",
+                        "email": "a@example.org",
+                        "role": "free",
+                        "status": "active",
+                        "created_at": datetime(2026, 11, 20, 10, tzinfo=UTC),
+                        "requests": 12,
+                    },
+                    {"user_id": "u2", "email": "b@example.org", "status": "pending_approval"},
+                ],
+                "links": [
+                    {
+                        "user_ids": ["u1", "u2"],
+                        "weight": 6,
+                        "evidence": [
+                            {
+                                "kind": "signup_burst",
+                                "weight": 3,
+                                "addresses": ["198.51.100.7"],
+                                "detail": "Registered 4 minutes apart from 198.51.100.7",
+                            },
+                            {
+                                "kind": "signup_ip",
+                                "weight": 3,
+                                "addresses": ["198.51.100.7"],
+                                "detail": "Both registered from 198.51.100.7",
+                            },
+                        ],
+                    }
+                ],
+            }
+        ],
+        "oversized": [{"user_ids": [f"x{i}" for i in range(12)]}],
+    }
+    report.update(overrides)
+    return report
+
+
+@pytest.mark.asyncio
+async def test_duplicate_account_scan_returns_the_groups_with_their_evidence(admin_client):
+    client, _op_store, log_store, _log = admin_client
+    log_store.scan_duplicate_accounts = AsyncMock(return_value=_duplicate_scan())
+
+    resp = await client.get("/admin/users/duplicate-accounts", headers=AUTH)
+
+    assert resp.status_code == 200
+    log_store.scan_duplicate_accounts.assert_awaited_once_with(days=14, min_score=5, limit=100)
+    body = resp.json()
+    assert body["accounts_scanned"] == 40
+    assert body["shared_addresses"] == 2
+    [group] = body["groups"]
+    assert group["user_ids"] == ["u1", "u2"]
+    assert group["members"][1] == {
+        "user_id": "u2",
+        "email": "b@example.org",
+        "login_name": None,
+        "phone": None,
+        "user_name": None,
+        "role": "free",
+        "status": "pending_approval",
+        "created_at": None,
+        "requests": 0,
+    }
+    assert group["links"][0]["evidence"][0]["addresses"] == ["198.51.100.7"]
+    assert len(body["oversized"][0]["user_ids"]) == 12
+
+
+@pytest.mark.asyncio
+async def test_duplicate_account_scan_passes_its_bounds_to_the_store(admin_client):
+    client, _op_store, log_store, _log = admin_client
+    log_store.scan_duplicate_accounts = AsyncMock(return_value=_duplicate_scan(days=90))
+
+    resp = await client.get(
+        "/admin/users/duplicate-accounts?days=90&min_score=12&limit=500", headers=AUTH
+    )
+
+    assert resp.status_code == 200
+    log_store.scan_duplicate_accounts.assert_awaited_once_with(days=90, min_score=12, limit=500)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "detail"),
+    [
+        ("days=0", "days must be between 1 and 90"),
+        ("days=91", "days must be between 1 and 90"),
+        ("min_score=0", "min_score must be between 1 and 100"),
+        ("min_score=101", "min_score must be between 1 and 100"),
+        ("limit=0", "limit must be between 1 and 500"),
+        ("limit=501", "limit must be between 1 and 500"),
+    ],
+)
+async def test_duplicate_account_scan_refuses_out_of_range_bounds(admin_client, query, detail):
+    client, _op_store, log_store, _log = admin_client
+    log_store.scan_duplicate_accounts = AsyncMock(return_value=_duplicate_scan())
+
+    resp = await client.get(f"/admin/users/duplicate-accounts?{query}", headers=AUTH)
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == detail
+    log_store.scan_duplicate_accounts.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [TimeoutError(), asyncpg.QueryCanceledError("canceled")])
+async def test_a_duplicate_account_scan_that_runs_out_of_time_says_so(admin_client, error):
+    client, _op_store, log_store, _log = admin_client
+    log_store.scan_duplicate_accounts = AsyncMock(side_effect=error)
+
+    resp = await client.get("/admin/users/duplicate-accounts?days=90", headers=AUTH)
+
+    assert resp.status_code == 504
+    assert resp.json()["detail"] == "The scan did not finish in time. Try a shorter window."
+
+
+@pytest.mark.asyncio
+async def test_duplicate_account_scan_is_admin_only(admin_client):
+    client, _op_store, log_store, _log = admin_client
+    log_store.scan_duplicate_accounts = AsyncMock(return_value=_duplicate_scan())
+
+    anonymous = await client.get("/admin/users/duplicate-accounts")
+    wrong = await client.get(
+        "/admin/users/duplicate-accounts", headers={"Authorization": "Bearer not-the-admin"}
+    )
+
+    assert anonymous.status_code == 401
+    assert wrong.status_code in (401, 403)
+    log_store.scan_duplicate_accounts.assert_not_awaited()
 
 
 @pytest.mark.asyncio

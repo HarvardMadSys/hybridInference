@@ -151,6 +151,7 @@ tracker <https://github.com/HarvardMadSys/hybridInference/issues>`_.
    trusted-proxies-and-client-ips
    automation-score
    user-tags
+   duplicate-accounts
 
 .. toctree::
    :maxdepth: 2

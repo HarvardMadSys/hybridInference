@@ -19,6 +19,7 @@ import {
 } from '@/lib/api/admin';
 import { SummaryCards } from './SummaryCards';
 import { UserTagsPanel } from './UserTagsPanel';
+import { DuplicateAccountsPanel } from './DuplicateAccountsPanel';
 import { SavedViews } from './SavedViews';
 import { FilterBar } from './FilterBar';
 import { UserTable } from './UserTable';
@@ -373,6 +374,8 @@ export default function UsersTab() {
         activeTag={filterState.tag ?? null}
         onShowMembers={(tag) => applyFilterState({ ...filterState, tag, view: null })}
       />
+
+      <DuplicateAccountsPanel />
 
       {showServiceAccountCreate && (
         <ServiceAccountCreate

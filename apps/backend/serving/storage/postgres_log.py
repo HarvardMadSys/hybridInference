@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from serving.accounting import get_accounting_policy
 from serving.analytics.automation_score import score_users_from_logs
+from serving.analytics.duplicate_accounts import scan_duplicate_accounts
 from serving.storage import (
     admin_view_results,
     alert_history_store,
@@ -817,6 +818,20 @@ class PostgresLogStore(LogStore):
         async with self.pool.acquire() as conn:
             records = await score_users_from_logs(conn, days=days, user_ids=user_ids)
         return {r["user_id"]: r for r in records}
+
+    async def scan_duplicate_accounts(
+        self, *, days: int, min_score: int, limit: int
+    ) -> dict[str, Any]:
+        """Return the groups of accounts that may belong to one person.
+
+        See :mod:`serving.analytics.duplicate_accounts`. Besides ``api_logs`` it
+        reads the account tables of the same database (``users``,
+        ``admin_audit_log``, ``login_events`` and ``browser_session_accounts``)
+        on one general-pool connection, so each statement is bounded by that
+        pool's timeout.
+        """
+        async with self.pool.acquire() as conn:
+            return await scan_duplicate_accounts(conn, days=days, min_score=min_score, limit=limit)
 
     async def get_key_detail_usage(self, user_id: str) -> dict[str, Any]:
         """Return usage detail for admin key-detail view."""

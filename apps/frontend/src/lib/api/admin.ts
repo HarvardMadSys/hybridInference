@@ -497,6 +497,69 @@ export async function getBulkAutomationScores(
   return jsonOrThrow<BulkAutomationScoresResponse>(resp);
 }
 
+/** One kind of evidence that two accounts may belong to one person. */
+export interface DuplicateAccountEvidence {
+  kind: string;
+  weight: number;
+  /** The IPv4 addresses or IPv6 /64s it was seen on; empty for identity and behaviour. */
+  addresses: string[];
+  detail: string;
+}
+
+/** The evidence between one pair of accounts. */
+export interface DuplicateAccountLink {
+  user_ids: string[];
+  weight: number;
+  evidence: DuplicateAccountEvidence[];
+}
+
+export interface DuplicateAccountMember {
+  user_id: string;
+  email: string | null;
+  login_name: string | null;
+  phone: string | null;
+  user_name: string | null;
+  role: string;
+  status: string;
+  created_at: string | null;
+  /** Requests the account sent in the scan window. */
+  requests: number;
+}
+
+/** Accounts that may belong to one person; members oldest first, links heaviest first. */
+export interface DuplicateAccountGroup {
+  score: number;
+  user_ids: string[];
+  signals: string[];
+  members: DuplicateAccountMember[];
+  links: DuplicateAccountLink[];
+}
+
+export interface DuplicateAccountScan {
+  days: number;
+  since: string;
+  accounts_scanned: number;
+  shared_addresses: number;
+  shared_browsers: number;
+  total_groups: number;
+  groups: DuplicateAccountGroup[];
+  /** Components too large to be one person's, set aside as shared infrastructure. */
+  oversized: { user_ids: string[] }[];
+}
+
+/**
+ * Scan the last `days` days for accounts that may belong to one person. It
+ * reads the whole window's request log, so the console runs it on demand.
+ */
+export async function scanDuplicateAccounts(days = 14): Promise<DuplicateAccountScan> {
+  const params = new URLSearchParams({ days: String(days) });
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/users/duplicate-accounts?${params.toString()}`,
+  );
+  return jsonOrThrow<DuplicateAccountScan>(resp);
+}
+
 export interface UpdateUserData {
   currency?: 'USD' | 'CNY';
   role?: string;
