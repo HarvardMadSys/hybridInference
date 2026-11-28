@@ -79,6 +79,7 @@ import contextlib
 import json
 import math
 import secrets
+import time
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -104,6 +105,25 @@ def _sweep_step(step: str) -> Iterator[None]:
             "batch sweep: %s failed",
             step,
             extra={"event": "batch_sweep_step_failed"},
+            exc_info=True,
+        )
+
+
+@contextlib.contextmanager
+def _sweep_batch(batch_id: str, step: str, event: str) -> Iterator[None]:
+    """Log a batch one step of :meth:`BatchStore.sweep` fails on, and go on with the next.
+
+    A step takes its batches in the same order every sweep, so a batch that
+    always fails would otherwise stop the step for every batch after it.
+    """
+    try:
+        yield
+    except Exception:
+        logger.warning(
+            "batch %s: %s failed; the next sweep tries it again",
+            batch_id,
+            step,
+            extra={"event": event},
             exc_info=True,
         )
 
@@ -276,6 +296,10 @@ class _BudgetTurn:
 # Items an erasure, a purge or a deletion deletes per statement, each with its
 # attempts and result (see BatchStore.delete_user_batches).
 _ERASE_ITEMS_PER_STATEMENT = 500
+
+# How long a deletion goes on deleting the batch's items before it answers; the
+# sweep purges what is left (see BatchStore._delete_marked).
+_DELETE_INLINE_SECONDS = 5.0
 
 # One slice of batch ``$1``'s items: ``$2`` of them, cascading to their attempts.
 _DELETE_ITEM_SLICE_SQL = (
@@ -789,6 +813,12 @@ _PURGE_CANDIDATES_SQL = f"""
 # Lock batch ``$2`` if it may be purged now, as :data:`_PURGE_ONE_SQL` does, and
 # mark it deleted: hidden from every lookup, no download starts on the items a
 # purge's slices leave, and a purge cut short stays purgeable for the next sweep.
+#
+# ``delete_requested_at`` therefore means "being deleted", by its owner or by
+# the retention purge: every reader takes it as "hide this batch", none as "its
+# owner deleted it". A purge cut short sorts by its mark in
+# :data:`_PURGE_CANDIDATES_SQL` from then on, behind the batches that ended or
+# were deleted before it, so it cannot hold the head of the queue.
 _PURGE_MARK_SQL = f"""
     UPDATE batch_jobs SET delete_requested_at = COALESCE(delete_requested_at, now())
     WHERE id = (
@@ -1964,10 +1994,11 @@ class BatchStore:
         Its idempotency records become tombstones, and the batch is marked
         deleted, hidden from every lookup. Its items are then deleted a slice at
         a time, each slice a transaction of its own that holds no model lock
-        (see :meth:`_delete_item_slice`), and the batch last. While a download
-        is reading the batch the rows stay until the sweep can remove them; the
-        sweep also finishes a deletion cut short. Nothing is ever re-created
-        for a deleted batch.
+        (see :meth:`_delete_item_slice`), and the batch last, for a few seconds
+        at most (:meth:`_delete_marked`). While a download is reading the batch
+        the rows stay until the sweep can remove them; the sweep also finishes
+        a deletion cut short or not done in that time. Nothing is ever
+        re-created for a deleted batch.
 
         Raises:
             BatchDeleteInProgress: At least one item has an unexpired running
@@ -2051,10 +2082,14 @@ class BatchStore:
     async def _delete_marked(self, batch_id: str) -> None:
         """Delete a batch marked deleted: its items a slice at a time, then itself.
 
-        Should a slice fail, what was deleted stays deleted and the sweep
-        purges the rest, as it does a batch whose deletion waited for a
-        download: the deletion itself is already committed.
+        It stops after ``_DELETE_INLINE_SECONDS``, one slice at least: a batch
+        of tens of thousands of items takes a hundred slices or more, longer
+        than the request deleting it should wait. The sweep purges what is
+        left, as it does a batch whose deletion waited for a download, or
+        whose slice failed: what was deleted stays deleted, and the deletion
+        itself is already committed.
         """
+        deadline = time.monotonic() + _DELETE_INLINE_SECONDS
         try:
             async with self._pool.acquire() as conn:
                 while True:
@@ -2063,9 +2098,10 @@ class BatchStore:
                             "SELECT TRUE FROM batch_jobs WHERE id = $1 FOR UPDATE", batch_id
                         ):
                             return
-                        if await self._delete_item_slice(conn, batch_id):
-                            continue
-                        await conn.execute("DELETE FROM batch_jobs WHERE id = $1", batch_id)
+                        if not await self._delete_item_slice(conn, batch_id):
+                            await conn.execute("DELETE FROM batch_jobs WHERE id = $1", batch_id)
+                            return
+                    if time.monotonic() >= deadline:
                         return
         except Exception:
             logger.warning(
@@ -2898,8 +2934,10 @@ class BatchStore:
            rows are removed; the idempotency records of finished batches get
            their expiry.
 
-        A step that fails is logged and the next one runs, so one batch that
-        cannot be finalized or purged does not hold up the others' tidying.
+        A batch that a step fails on is logged and left as it was, and the step
+        goes on with its next batch; a step that fails as a whole is logged and
+        the next step runs. So one batch that cannot be expired, finalized or
+        purged holds up neither the other batches nor the tidying.
 
         Returns:
             ``{"expired": n, "finalized": n, "purged": n}`` (batches).
@@ -2914,33 +2952,35 @@ class BatchStore:
                     f"AND j.expires_at <= now() AND {_supported_kinds_sql('j')} ORDER BY j.id"
                 )
                 for row in overdue:
-                    async with conn.transaction():
-                        status = await conn.fetchval(
-                            "SELECT status FROM batch_jobs WHERE id = $1 "
-                            "AND status IN ('validating', 'in_progress') "
-                            "AND phase IN ('validating', 'runnable') AND expires_at <= now() "
-                            "FOR NO KEY UPDATE",
-                            row["id"],
-                        )
-                        if status is None:
-                            continue
-                        await conn.execute(
-                            "UPDATE batch_jobs SET status = 'expired', expired_at = now() "
-                            "WHERE id = $1",
-                            row["id"],
-                        )
-                        await self._settle(conn, row["id"], "expired")
-                        counts["expired"] += 1
+                    with _sweep_batch(row["id"], "expiry", "batch_expire_failed"):
+                        async with conn.transaction():
+                            status = await conn.fetchval(
+                                "SELECT status FROM batch_jobs WHERE id = $1 "
+                                "AND status IN ('validating', 'in_progress') "
+                                "AND phase IN ('validating', 'runnable') AND expires_at <= now() "
+                                "FOR NO KEY UPDATE",
+                                row["id"],
+                            )
+                            if status is None:
+                                continue
+                            await conn.execute(
+                                "UPDATE batch_jobs SET status = 'expired', expired_at = now() "
+                                "WHERE id = $1",
+                                row["id"],
+                            )
+                            await self._settle(conn, row["id"], "expired")
+                            counts["expired"] += 1
 
             with _sweep_step("finalizing batches"):
                 for row in await conn.fetch(_SWEEP_SETTLE_CANDIDATES_SQL):
-                    async with conn.transaction():
-                        status = await conn.fetchval(
-                            "SELECT status FROM batch_jobs WHERE id = $1 FOR NO KEY UPDATE",
-                            row["id"],
-                        )
-                        if status is not None and await self._settle(conn, row["id"], status):
-                            counts["finalized"] += 1
+                    with _sweep_batch(row["id"], "finalization", "batch_finalize_failed"):
+                        async with conn.transaction():
+                            status = await conn.fetchval(
+                                "SELECT status FROM batch_jobs WHERE id = $1 FOR NO KEY UPDATE",
+                                row["id"],
+                            )
+                            if status is not None and await self._settle(conn, row["id"], status):
+                                counts["finalized"] += 1
 
             with _sweep_step("purging batches"):
                 counts["purged"] = await self._purge_retained(conn, int(retention_days))
@@ -2998,16 +3038,9 @@ class BatchStore:
             candidates = await conn.fetch(_PURGE_CANDIDATES_SQL, retention_days, wanted, tried)
             for row in candidates:
                 tried.append(row["id"])
-                try:
+                with _sweep_batch(row["id"], "purge", "batch_purge_failed"):
                     if await cls._purge_batch(conn, retention_days, row["id"]):
                         purged += 1
-                except Exception:
-                    logger.warning(
-                        "batch %s: purge failed; the next sweep goes on with it",
-                        row["id"],
-                        extra={"event": "batch_purge_failed"},
-                        exc_info=True,
-                    )
             if len(candidates) < wanted or purged >= _PURGE_LIMIT:
                 break
         return purged

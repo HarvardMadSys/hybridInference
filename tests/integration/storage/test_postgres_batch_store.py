@@ -1874,6 +1874,30 @@ async def test_a_delete_cut_short_is_finished_by_the_sweep(pool, store, monkeypa
     assert await _rows(pool, created["id"]) == []
 
 
+async def test_a_delete_answers_in_its_time_and_leaves_the_rest_to_the_sweep(
+    pool, store, monkeypatch
+):
+    """A batch of tens of thousands of items takes too many slices to wait for."""
+    monkeypatch.setattr(batch_store, "_ERASE_ITEMS_PER_STATEMENT", 2)
+    monkeypatch.setattr(batch_store, "_DELETE_INLINE_SECONDS", 0.0)
+    model = _model()
+    created = await _create(store, _items(model, 5))
+    small = await _create(store, _items(model, 1))
+
+    assert await store.delete_batch(created["id"], user_id="alice")
+    # One slice, then the answer: the batch is gone for its owner already.
+    assert await store.get_batch(created["id"]) is None
+    assert len(await _rows(pool, created["id"])) == 3
+    assert not await store.delete_batch(created["id"], user_id="alice")
+    # A batch its first slice takes whole is deleted before the answer.
+    assert await store.delete_batch(small["id"], user_id="alice")
+    assert not await store.batch_exists(small["id"])
+
+    assert (await store.sweep(retention_days=7))["purged"] == 1
+    assert not await store.batch_exists(created["id"])
+    assert await _rows(pool, created["id"]) == []
+
+
 async def test_delete_waits_until_live_items_finish(pool, store):
     model = _model()
     created = await _create(store, _items(model, 3))
