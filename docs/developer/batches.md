@@ -26,7 +26,7 @@ By default only `internal` users and administrators can create batches; the oper
 
 ## How it works
 
-Creating a batch stores its requests and runs nothing. Every request is checked first: direct requests before the create call answers, a file in the background. One invalid request refuses the whole batch, before any inference call. Checks apply the same per-request limits as interactive requests on messages, content parts, tools and stop sequences, and every JSON number must be finite, including numbers inside tool arguments and schemas.
+Creating a batch stores its requests and runs nothing. Every request is checked first: direct requests before the create call answers, a file in the background. One invalid request refuses the whole batch, before any inference call. Checks apply the same per-request limits as interactive requests on messages, content parts, tools and stop sequences, and every JSON number must be finite, including numbers inside tool arguments and schemas. The create call's body, and each line of an input file, may nest arrays and objects at most 128 levels deep.
 
 The gateway's worker then starts requests as their models have room, in no particular order. Each runs as if you had sent it to its endpoint yourself: the same models, fallback and price, logged under your account and counted toward your daily cost quota. By default it runs only on routes the gateway hosts itself (see [Which routes batch work may use](#which-routes-batch-work-may-use)). It takes no slot of your concurrent-request limit, because batch work has its own per-role quota, and a model runs fewer batch requests while interactive requests are in flight on it, so a batch slows down when interactive traffic is heavy.
 

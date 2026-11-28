@@ -33,7 +33,12 @@ import hashlib
 import json
 from typing import TYPE_CHECKING, Any
 
-from serving.batch.admission import finite_json_float, has_invalid_unicode
+from serving.batch.admission import (
+    MAX_JSON_DEPTH,
+    finite_json_float,
+    has_invalid_unicode,
+    nests_too_deeply,
+)
 from serving.batch.profiles import PROFILES
 from serving.batch.targets import TARGET_URLS, AdmissionContext, ItemRejected, admit_item
 from serving.servers.auth import StoredKeyRejected, authenticate_stored_key
@@ -120,6 +125,15 @@ async def iter_lines(
         yield line_no, buffer
 
 
+def _too_deep(line_no: int) -> _Invalid:
+    """The error for a line nested past ``MAX_JSON_DEPTH``, or past ``json``'s own limit."""
+    return _Invalid(
+        "invalid_json_line",
+        f"Line {line_no} nests arrays and objects more than {MAX_JSON_DEPTH} levels deep.",
+        line_no,
+    )
+
+
 def _parse_line(line_no: int, raw: bytes, endpoint: str) -> dict[str, Any]:
     try:
         text = raw.decode("utf-8", errors="strict").rstrip("\r")
@@ -129,10 +143,14 @@ def _parse_line(line_no: int, raw: bytes, endpoint: str) -> dict[str, Any]:
         raise _Invalid("empty_line", f"Line {line_no} is empty.", line_no)
     try:
         entry = json.loads(text, parse_constant=_reject_constant, parse_float=finite_json_float)
-    except (ValueError, RecursionError):
+    except RecursionError:
+        raise _too_deep(line_no) from None
+    except ValueError:
         raise _Invalid("invalid_json_line", f"Line {line_no} is not valid JSON.", line_no) from None
     if not isinstance(entry, dict):
         raise _Invalid("invalid_json_line", f"Line {line_no} is not a JSON object.", line_no)
+    if nests_too_deeply(entry):
+        raise _too_deep(line_no)
     if has_invalid_unicode(entry):
         raise _Invalid(
             "invalid_json_line",

@@ -317,6 +317,14 @@ def _envelope_error(exc: ValidationError, decoded: Any) -> str:
     return f"Invalid batch request body: {_describe(exc)}"
 
 
+def _nested_too_deeply() -> HTTPException:
+    """The 400 for a create body nested past :data:`admission.MAX_JSON_DEPTH`."""
+    return HTTPException(
+        400,
+        f"Request body nests arrays and objects more than {admission.MAX_JSON_DEPTH} levels deep",
+    )
+
+
 def _parse_create_body(raw: bytes | bytearray) -> tuple[BatchCreateRequest, Any]:
     """Decode and validate the create body, parsing the JSON once."""
     try:
@@ -325,8 +333,12 @@ def _parse_create_body(raw: bytes | bytearray) -> tuple[BatchCreateRequest, Any]
             parse_constant=admission.reject_json_constant,
             parse_float=admission.finite_json_float,
         )
-    except (ValueError, RecursionError) as exc:
+    except RecursionError:
+        raise _nested_too_deeply() from None
+    except ValueError as exc:
         raise HTTPException(400, "Request body is not valid JSON") from exc
+    if admission.nests_too_deeply(decoded):
+        raise _nested_too_deeply()
     if admission.has_invalid_unicode(decoded):
         raise HTTPException(400, "Request body holds a string that is not valid Unicode")
     if isinstance(decoded, dict) and "anthropic_version" in decoded:

@@ -737,6 +737,33 @@ async def test_an_unreadable_body_is_400(client, store, content, expected):
     assert store.created == []
 
 
+def _nested_create(levels: int) -> bytes:
+    """A create body nesting arrays and objects exactly *levels* deep, written as text."""
+    lists = levels - 4  # the body, its requests, the request and the request's body
+    request = json.dumps(_request("req-0", _chat(metadata="DEEP")))
+    return ('{"requests": [' + request.replace('"DEEP"', "[" * lists + "]" * lists) + "]}").encode()
+
+
+async def test_a_body_nested_to_the_depth_limit_is_accepted(client, store):
+    response = await client.post(
+        "/v1/batches", content=_nested_create(admission.MAX_JSON_DEPTH), headers=_auth()
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(store.created) == 1
+
+
+@pytest.mark.parametrize(
+    "levels", [admission.MAX_JSON_DEPTH + 1, 100_000], ids=["past-the-limit", "past-json"]
+)
+async def test_a_body_nested_past_the_depth_limit_is_400(client, store, levels):
+    response = await client.post("/v1/batches", content=_nested_create(levels), headers=_auth())
+
+    assert response.status_code == 400
+    assert _message(response) == "Request body nests arrays and objects more than 128 levels deep"
+    assert store.created == []
+
+
 @pytest.mark.parametrize(
     ("mutate", "expected"),
     [

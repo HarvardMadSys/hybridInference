@@ -51,7 +51,7 @@ from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
 from pydantic import BaseModel, ValidationError
 
 from routing.model_selection import is_auto_model_id
-from serving.batch.admission import has_invalid_unicode
+from serving.batch.admission import MAX_JSON_DEPTH, has_invalid_unicode, nests_too_deeply
 from serving.batch.delivery import READ_LEASE_SECONDS, LeaseKeeper
 from serving.batch.targets import TARGET_URLS, ItemRejected, resolve_model
 from serving.batch.validation import LineTooLong, iter_lines
@@ -189,6 +189,14 @@ def _finite(text: str) -> float:
     return value
 
 
+def _too_deep() -> _LineProblem:
+    """The problem of a line nested past ``MAX_JSON_DEPTH``, as the validator refuses it."""
+    return _LineProblem(
+        "invalid_json_line",
+        f"The line nests arrays and objects more than {MAX_JSON_DEPTH} levels deep",
+    )
+
+
 def parse_line(raw: bytes, line_no: int) -> dict[str, Any]:
     """One line of a source file as a JSON object, parsed strictly.
 
@@ -217,7 +225,7 @@ def parse_line(raw: bytes, line_no: int) -> dict[str, Any]:
             "invalid_json_line", f"Not valid JSON at column {exc.colno}: {exc.msg}"
         ) from None
     except RecursionError:
-        raise _LineProblem("invalid_json_line", "The line nests too deeply") from None
+        raise _too_deep() from None
     except ValueError:
         # Python refuses to convert an integer of more than a few thousand
         # digits (its conversion limit stays on); no request parameter needs one.
@@ -226,6 +234,8 @@ def parse_line(raw: bytes, line_no: int) -> dict[str, Any]:
         ) from None
     if not isinstance(entry, dict):
         raise _LineProblem("invalid_json_line", "The line is not a JSON object")
+    if nests_too_deeply(entry):
+        raise _too_deep()
     if has_invalid_unicode(entry):
         raise _LineProblem("invalid_json_line", "The line holds a string that is not valid Unicode")
     return entry

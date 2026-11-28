@@ -992,7 +992,22 @@ class BatchStore:
             for item in items
             if item.get("error") is None
         ]
-        failed_items = [item for item in items if item.get("error") is not None]
+        # Encoded before the pool is acquired, like the queued records: an
+        # unstorable request is refused before any connection or lock is taken.
+        failed_records = [
+            (
+                batch_id,
+                item["custom_id"],
+                item["model_id"],
+                _dump_request(item),
+                item.get("line_no"),
+                "failed",
+                _dump_json(item["error"]),
+                item["error"].get("status"),
+            )
+            for item in items
+            if item.get("error") is not None
+        ]
         async with self._pool.acquire() as conn, conn.transaction():
             if key_hash is not None:
                 await self._lock_owner(conn, user_id)
@@ -1031,7 +1046,7 @@ class BatchStore:
                 retention_seconds=retention_seconds,
                 idempotency=idempotency,
                 queued_records=queued_records,
-                failed_items=failed_items,
+                failed_records=failed_records,
             )
 
     async def _lock_owner(self, conn: Any, user_id: str) -> None:
@@ -1068,7 +1083,7 @@ class BatchStore:
         retention_seconds: int | None,
         idempotency: dict[str, str] | None,
         queued_records: list[tuple[Any, ...]],
-        failed_items: list[dict[str, Any]],
+        failed_records: list[tuple[Any, ...]],
         console: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Insert a batch, its idempotency record and its items on *conn*.
@@ -1133,14 +1148,14 @@ class BatchStore:
             await conn.copy_records_to_table(
                 "batch_items", records=queued_records, columns=_ITEM_COPY_COLUMNS
             )
-        if failed_items:
-            await self._insert_failed_items(conn, batch_id, failed_items)
+        if failed_records:
+            await self._insert_failed_items(conn, failed_records)
             await conn.execute(
                 "UPDATE batch_jobs SET failed_count = failed_count + $2 WHERE id = $1",
                 batch_id,
-                len(failed_items),
+                len(failed_records),
             )
-        if phase == PHASE_RUNNABLE and (failed_items or not queued_records):
+        if phase == PHASE_RUNNABLE and (failed_records or not queued_records):
             # Every request may have failed admission: no item will ever
             # report back, so the batch is final now.
             await self._settle(conn, batch_id, status)
@@ -1292,7 +1307,7 @@ class BatchStore:
                 retention_seconds=retention_seconds,
                 idempotency=idempotency,
                 queued_records=[],
-                failed_items=[],
+                failed_records=[],
                 console=console,
             )
 
@@ -1497,25 +1512,12 @@ class BatchStore:
         if found is None:
             raise BatchInputUnavailable(file_id)
 
-    async def _insert_failed_items(
-        self, conn: Any, batch_id: str, failed_items: list[dict[str, Any]]
-    ) -> None:
-        records = [
-            (
-                batch_id,
-                item["custom_id"],
-                item["model_id"],
-                _dump_request(item),
-                item.get("line_no"),
-                "failed",
-                _dump_json(item["error"]),
-                item["error"].get("status"),
-                _utcnow(),
-            )
-            for item in failed_items
-        ]
+    async def _insert_failed_items(self, conn: Any, failed_records: list[tuple[Any, ...]]) -> None:
+        """Insert the items that failed admission, encoded by :meth:`create_batch`."""
         await conn.copy_records_to_table(
-            "batch_items", records=records, columns=_FAILED_ITEM_COPY_COLUMNS
+            "batch_items",
+            records=[(*record, _utcnow()) for record in failed_records],
+            columns=_FAILED_ITEM_COPY_COLUMNS,
         )
 
     async def _idempotent_replay(

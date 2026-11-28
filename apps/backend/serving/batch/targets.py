@@ -67,9 +67,12 @@ from serving.storage.batch_store import (
     TARGET_MESSAGES,
     TARGET_RESPONSES,
 )
+from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+logger = get_logger(__name__)
 
 #: The ``url`` (inline) or ``endpoint`` (file) that names each target of
 #: ``/v1/batches``. ``/v1/messages`` is this gateway's extension of the OpenAI
@@ -470,9 +473,12 @@ async def admit_item(target: str, body: Any, ctx: AdmissionContext) -> str:
     try:
         return await _admit_body(target, body, ctx)
     except RecursionError:
-        # A check that recurses into a body nested past the interpreter's
-        # limit. The request is at fault: refused like any other, rather than
-        # raised to the validator, which would try the batch again forever.
+        # A backstop: every entry point parses a body with a depth limit
+        # (``admission.MAX_JSON_DEPTH``) well inside the interpreter's, so a
+        # check that still recursed out may be a bug of ours. Logged for that,
+        # and the item refused rather than raised to the validator, which
+        # would try the batch again forever.
+        logger.warning("batch item admission exceeded the recursion limit", exc_info=True)
         raise ItemRejected("invalid_request", "body is nested too deeply", param="body") from None
 
 
