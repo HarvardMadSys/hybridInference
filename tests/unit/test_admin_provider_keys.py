@@ -3494,7 +3494,13 @@ async def test_removed_env_key_referenced_by_the_catalog_survives_a_restart(
     _simulate_restart()
     report = ModelLoadReport()
     router = FixedRouter()
-    register_from_models_document(router, catalog, continue_on_missing_env=True, report=report)
+    register_from_models_document(
+        router,
+        catalog,
+        continue_on_missing_env=True,
+        report=report,
+        shared_db_key_providers=await dynamic_keys.providers_with_shared_db_keys(store),
+    )
     await dynamic_keys.apply_db_keys_at_boot(store)
 
     assert report.skipped_models == {}
@@ -3528,7 +3534,12 @@ async def test_removed_env_key_falls_back_to_a_numbered_setting_after_a_restart(
 
     _simulate_restart()
     router = FixedRouter()
-    register_from_models_document(router, catalog, continue_on_missing_env=True)
+    register_from_models_document(
+        router,
+        catalog,
+        continue_on_missing_env=True,
+        shared_db_key_providers=await dynamic_keys.providers_with_shared_db_keys(store),
+    )
     await dynamic_keys.apply_db_keys_at_boot(store)
 
     adapter = router.routes["glm-restart"].adapters[0][0]
@@ -3601,3 +3612,95 @@ async def test_remove_env_key_ignores_an_optional_catalog_route(client, monkeypa
     )
     assert resp.status_code == 200, resp.text
     assert ("zai", dynamic_keys.env_key_hash(secret)) in store.removed
+
+
+@pytest.mark.asyncio
+async def test_remove_env_key_refuses_when_the_route_draws_on_another_providers_keys(
+    client, monkeypatch
+):
+    """A route keyed by another provider has no zai keys to fall back to.
+
+    The registry skips it at restart however many keys zai still has, so the
+    removal is refused even though a Keys-tab key exists, naming the provider
+    the route actually draws on.
+    """
+    http, store = client
+    secret = "zai-env-cross-kind-7777"
+    monkeypatch.setenv("ZAI_API_KEY", secret)
+    catalog = _restart_catalog(api_key="${ZAI_API_KEY}")
+    catalog["models"][0]["route"][0]["kind"] = "openai_compat"
+    monkeypatch.setenv("MODEL_CATALOG", json.dumps(catalog))
+    await store.add_provider_key(
+        provider="zai", api_key="zai-db-key-elsewhere-8888", label=None, created_by="admin"
+    )
+
+    async def unexpected_update(values, new_secrets=None, *, updated_by, expected_version=None):
+        raise AssertionError("nothing may be cleared when removal is refused")
+
+    monkeypatch.setattr(app_config, "update", unexpected_update)
+    _env_adapter("zai", [secret])
+
+    resp = await http.post(
+        "/admin/provider-keys/remove-env",
+        json={"provider": "zai", "env_key_id": dynamic_keys.env_key_id(secret)},
+        headers=AUTH,
+    )
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert "glm-restart (its route uses openai_compat keys)" in detail
+    assert "ZAI_API_KEY" in detail
+    assert store.removed == set()
+
+
+@pytest.mark.asyncio
+async def test_remove_env_key_fails_closed_when_the_catalog_cannot_be_read(
+    client, monkeypatch, caplog
+):
+    """An unreadable catalog refuses the removal instead of skipping the check."""
+    http, store = client
+    secret = "zai-env-unreadable-catalog-9999"
+    monkeypatch.setenv("ZAI_API_KEY", secret)
+
+    def broken_catalog(kind, *, configured=False):
+        raise RuntimeError("catalog read failed")
+
+    async def unexpected_update(values, new_secrets=None, *, updated_by, expected_version=None):
+        raise AssertionError("nothing may be cleared when the check cannot run")
+
+    monkeypatch.setattr("serving.config.documents.get", broken_catalog)
+    monkeypatch.setattr(app_config, "update", unexpected_update)
+    _env_adapter("zai", [secret])
+
+    with caplog.at_level("WARNING"):
+        resp = await http.post(
+            "/admin/provider-keys/remove-env",
+            json={"provider": "zai", "env_key_id": dynamic_keys.env_key_id(secret)},
+            headers=AUTH,
+        )
+    assert resp.status_code == 503, resp.text
+    assert "model catalog" in resp.json()["detail"]
+    assert "catalog read failed" in caplog.text
+    assert store.removed == set()
+    assert store.disabled == {}
+
+
+@pytest.mark.asyncio
+async def test_providers_with_shared_db_keys_leave_out_disabled_and_route_bound_keys(store):
+    """Exactly the keys ``apply_db_keys_at_boot`` would inject into catalog routes."""
+    await store.add_provider_key(
+        provider="zai", api_key="zai-shared-boot-key-aaaa", label=None, created_by="a"
+    )
+    await store.add_provider_key(
+        provider="deepseek",
+        api_key="deepseek-bound-key-bbbb",
+        label=None,
+        created_by="a",
+        key_id="bound",
+    )
+    store.route_configs = [{"api_key_id": "bound"}]
+    kimi_id = await store.add_provider_key(
+        provider="kimi", api_key="kimi-disabled-key-cccc", label=None, created_by="a"
+    )
+    await store.set_provider_key_status(kimi_id, "disabled")
+
+    assert await dynamic_keys.providers_with_shared_db_keys(store) == frozenset({"zai"})

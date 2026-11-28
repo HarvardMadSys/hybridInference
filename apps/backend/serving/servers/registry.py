@@ -40,7 +40,7 @@ from serving.model_access import default_required_role_for_model
 from serving.servers.embedding_fallback import FallbackEmbeddingAdapter
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Collection
     from pathlib import Path
 
     from routing.routers import FixedRouter
@@ -838,6 +838,32 @@ def _register_embedding_model(
         )
 
 
+def route_key_provider(model: dict[str, Any], route: dict[str, Any]) -> str:
+    """Return the provider whose key pool a catalog *route* of *model* draws on.
+
+    The same derivation registration applies (the route's kind, the model's
+    ``provider: openai`` on an ``openai_compat`` route, a relabelled route's
+    canonical provider, an explicit ``route_metadata.key_provider``), for
+    callers that judge a catalog without registering it. Raises ``ValueError``
+    where registration would refuse the route's label.
+    """
+    kind = route.get("kind") or model.get("provider")
+    provider_for_cfg, _ = parse_openrouter_kind(kind)
+    if kind == "openai_compat" and model.get("provider") == "openai":
+        canonical_provider = "openai"
+    else:
+        canonical_provider = provider_for_cfg
+    provider_label, _ = parse_route_provider_label(route, canonical_provider, str(model.get("id")))
+    route_metadata = dict(model.get("route_metadata") or {})
+    if isinstance(route.get("route_metadata"), dict):
+        route_metadata.update(route["route_metadata"])
+    if provider_label != canonical_provider:
+        route_metadata.setdefault("key_provider", canonical_provider)
+    return _dynamic_key_provider_name(
+        kind, {"provider": provider_label, "route_metadata": route_metadata}
+    )
+
+
 def _keys_after_cleared_settings(key_provider: str, cleared: list[str]) -> list[str] | None:
     """Return the keys a route falls back to once its key setting was cleared.
 
@@ -970,6 +996,7 @@ def register_from_models_document(
     continue_on_missing_env: bool = False,
     report: ModelLoadReport | None = None,
     origin: str = "Admin model catalog",
+    shared_db_key_providers: Collection[str] | None = None,
 ) -> tuple[int, list[ModelRegistrationInfo]]:
     """Register a database model document through the existing adapter boundary.
 
@@ -979,6 +1006,14 @@ def register_from_models_document(
     register leaves them as they were instead of serving the models listed
     before it. A model whose setting is unset is skipped instead, when
     *continue_on_missing_env* allows.
+
+    *shared_db_key_providers* names the providers that hold active Keys-tab
+    keys ``dynamic_keys.apply_db_keys_at_boot`` will inject into catalog routes
+    (bootstrap reads it before registering). A route whose cleared key setting
+    left it no key of its own is skipped when its provider is not among them,
+    since nothing would ever give it a key: a dead endpoint that fails upstream
+    and trips the breaker. ``None`` means unknown, and such a route is kept for
+    the boot injection to fill.
 
     Raises:
         RegistryConfigError: An entry cannot be registered; the message names
@@ -1077,6 +1112,9 @@ def register_from_models_document(
             ]
 
             adapters_with_weights = []
+            # Routes skipped because a cleared key setting left them nothing to
+            # serve on: when every route goes that way the model is skipped.
+            keyless_cleared: list[str] = []
             dynamic_key_registrations: list[tuple[str, object]] = []
             dynamic_key_providers: set[str] = set()
             # check_models_document has refused every malformed declaration
@@ -1429,6 +1467,27 @@ def register_from_models_document(
                             f"key setting for {top_cfg.get('id')!r} was cleared "
                             f"({', '.join(cleared_refs)})"
                         )
+                    key_provider = _dynamic_key_provider_name(kind, adapter_cfg)
+                    if (
+                        not fallback_keys
+                        and shared_db_key_providers is not None
+                        and key_provider not in shared_db_key_providers
+                    ):
+                        logger.warning(
+                            "Skipping route %d (kind=%s) of model %s: %s was cleared by "
+                            "an administrator and provider %s has no other key, neither "
+                            "a key setting nor a Keys-tab key. Add a key (Keys tab) or "
+                            "set the setting again, then restart.",
+                            route_index,
+                            kind,
+                            top_cfg.get("id"),
+                            ", ".join(cleared_refs),
+                            key_provider,
+                        )
+                        keyless_cleared.extend(
+                            ref for ref in cleared_refs if ref not in keyless_cleared
+                        )
+                        continue
                     adapter_cfg["api_keys"] = fallback_keys or None
                     logger.warning(
                         "Model %s, route %d: %s was cleared by an administrator; the "
@@ -1484,6 +1543,14 @@ def register_from_models_document(
                 )
                 if pool_capable:
                     dynamic_key_registrations.append((provider_key, adapter))
+
+            if keyless_cleared and not adapters_with_weights:
+                unset_env_vars.update(keyless_cleared)
+                raise MissingEnvBackedKeyError(
+                    f"every route of {top_cfg.get('id')!r} lost its key: "
+                    f"{', '.join(keyless_cleared)} was cleared and the provider has "
+                    "no other key"
+                )
 
             # Determine model type: "embedding" models bypass FixedRouter
             model_type = top_cfg.get("type") or top_cfg.get("model_type") or "chat"
