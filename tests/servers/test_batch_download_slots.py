@@ -66,6 +66,15 @@ async def _never(lines: int = 0):
 
 @pytest.mark.asyncio
 async def test_a_download_past_the_owners_slots_is_a_429_with_retry_after(app):
+    store = app.state.services.batch_store
+    leases: list[dict[str, Any]] = []
+    take_read_lease = store.take_read_lease
+
+    async def counted(**kwargs: Any) -> str:
+        leases.append(kwargs)
+        return await take_read_lease(**kwargs)
+
+    store.take_read_lease = counted
     held = delivery.hold_download(_never(), OWNER)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         for path in [*RENDERED, "/v1/files/file-output/content"]:
@@ -73,6 +82,8 @@ async def test_a_download_past_the_owners_slots_is_a_429_with_retry_after(app):
             assert refused.status_code == 429, path
             assert refused.headers["retry-after"] == str(delivery.DOWNLOAD_RETRY_AFTER_SECONDS)
             assert "Too many batch downloads" in refused.json()["detail"]
+        # A refused download read nothing: it took no read lease.
+        assert leases == []
         # An upload is sent as stored, not rendered: it takes no slot.
         upload = await client.get("/v1/files/file-1/content", headers={"Authorization": "Bearer k"})
         assert upload.status_code == 200
@@ -81,6 +92,8 @@ async def test_a_download_past_the_owners_slots_is_a_429_with_retry_after(app):
         for path in RENDERED:
             served = await client.get(path, headers={"Authorization": "Bearer k"})
             assert served.status_code == 200, path
+    # Downloads that ran took their leases where the refused ones were counted.
+    assert len([lease for lease in leases if lease.get("batch_id")]) == len(RENDERED)
     # Every download gave its slot back as its response ended.
     assert dict(delivery._downloads) == {}
 
