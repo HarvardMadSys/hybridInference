@@ -274,10 +274,11 @@ async def test_a_scan_is_one_read_only_snapshot_within_its_budget(pool, monkeypa
         "FROM pg_sleep(3) WHERE $1::timestamptz IS NOT NULL",
     )
     async with pool.acquire() as conn:
+        before = await conn.fetchval("SHOW statement_timeout")
         with pytest.raises(asyncpg.QueryCanceledError):
             await scan_duplicate_accounts(conn, days=14, now=NOW, budget_sec=0.5)
         # The timeout was local to the scan's transaction.
-        assert await conn.fetchval("SHOW statement_timeout") != "1s"
+        assert await conn.fetchval("SHOW statement_timeout") == before
 
 
 async def test_a_scan_cannot_write(pool, monkeypatch):

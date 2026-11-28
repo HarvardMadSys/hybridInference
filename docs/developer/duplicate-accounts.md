@@ -8,7 +8,7 @@ The scan only reports. It changes no account, and each group it lists comes with
 
 Choose a window (the last day up to the last 90 days, 14 by default) and press **Scan**. The result lists groups of accounts, highest score first. Each group shows its members, oldest account first, with their status, role, requests in the window and sign-up date; a member's name opens the account below. **Why these accounts** lists every linked pair and what links it.
 
-A scan reads every request the window holds, so it runs only when you ask, and a long window on a busy gateway takes longer. If it cannot finish within 50 seconds, it stops and asks for a shorter window. A gateway process runs one scan at a time, and the same scan asked for again within half a minute gets the same result.
+A scan reads every request the window holds, so it runs only when you ask, and a long window on a busy gateway takes longer. If it cannot finish within 50 seconds, counting any wait for another scan to finish, it stops and asks for a shorter window. A gateway process runs one scan at a time. For half a minute after a window is scanned, asking for that window again, with any `min_score` or `limit`, reuses the scan.
 
 ## The evidence
 
@@ -35,7 +35,7 @@ Email addresses reach one mailbox when they match after dropping everything from
 
 ## From links to groups
 
-Each kind of evidence counts once per pair, however many addresses carry it: sharing six addresses of one provider's pool is one fact about the pair, not six. Two accounts join one group when the evidence between that pair reaches 5. Every kind drawn on an address weighs less than that, so no single kind of address evidence links two accounts. Two kinds do, even on one address: registering close together, being active in the same hours, or both signing in and sending requests from it. Two people behind one home or office router who both sign in and use the API therefore form a group, at the lowest score. A group whose only evidence is where its accounts were, with no timing, identity or behaviour, is marked **Shared addresses only** in the console and `address_only` in the API.
+Each kind of evidence counts once per pair, however many addresses carry it: sharing six addresses of one provider's pool is one fact about the pair, not six. Two accounts join one group when the evidence between that pair reaches 5. Every kind drawn on an address weighs less than that, so no single kind of address evidence links two accounts. Two kinds do, even on one address: registering close together, being active in the same hours, or both signing in and sending requests from it. Two people behind one home or office router who both sign in and use the API, or use it in the same hours, therefore form a group, at the lowest score. A group with no evidence but shared addresses is marked **Shared addresses only** in the console and `address_only` in the API. Using an address in the same hours counts as sharing it; registering from it close together does not, and neither does identity or behaviour evidence.
 
 Because each merge needs strong evidence between a pair, a chain of weak links cannot pull strangers into one group. A group's score is the sum of the weights of every linked pair in it, so larger and more tightly linked groups score higher. The score and **Why these accounts** cover every linked pair in the group, including pairs too weak to have merged on their own.
 

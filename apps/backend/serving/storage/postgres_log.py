@@ -5,11 +5,16 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import json
+import time
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving.accounting import get_accounting_policy
 from serving.analytics.automation_score import score_users_from_logs
-from serving.analytics.duplicate_accounts import scan_duplicate_accounts
+from serving.analytics.duplicate_accounts import (
+    SCAN_BUDGET_SEC,
+    ScannedWindow,
+    gather_duplicate_scan,
+)
 from serving.storage import (
     admin_view_results,
     alert_history_store,
@@ -162,8 +167,10 @@ class PostgresLogStore(LogStore):
         self._user_usage: SingleFlightCache[dict[str, Any]] = SingleFlightCache(
             USER_USAGE_CACHE_TTL_SEC, max_entries=USER_USAGE_CACHE_ENTRIES
         )
-        self._duplicate_scans: SingleFlightCache[dict[str, Any]] = SingleFlightCache(
-            DUPLICATE_SCAN_CACHE_TTL_SEC, max_entries=16
+        # A window's scan, by its ``days``: a report's other bounds only
+        # filter it. Few are kept, since each holds the whole scan.
+        self._duplicate_scans: SingleFlightCache[ScannedWindow] = SingleFlightCache(
+            DUPLICATE_SCAN_CACHE_TTL_SEC, max_entries=4
         )
         # One duplicate-account scan at a time in this process, whatever its
         # bounds, so scans never hold more than one general-pool connection.
@@ -839,17 +846,32 @@ class PostgresLogStore(LogStore):
         reads the account tables of the same database (``users``,
         ``admin_audit_log``, ``login_events`` and ``browser_session_accounts``),
         on one general-pool connection and within one time budget for the
-        whole scan. A process runs one scan at a time, and a scan asked for
-        again with the same bounds within half a minute shares its result.
+        whole scan. A process runs one scan at a time. A window scanned in the
+        last half minute is reported again from that scan, at any *min_score*
+        and *limit*.
+
+        Raises:
+            TimeoutError: The budget ran out, waiting for another scan to
+                finish or between statements.
+            asyncpg.QueryCanceledError: The database cancelled a statement
+                that ran past the budget.
         """
+        window = await self._duplicate_scans.get(days, lambda: self._scan_window(days))
+        return window.report(min_score=min_score, limit=limit)
 
-        async def scan() -> dict[str, Any]:
-            async with self._duplicate_scan_lock, self.pool.acquire() as conn:
-                return await scan_duplicate_accounts(
-                    conn, days=days, min_score=min_score, limit=limit
+    async def _scan_window(self, days: int) -> ScannedWindow:
+        # The wait for another scan spends this one's budget, so a request
+        # queued behind it gives up within the budget rather than start late.
+        deadline = time.monotonic() + SCAN_BUDGET_SEC
+        async with asyncio.timeout(SCAN_BUDGET_SEC):
+            await self._duplicate_scan_lock.acquire()
+        try:
+            async with self.pool.acquire() as conn:
+                return await gather_duplicate_scan(
+                    conn, days=days, budget_sec=deadline - time.monotonic()
                 )
-
-        return await self._duplicate_scans.get((days, min_score, limit), scan)
+        finally:
+            self._duplicate_scan_lock.release()
 
     async def get_key_detail_usage(self, user_id: str) -> dict[str, Any]:
         """Return usage detail for admin key-detail view."""

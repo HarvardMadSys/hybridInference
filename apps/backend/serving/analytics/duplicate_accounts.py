@@ -42,8 +42,9 @@ count towards an address's fan-out, so an address the operator's own staff
 use is treated as shared.
 
 The pure part (:class:`DuplicateAccountScan`) needs no database and is unit
-tested; :func:`scan_duplicate_accounts` reads the tables over an asyncpg
-connection and runs it, for the admin endpoint.
+tested. :func:`gather_duplicate_scan` reads the tables over an asyncpg
+connection and runs it, giving a :class:`ScannedWindow` that reports at any
+``min_score`` and ``limit``; :func:`scan_duplicate_accounts` does both at once.
 """
 
 from __future__ import annotations
@@ -90,10 +91,13 @@ MAX_PAIR_WEIGHT = sum(SIGNAL_WEIGHTS.values())
 ADDRESS_KINDS = frozenset(
     {"signup_ip", "signup_burst", "login_ip", "request_ip", "cross_ip", "co_active"}
 )
-#: The address kinds that say only where two accounts were, not when. A group
-#: with no other evidence is as often one household or office as one person,
-#: and the report marks it ``address_only``.
-PRESENCE_KINDS = ADDRESS_KINDS - {"signup_burst", "co_active"}
+#: The address kinds that say only that two accounts used one address, at any
+#: time or in the same hours: two people in one household or office do both as
+#: often as one person with two accounts. A group with no other evidence is
+#: marked ``address_only`` in the report. Registering from one address close
+#: together (``signup_burst``) ties the accounts' creation together, so it is
+#: not among them.
+PRESENCE_KINDS = ADDRESS_KINDS - {"signup_burst"}
 #: The kinds that prove one person on their own; a group they hold together is
 #: never set aside as shared infrastructure, however large.
 IDENTITY_KINDS = frozenset({"same_browser", "email_alias"})
@@ -576,9 +580,9 @@ class DuplicateAccountScan:
                     "score": score,
                     "user_ids": sorted(members),
                     "signals": [kind for kind in SIGNAL_WEIGHTS if kind in kinds],
-                    # Shared addresses and nothing else, not even timing: a
-                    # household or an office looks like this as often as one
-                    # person does.
+                    # Shared addresses and nothing else, not even a joint
+                    # registration: a household or an office looks like this
+                    # as often as one person does.
                     "address_only": kinds <= PRESENCE_KINDS,
                     "members": [self._member(user_id) for user_id in self._ordered(members)],
                     "links": [self._link(pair, weights[pair]) for pair in inner],
@@ -817,6 +821,51 @@ _HOURS_SQL = f"""
 """
 
 
+@dataclass(frozen=True)
+class ScannedWindow:
+    """One window's scan, which reports at any ``min_score`` and ``limit``.
+
+    Those bounds only filter what the scan found, so one scan of a window
+    answers them all.
+    """
+
+    days: int
+    since: datetime
+    scan: DuplicateAccountScan
+
+    def report(
+        self, *, min_score: int = MERGE_THRESHOLD, limit: int = DEFAULT_LIMIT
+    ) -> dict[str, Any]:
+        """:meth:`DuplicateAccountScan.report` for this window."""
+        return self.scan.report(days=self.days, since=self.since, min_score=min_score, limit=limit)
+
+
+async def gather_duplicate_scan(
+    conn: asyncpg.Connection,
+    *,
+    days: int = DEFAULT_DAYS,
+    now: datetime | None = None,
+    budget_sec: float = SCAN_BUDGET_SEC,
+) -> ScannedWindow:
+    """Read the last *days* days and scan them for accounts that may belong to one person.
+
+    Read-only. Reads ``admin_audit_log`` (registrations), ``login_events``,
+    ``api_logs``, ``browser_session_accounts`` and ``users``. The window's
+    requests are read in one pass; only the accounts a link reaches have their
+    requests read again, hour by hour.
+
+    Every statement runs in one read-only, repeatable-read transaction, so the
+    scan sees one snapshot, and the whole scan is held to *budget_sec*: each
+    statement may take only what is left of it. The database cancels a
+    statement that runs past it (``asyncpg.QueryCanceledError``), and once it
+    is spent no statement starts (``TimeoutError``).
+    """
+    since = (now or datetime.now(UTC)) - timedelta(days=days)
+    async with conn.transaction(isolation="repeatable_read", readonly=True):
+        scan = await _gather(_budgeted(conn, budget_sec), since=since)
+    return ScannedWindow(days=days, since=since, scan=scan)
+
+
 async def scan_duplicate_accounts(
     conn: asyncpg.Connection,
     *,
@@ -826,47 +875,30 @@ async def scan_duplicate_accounts(
     now: datetime | None = None,
     budget_sec: float = SCAN_BUDGET_SEC,
 ) -> dict[str, Any]:
-    """Scan the last *days* days for accounts that may belong to one person.
-
-    Read-only. Reads ``admin_audit_log`` (registrations), ``login_events``,
-    ``api_logs``, ``browser_session_accounts`` and ``users``, and returns
-    :meth:`DuplicateAccountScan.report`. The window's requests are read in one
-    pass; only the accounts a link reaches have their requests read again,
-    hour by hour.
-
-    Every statement runs in one read-only, repeatable-read transaction, so the
-    scan sees one snapshot, and the whole scan is held to *budget_sec*: each
-    statement may take only what is left of it. Past it, the database cancels
-    the statement and ``asyncpg.QueryCanceledError`` is raised.
-    """
-    since = (now or datetime.now(UTC)) - timedelta(days=days)
-    async with conn.transaction(isolation="repeatable_read", readonly=True):
-        fetch = _budgeted(conn, budget_sec)
-        return await _gather_and_scan(
-            fetch, since=since, days=days, min_score=min_score, limit=limit
-        )
+    """:func:`gather_duplicate_scan`, reported at *min_score* and *limit*."""
+    window = await gather_duplicate_scan(conn, days=days, now=now, budget_sec=budget_sec)
+    return window.report(min_score=min_score, limit=limit)
 
 
 def _budgeted(conn: asyncpg.Connection, budget_sec: float) -> Callable[..., Any]:
     """A ``fetch`` that holds every statement to what is left of *budget_sec*.
 
     ``SET LOCAL`` lasts until the transaction ends, so each statement is given
-    the remainder just before it runs. A statement started with less than a
-    second left gets that second, and the database cancels it if it needs more.
+    the remainder just before it runs; once nothing is left, none starts.
     """
     deadline = time.monotonic() + budget_sec
 
     async def fetch(sql: str, *args: Any) -> list[Any]:
-        remaining_ms = max(1000, int((deadline - time.monotonic()) * 1000))
+        remaining_ms = int((deadline - time.monotonic()) * 1000)
+        if remaining_ms < 1:  # a timeout of 0 would be no timeout at all
+            raise TimeoutError("the duplicate-account scan ran out of time")
         await conn.execute(f"SET LOCAL statement_timeout = {remaining_ms}")
         return await conn.fetch(sql, *args)
 
     return fetch
 
 
-async def _gather_and_scan(
-    fetch: Callable[..., Any], *, since: datetime, days: int, min_score: int, limit: int
-) -> dict[str, Any]:
+async def _gather(fetch: Callable[..., Any], *, since: datetime) -> DuplicateAccountScan:
     signups = await fetch(_SIGNUPS_SQL, since)
     logins = await fetch(_LOGINS_SQL, since)
     requests = await fetch(_REQUESTS_SQL, since)
@@ -911,4 +943,4 @@ async def _gather_and_scan(
         hours=[(r["user_id"], r["ip"], r["hour"], r["requests"]) for r in hours],
         clients=[(r["user_id"], r["client"], r["requests"]) for r in by_client],
     )
-    return scan.report(days=days, since=since, min_score=min_score, limit=limit)
+    return scan

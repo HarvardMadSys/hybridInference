@@ -692,16 +692,80 @@ def _browser() -> DuplicateAccountScan:
     )
 
 
-def _active_together() -> DuplicateAccountScan:
+def test_two_people_using_one_address_in_the_same_hours_are_still_address_only() -> None:
+    """Housemates who both use the API in the evenings: one address, the same hours.
+
+    Being active together on an address is still only that address, so the
+    group they form is marked like any other shared-address group.
+    """
     scan = DuplicateAccountScan(
         _accounts("a", "b"), requests=[("a", OFFICE, 30), ("b", OFFICE, 30)]
     )
     scan.add_activity(hours=[*_hours("a", OFFICE, 1, 2), *_hours("b", OFFICE, 1, 2)])
-    return scan
+
+    [group] = _report(scan)["groups"]
+
+    assert group["score"] == dup.MERGE_THRESHOLD
+    assert group["signals"] == ["co_active", "request_ip"]
+    assert group["address_only"] is True
 
 
-@pytest.mark.parametrize("build", [_burst, _browser, _active_together])
-def test_timing_identity_or_behaviour_evidence_is_not_address_only(build) -> None:
+@pytest.mark.parametrize("build", [_burst, _browser])
+def test_a_joint_registration_or_identity_evidence_is_not_address_only(build) -> None:
     [group] = _report(build())["groups"]
 
     assert group["address_only"] is False
+
+
+# --- one window, many reports, one budget ------------------------------------------
+
+
+def test_one_scanned_window_reports_at_any_bounds() -> None:
+    scan = DuplicateAccountScan(
+        _accounts("a", "b", "c", "d"),
+        # c and d sign in from unrelated addresses, and share a browser.
+        logins=[("a", OFFICE, 1), ("b", OFFICE, 1), ("c", HOME, 1), ("d", "203.0.113.5", 1)],
+        requests=[("a", OFFICE, 9), ("b", OFFICE, 9)],
+        browsers=[("browser", "c", NOW), ("browser", "d", NOW)],
+    )
+    window = dup.ScannedWindow(days=14, since=SINCE, scan=scan)
+
+    everything = window.report()
+    strongest = window.report(min_score=6, limit=1)
+
+    assert everything == _report(scan)
+    assert [group["user_ids"] for group in everything["groups"]] == [["c", "d"], ["a", "b"]]
+    assert [group["user_ids"] for group in strongest["groups"]] == [["c", "d"]]
+    assert strongest["total_groups"] == 1
+    # Reporting leaves the scan as it was.
+    assert window.report() == everything
+
+
+class _Conn:
+    def __init__(self) -> None:
+        self.executed: list[str] = []
+
+    async def execute(self, sql: str) -> None:
+        self.executed.append(sql)
+
+    async def fetch(self, sql: str, *args: Any) -> list[Any]:
+        return []
+
+
+async def test_each_statement_is_given_what_is_left_of_the_budget() -> None:
+    conn = _Conn()
+
+    await dup._budgeted(conn, 30.0)("SELECT 1")
+
+    [setting] = conn.executed
+    remaining_ms = int(setting.rsplit(" ", 1)[1])
+    assert 29_000 < remaining_ms <= 30_000
+
+
+async def test_no_statement_starts_once_the_budget_is_spent() -> None:
+    conn = _Conn()
+
+    with pytest.raises(TimeoutError):
+        await dup._budgeted(conn, 0.0)("SELECT 1")
+
+    assert conn.executed == []
