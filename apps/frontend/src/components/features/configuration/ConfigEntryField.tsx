@@ -19,6 +19,7 @@ import {
 import { DocumentEditor } from './DocumentEditor';
 import { ModelCatalogEditor } from './ModelCatalogEditor';
 import { NOT_A_LOGIN_FIELD } from './notALoginField';
+import { RoutingPolicyEditor } from './RoutingPolicyEditor';
 
 // Exported from here too, where the settings' other editors import it.
 export { NOT_A_LOGIN_FIELD };
@@ -277,7 +278,13 @@ export function ConfigEntryField({
     );
     // A JSON document is edited one value at a time; the text is its JSON view.
     // The model catalog has an editor of its own: models as cards, routes as rows.
-    const Editor = entry.key === 'MODEL_CATALOG' ? ModelCatalogEditor : DocumentEditor;
+    // So does the routing policy: one card, each value under a readable name.
+    const Editor =
+      entry.key === 'MODEL_CATALOG'
+        ? ModelCatalogEditor
+        : entry.key === 'ROUTING_POLICY'
+          ? RoutingPolicyEditor
+          : DocumentEditor;
     control = entry.document ? (
       <Editor
         entry={entry}
