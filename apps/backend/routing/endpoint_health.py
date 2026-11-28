@@ -415,6 +415,16 @@ def failure_may_lose_prefix_cache(exc: BaseException | None) -> bool:
     return status is None or status >= 500
 
 
+# Failures that mean the request never reached the endpoint: the connection was
+# refused, could not be resolved or handshaken, or was not made within the
+# connect bounds every upstream call carries (``serving.http.connect_bounded``).
+_NEVER_REACHED_ENDPOINT: tuple[type[BaseException], ...] = (
+    aiohttp.ClientConnectorError,
+    aiohttp.ConnectionTimeoutError,
+    ConnectionRefusedError,
+)
+
+
 def failed_handling_request(exc: BaseException) -> bool:
     """Return whether ``exc`` reads as an endpoint failing on a request it had received.
 
@@ -436,15 +446,7 @@ def failed_handling_request(exc: BaseException) -> bool:
     status = _http_status_of(exc)
     if status is not None:
         return status >= 500
-    return not isinstance(
-        exc,
-        (
-            aiohttp.ClientConnectorError,
-            ConnectionRefusedError,
-            TimeoutError,
-            UpstreamStreamIdleError,
-        ),
-    )
+    return not isinstance(exc, (*_NEVER_REACHED_ENDPOINT, TimeoutError, UpstreamStreamIdleError))
 
 
 def _request_may_be_at_fault(exc: BaseException | None, status: int | None) -> bool:
@@ -452,14 +454,23 @@ def _request_may_be_at_fault(exc: BaseException | None, status: int | None) -> b
 
     False for a credential rejection (the gateway's key, never the caller's), a
     rate limit on the gateway's account, which every caller shares, and a
-    connection that was never made, so the request never reached the endpoint.
-    Anything else might be the request's doing: an engine can answer one prompt
-    with a 5xx, crash or drop the connection on it, or outrun a timeout
-    generating it. See the module comment above ``_ACCOUNT_LIMIT_STATUSES``.
+    connection that was refused or never made in time, so the request never
+    reached the endpoint (``_NEVER_REACHED_ENDPOINT``). Anything else might be
+    the request's doing: an engine can answer one prompt with a 5xx, crash or
+    drop the connection on it, or take longer generating it than a timeout or
+    the stream-idle ceiling allows -- the reason ``UpstreamRequestTimedOut`` is
+    not charged at all.
+
+    That last reading is not the opposite of :func:`failed_handling_request`,
+    which asks another question: whether the endpoint *failed on* a request it
+    had received, the signature of an engine a request crashes. A timeout is
+    not that -- the endpoint was slow -- but whether the slowness was the
+    request's or the endpoint's, one failure cannot say. See the module comment
+    above ``_ACCOUNT_LIMIT_STATUSES``.
     """
     if _is_auth_misconfig(status) or status in _ACCOUNT_LIMIT_STATUSES:
         return False
-    return not isinstance(exc, (aiohttp.ClientConnectorError, ConnectionRefusedError))
+    return not isinstance(exc, _NEVER_REACHED_ENDPOINT)
 
 
 def _detail_str(s: str | None, *, limit: int = 500) -> str | None:
@@ -1064,8 +1075,8 @@ class _CircuitBreaker:
         """Record a counted failure, and open the circuit if it calls for that.
 
         ``alone`` (from ``stands_alone``) extends the streak and the
-        affected-caller list but opens nothing, so the next failure from
-        somebody else does.
+        affected-caller list but opens nothing, in any state, so the next
+        failure from somebody else does.
         """
         with self._lock:
             self.consecutive_failures += 1
@@ -1078,6 +1089,13 @@ class _CircuitBreaker:
             ):
                 self._affected_callers[caller] += 1
             if alone:
+                # Half-open included. A trip stood behind only by another
+                # caller's failure from before the last success outlives that
+                # failure's window, and after it the same caller's failed probe
+                # stands alone. Reopening on it would let one caller's retries
+                # hold the circuit open, the half of the report the rule exists
+                # to end, so the circuit stays half-open and the next probe,
+                # whoever sends it, decides.
                 return
             by_streak = self.consecutive_failures >= self.failure_threshold
             by_availability = availability is not None and availability < self.min_availability

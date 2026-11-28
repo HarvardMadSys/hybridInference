@@ -40,6 +40,7 @@ from routing import endpoint_health
 from routing.endpoint_health import EndpointHealthRegistry, _CircuitState
 from routing.routers import AllCircuitsOpenError, FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
+from serving.exceptions import UpstreamStreamIdleError
 from serving.observability.alerts import reset_dedupe_state, reset_transition_state
 from serving.utils import context as req_ctx
 from serving.utils.logging import _STRUCTURED_LOG_KEYS, JsonFormatter
@@ -497,6 +498,11 @@ def test_a_failure_with_no_caller_joins_a_lone_callers_run(clock: _Clock) -> Non
     [
         pytest.param(_refused, id="connection-refused"),
         pytest.param(lambda: ConnectionRefusedError(111, "Connection refused"), id="refused-raw"),
+        # A black-holed host, past ``serving.http.connect_bounded``.
+        pytest.param(
+            lambda: aiohttp.ConnectionTimeoutError("Connection timeout to host"),
+            id="connect-timeout",
+        ),
         pytest.param(lambda: _StatusError(429), id="rate-limited"),
         pytest.param(lambda: _StatusError(401), id="credential-rejected"),
     ],
@@ -513,6 +519,30 @@ def test_a_failure_no_request_could_cause_opens_the_circuit_for_a_lone_caller(
             registry.record_failure(_LOCAL, reason="chat_exception", exc=error())
 
     assert _state(registry) == _CircuitState.OPEN
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(lambda: _StatusError(500), id="engine-5xx"),
+        pytest.param(lambda: aiohttp.ServerDisconnectedError(), id="dropped"),
+        # Sent, then longer than the timeout: a long generation outruns it too.
+        pytest.param(TimeoutError, id="timeout"),
+        pytest.param(lambda: UpstreamStreamIdleError(120, frames=0), id="stream-idle"),
+    ],
+)
+def test_a_failure_the_request_may_have_caused_is_held_for_a_lone_caller(
+    clock: _Clock, error: Callable[[], BaseException]
+) -> None:
+    """Only a failure no request could cause speaks for the endpoint on its own."""
+    registry = EndpointHealthRegistry()
+
+    for _ in range(3):
+        clock.now += 1
+        with _as("mallory"):
+            registry.record_failure(_LOCAL, reason="chat_exception", exc=error())
+
+    assert _state(registry) == _CircuitState.CLOSED
 
 
 def test_a_lone_callers_run_leaves_the_endpoint_no_easier_to_open(clock: _Clock) -> None:
@@ -666,6 +696,48 @@ def test_the_same_callers_retry_cannot_hold_the_circuit_open(clock: _Clock) -> N
 
     _probe(registry, "alice", fails=False)
     assert _state(registry) == _CircuitState.CLOSED
+
+
+def test_a_lone_callers_failed_probe_leaves_the_circuit_half_open(clock: _Clock) -> None:
+    """What one caller could not open, it cannot hold open either.
+
+    Bob's failure came before alice was served, so it stood behind mallory's
+    failures only while it was inside the window -- long enough to open the
+    circuit. By the probe it is older than that, and mallory's failed probe
+    stands alone: no reopening, so no new cooldown, and the next probe decides.
+    """
+    registry = EndpointHealthRegistry()
+    _fail(registry, "bob")
+    clock.now += 1
+    _serve(registry, "alice")
+    for _ in range(3):
+        clock.now += 1
+        _fail(registry, "mallory")
+    assert _state(registry) == _CircuitState.OPEN
+
+    clock.now += 60
+    _elapse_cooldown(registry, clock)
+    _probe(registry, "mallory", fails=True)
+    assert _state(registry) == _CircuitState.HALF_OPEN
+
+    _probe(registry, "alice", fails=False)
+    assert _state(registry) == _CircuitState.CLOSED
+
+
+def test_a_failed_probe_with_somebody_else_behind_it_reopens_the_circuit(clock: _Clock) -> None:
+    """The same probe, while bob's failure is still in the window, reopens it."""
+    registry = EndpointHealthRegistry()
+    _fail(registry, "bob")
+    clock.now += 1
+    _serve(registry, "alice")
+    for _ in range(3):
+        clock.now += 1
+        _fail(registry, "mallory")
+
+    _elapse_cooldown(registry, clock)
+    _probe(registry, "mallory", fails=True)
+
+    assert _state(registry) == _CircuitState.OPEN
 
 
 # ---------------------------------------------------------------------------

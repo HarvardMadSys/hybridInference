@@ -182,8 +182,9 @@ the run of consecutive failures, but it cannot open the circuit and does not
 lower the success rate. It is logged as `lone_caller_hold_breaker`. The first
 failure from anyone else on top of the run opens the circuit at once. A failure
 that no request could have caused can always open the circuit by itself: a
-refused connection, a rate limit on the gateway's account (429), a credential
-rejection, or a failure with no caller attached. So an engine that is down
+connection that was refused or timed out before it was made, a rate limit on
+the gateway's account (429), a credential rejection, or a failure with no
+caller attached. So an engine that is down
 still leaves rotation however few people are calling it. The five settings:
 
 | Variable | Default | Meaning |
