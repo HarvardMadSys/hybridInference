@@ -16,6 +16,7 @@ import yaml
 
 from routing.routers import FixedRouter
 from serving.config.distribution import load_distribution_config
+from serving.config.documents import validate
 from serving.servers.registry import register_from_models_yaml
 
 REPO = Path(__file__).resolve().parents[3]
@@ -226,6 +227,16 @@ def test_demo_compose_is_an_explicit_full_local_third_layer() -> None:
     assert backend["DB_STORE_FULL_CONTENT"] == "false"
     assert backend["USER_AUTH_ENABLED"] == "true"
     assert json.loads(backend["SITE_CONFIGURATION"])["features"]["public_signup"] is True
+    # The example's branding is a runtime document, not console build input.
+    branding = backend["SITE_BRANDING"].replace("${FRONTEND_PORT:-13001}", "13001")
+    validate("SITE_BRANDING", branding)
+    example = json.loads(branding)["example"]
+    assert example == {
+        "api_base": "http://localhost:13001",
+        "api_key_env_var": "HYBRIDINFERENCE_API_KEY",
+        "model": "example-chat",
+    }
+    assert json.loads(branding)["storage_key_prefix"] == "hybridinference-example"
     assert backend["SIGNUP_ENABLED"] == "true"
     assert backend["SIGNUP_REQUIRE_EMAIL_VERIFICATION"] == "false"
     assert backend["REFRESH_TOKEN_COOKIE_NAME"] == "hybridinference_example_refresh"
@@ -239,8 +250,10 @@ def test_demo_compose_is_an_explicit_full_local_third_layer() -> None:
     assert frontend["container_name"] == (
         "${EXAMPLE_FRONTEND_CONTAINER_NAME:-hybridinference-example-frontend}"
     )
-    assert frontend["build"]["args"]["NEXT_PUBLIC_API_BASE"] == ""
-    assert frontend["build"]["args"]["BACKEND_INTERNAL_URL"] == "http://backend:8080"
+    assert frontend["build"]["args"] == {
+        "NEXT_PUBLIC_API_BASE": "",
+        "BACKEND_INTERNAL_URL": "http://backend:8080",
+    }
     assert demo["services"]["postgres"]["container_name"] == (
         "${EXAMPLE_POSTGRES_CONTAINER_NAME:-hybridinference-example-postgres}"
     )

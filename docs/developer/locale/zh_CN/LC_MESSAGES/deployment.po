@@ -935,11 +935,11 @@ msgstr "`make build`，或 `make build s=<service>`"
 #: ../developer/deployment.md:322
 msgid ""
 "The console reads its name and branding from the backend's `/site-config`"
-" at runtime. The old `NEXT_PUBLIC_*` branding variables remain only as "
-"build arguments for existing pipelines."
+" at runtime; no build argument brands it. A gateway with no "
+"`SITE_BRANDING` document gets the neutral console."
 msgstr ""
-"控制台在运行时从后端的 `/site-config` 读取名称和品牌。旧的 `NEXT_PUBLIC_*` "
-"品牌变量只作为构建参数保留，供现有流水线使用。"
+"控制台在运行时从后端的 `/site-config` 读取名称和品牌；任何构建参数都不会改变品牌。没有 "
+"`SITE_BRANDING` 文档的网关显示中性的控制台。"
 
 #: ../developer/deployment.md:326
 msgid "Configuration"

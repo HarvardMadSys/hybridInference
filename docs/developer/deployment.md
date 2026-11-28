@@ -320,8 +320,8 @@ stopped.
 | Backend or frontend source | `make build`, or `make build s=<service>` |
 
 The console reads its name and branding from the backend's `/site-config` at
-runtime. The old `NEXT_PUBLIC_*` branding variables remain only as build
-arguments for existing pipelines.
+runtime; no build argument brands it. A gateway with no `SITE_BRANDING`
+document gets the neutral console.
 
 ## Configuration
 

@@ -188,41 +188,15 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.frontend
       args:
-        # Transition compatibility for local/source builds and pre-W7 branded
-        # distributions. Canonical published consoles omit every identity
-        # value below and load the active deployment through /site-config at
-        # runtime. Empty defaults keep a fresh clone neutral.
-        # Explicitly local when omitted. An explicitly supplied empty string is
-        # distinct: the console preserves it as a same-origin API base, which
-        # distributions can combine with the Next.js rewrites below.
+        # No identity here: the console loads its branding from /site-config
+        # at runtime. The API base is explicitly local when omitted. An
+        # explicitly supplied empty string is distinct: the console preserves
+        # it as a same-origin API base, which distributions can combine with
+        # the Next.js rewrites below.
         NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE-http://localhost:8080}
         BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL-http://backend:8080}
         NEXT_PUBLIC_BUILD_SHA: ${BUILD_SHA:-}
         NEXT_PUBLIC_BUILD_TIMESTAMP: ${BUILD_TIMESTAMP:-}
-        NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${NEXT_PUBLIC_TURNSTILE_SITE_KEY:-}
-        NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME-}
-        NEXT_PUBLIC_APP_DESCRIPTION: ${NEXT_PUBLIC_APP_DESCRIPTION-}
-        NEXT_PUBLIC_SITE_HOST: ${NEXT_PUBLIC_SITE_HOST-}
-        NEXT_PUBLIC_ORG_NAME: ${NEXT_PUBLIC_ORG_NAME-}
-        NEXT_PUBLIC_ORG_URL: ${NEXT_PUBLIC_ORG_URL-}
-        NEXT_PUBLIC_ORG_TAGLINE: ${NEXT_PUBLIC_ORG_TAGLINE-}
-        NEXT_PUBLIC_DOCS_URL: ${NEXT_PUBLIC_DOCS_URL-}
-        NEXT_PUBLIC_STATUS_URL: ${NEXT_PUBLIC_STATUS_URL-}
-        # The upstream project's own repository, not a deployment's: a fork
-        # that wants its own overrides it like any other value.
-        NEXT_PUBLIC_GITHUB_URL: ${NEXT_PUBLIC_GITHUB_URL-https://github.com/HarvardMadSys/hybridInference}
-        NEXT_PUBLIC_CONTACT_EMAIL: ${NEXT_PUBLIC_CONTACT_EMAIL-}
-        NEXT_PUBLIC_EXAMPLE_API_BASE: ${NEXT_PUBLIC_EXAMPLE_API_BASE-}
-        NEXT_PUBLIC_EXAMPLE_API_KEY_ENV_VAR: ${NEXT_PUBLIC_EXAMPLE_API_KEY_ENV_VAR-}
-        NEXT_PUBLIC_EXAMPLE_MODEL: ${NEXT_PUBLIC_EXAMPLE_MODEL-}
-        NEXT_PUBLIC_STATCOUNTER_PROJECT_ID: ${NEXT_PUBLIC_STATCOUNTER_PROJECT_ID-}
-        NEXT_PUBLIC_STATCOUNTER_SECURITY_KEY: ${NEXT_PUBLIC_STATCOUNTER_SECURITY_KEY-}
-        NEXT_PUBLIC_FAST_TRACK_DOMAIN: ${NEXT_PUBLIC_FAST_TRACK_DOMAIN-}
-        NEXT_PUBLIC_FAST_TRACK_ORG: ${NEXT_PUBLIC_FAST_TRACK_ORG-}
-        NEXT_PUBLIC_STORAGE_KEY_PREFIX: ${NEXT_PUBLIC_STORAGE_KEY_PREFIX-}
-        NEXT_PUBLIC_DATA_POLICY_NOTICE: ${NEXT_PUBLIC_DATA_POLICY_NOTICE-}
-        NEXT_PUBLIC_TEAM_JSON: ${NEXT_PUBLIC_TEAM_JSON-}
-        NEXT_PUBLIC_SPONSORS_JSON: ${NEXT_PUBLIC_SPONSORS_JSON-}
     container_name: hybridinference-frontend
     restart: unless-stopped
     # A ceiling on what this container can take from the host. The console

@@ -5,13 +5,13 @@
 // affiliated-domain hint) are neutral or off. A distribution supplies its
 // identity through the versioned runtime document instead.
 //
-// These values are the transition build fallback. The root server layout
-// loads GET /site-config at request time and gives SiteConfigProvider that
-// value on its first render, so one frontend image can follow the active
-// distribution manifest without a client-side brand flash.
+// These values are the neutral console's branding, used while the gateway
+// serves no SITE_BRANDING document. The root server layout loads
+// GET /site-config at request time and gives SiteConfigProvider that value on
+// its first render, so one frontend image follows the active distribution
+// without a client-side brand flash. No build argument changes them.
 
 import { z } from 'zod';
-import { config } from './env';
 
 export interface TeamMember {
   name: string;
@@ -77,105 +77,70 @@ export interface Branding {
   sponsors: Sponsor[];
 }
 
-const teamSchema: z.ZodType<TeamMember[]> = z.array(
-  z.object({
-    name: z.string().min(1),
-    affiliations: z.array(z.string().min(1)),
-    badge: z.string().min(1).optional(),
-    image: z.string().min(1).optional(),
-    website: z.string().min(1).optional(),
-  }),
-);
+const APP_NAME = 'HybridInference';
 
-const sponsorsSchema: z.ZodType<Sponsor[]> = z.array(
-  z.object({
-    name: z.string().min(1),
-    alt: z.string().min(1),
-    src: z.string().min(1),
-    className: sponsorClassNameSchema,
-    width: z.number().positive(),
-    height: z.number().positive(),
-  }),
-);
-
-function fromJsonEnv<T>(raw: string | undefined, fallback: T, schema: z.ZodType<T>): T {
-  if (!raw) return fallback;
-  try {
-    const parsed = schema.safeParse(JSON.parse(raw));
-    return parsed.success ? parsed.data : fallback;
-  } catch (error) {
-    // A malformed or wrong-shaped override must not take the site down.
-    if (error instanceof SyntaxError) return fallback;
-    throw error;
-  }
-}
-
-const githubUrl =
-  process.env.NEXT_PUBLIC_GITHUB_URL || 'https://github.com/HarvardMadSys/hybridInference';
+// The upstream project's own repository: it identifies the software, not a
+// deployment of it.
+const githubUrl = 'https://github.com/HarvardMadSys/hybridInference';
 
 export const branding: Branding = {
-  // Product identity (appName itself lives in env.ts and is already
-  // NEXT_PUBLIC_APP_NAME-overridable).
-  appName: config.appName,
-  appDescription:
-    process.env.NEXT_PUBLIC_APP_DESCRIPTION ||
-    'A gateway that routes LLM requests across local and remote inference providers.',
-  // Reads as a name in prose ("Why X", "How did you find X?"), so it falls
-  // back to the product name rather than to an empty string.
-  siteHost: process.env.NEXT_PUBLIC_SITE_HOST || config.appName,
+  appName: APP_NAME,
+  appDescription: 'A gateway that routes LLM requests across local and remote inference providers.',
+  // Reads as a name in prose ("Why X", "How did you find X?"), so it is the
+  // product name rather than an empty string.
+  siteHost: APP_NAME,
 
   // Operating organization and external properties: empty means "this
   // deployment has none", and every consumer hides the corresponding link
   // or sentence rather than rendering an empty href.
-  orgName: process.env.NEXT_PUBLIC_ORG_NAME || '',
-  orgUrl: process.env.NEXT_PUBLIC_ORG_URL || '',
-  orgTagline: process.env.NEXT_PUBLIC_ORG_TAGLINE || '',
-  docsUrl: process.env.NEXT_PUBLIC_DOCS_URL || '',
-  statusUrl: process.env.NEXT_PUBLIC_STATUS_URL || '',
+  orgName: '',
+  orgUrl: '',
+  orgTagline: '',
+  docsUrl: '',
+  statusUrl: '',
   githubUrl,
   // Extra header links are distribution identity by definition, so the
   // neutral console ships none and only the runtime document adds any.
   navLinks: [],
   commitUrlBase: `${githubUrl}/commit`,
-  contactEmail: process.env.NEXT_PUBLIC_CONTACT_EMAIL || '',
+  contactEmail: '',
 
-  // Homepage code example. A build publishes no example base of its own: the
-  // developer home derives one from NEXT_PUBLIC_API_BASE (else the page
-  // origin), so a console built against a real API never advertises a
-  // localhost default, and never someone else's hosted service. The model id
+  // Homepage code example. The neutral console publishes no example base of
+  // its own: the developer home derives one from NEXT_PUBLIC_API_BASE (else
+  // the page origin), so a console built against a real API never advertises
+  // a localhost default, and never someone else's hosted service. The model id
   // matches config/examples/models.openrouter.json.
-  exampleApiBase: process.env.NEXT_PUBLIC_EXAMPLE_API_BASE || '',
-  exampleApiKeyEnvVar: process.env.NEXT_PUBLIC_EXAMPLE_API_KEY_ENV_VAR || 'HYBRIDINFERENCE_API_KEY',
-  exampleModel: process.env.NEXT_PUBLIC_EXAMPLE_MODEL || 'llama-3.3-70b',
+  exampleApiBase: '',
+  exampleApiKeyEnvVar: 'HYBRIDINFERENCE_API_KEY',
+  exampleModel: 'llama-3.3-70b',
   exampleHidden: false,
 
   // Analytics: off unless an operator opts in with their own Statcounter ids
   // (layout.tsx skips the scripts entirely when the project id is empty).
   // A shipped default would report every third-party deployment's traffic
   // into an upstream operator's account; those ids come from the deployment.
-  statcounterProjectId: process.env.NEXT_PUBLIC_STATCOUNTER_PROJECT_ID ?? '',
-  statcounterSecurityKey: process.env.NEXT_PUBLIC_STATCOUNTER_SECURITY_KEY ?? '',
+  statcounterProjectId: '',
+  statcounterSecurityKey: '',
 
-  // CAPTCHA is public configuration (the secret key remains backend-only).
-  // Keep the build-time value as a compatibility fallback until every
-  // deployment serves the versioned runtime branding document.
-  turnstileSiteKey: process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? '',
+  // CAPTCHA is public configuration (the secret key remains backend-only);
+  // a deployment sets its site key in the runtime branding document.
+  turnstileSiteKey: '',
 
   // Signup fast-track hint (display copy only; the real allowlist is
   // server-side). Empty fastTrackDomain hides the hint, which is the right
   // default for a deployment that has no affiliated domain.
-  fastTrackDomain: process.env.NEXT_PUBLIC_FAST_TRACK_DOMAIN ?? '',
-  fastTrackOrg: process.env.NEXT_PUBLIC_FAST_TRACK_ORG ?? '',
+  fastTrackDomain: '',
+  fastTrackOrg: '',
 
   // Data-handling notice shown on the landing page. Empty by default and
   // hidden when empty: a deployment must state its own policy, and no
   // upstream default can be correct for someone else's users. A distribution
   // supplies its own text through /site-config.
-  dataPolicyNotice: process.env.NEXT_PUBLIC_DATA_POLICY_NOTICE || '',
+  dataPolicyNotice: '',
 
   // Namespace for persisted browser preferences. Changing it resets existing
   // dismissal state, so keep it stable per distribution.
-  storageKeyPrefix: process.env.NEXT_PUBLIC_STORAGE_KEY_PREFIX || 'hybridinference',
+  storageKeyPrefix: 'hybridinference',
 
   // Runtime distributions normally serve these from /site-assets. Empty
   // fallbacks preserve the neutral console's existing text-only header and
@@ -185,9 +150,8 @@ export const branding: Branding = {
 
   // People and sponsors. Empty upstream — a neutral console has neither, and
   // arrays hidden behind a fallback are the kind of content that silently
-  // ships one distribution's identity to everyone else. Legacy images may
-  // still supply NEXT_PUBLIC_TEAM_JSON / NEXT_PUBLIC_SPONSORS_JSON; runtime
-  // distributions use /site-config. Empty arrays hide the sections.
-  team: fromJsonEnv<TeamMember[]>(process.env.NEXT_PUBLIC_TEAM_JSON, [], teamSchema),
-  sponsors: fromJsonEnv<Sponsor[]>(process.env.NEXT_PUBLIC_SPONSORS_JSON, [], sponsorsSchema),
+  // ships one distribution's identity to everyone else. A distribution lists
+  // its own through /site-config. Empty arrays hide the sections.
+  team: [],
+  sponsors: [],
 };

@@ -1,22 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-describe('branding JSON overrides', () => {
+describe('neutral branding', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.resetModules();
   });
 
-  it('falls back when team JSON has the wrong shape', async () => {
-    vi.stubEnv('NEXT_PUBLIC_TEAM_JSON', '{}');
-
-    const { branding } = await import('./branding');
-
-    // The fallback is the neutral empty list: upstream ships no people.
-    expect(Array.isArray(branding.team)).toBe(true);
-    expect(branding.team).toHaveLength(0);
-  });
-
-  it('accepts a validated team override', async () => {
+  it('ignores the retired build-time branding variables', async () => {
+    // Branding comes only from the gateway's /site-config; an image built with
+    // the old NEXT_PUBLIC_* identity values must still be the neutral console.
+    vi.stubEnv('NEXT_PUBLIC_APP_NAME', 'Build-time Name');
+    vi.stubEnv('NEXT_PUBLIC_STORAGE_KEY_PREFIX', 'build-time');
     vi.stubEnv(
       'NEXT_PUBLIC_TEAM_JSON',
       JSON.stringify([{ name: 'Example Operator', affiliations: ['Example Lab'] }]),
@@ -24,26 +18,8 @@ describe('branding JSON overrides', () => {
 
     const { branding } = await import('./branding');
 
-    expect(branding.team).toEqual([{ name: 'Example Operator', affiliations: ['Example Lab'] }]);
-  });
-
-  it('falls back when sponsor dimensions are invalid', async () => {
-    vi.stubEnv(
-      'NEXT_PUBLIC_SPONSORS_JSON',
-      JSON.stringify([
-        {
-          name: 'Broken Sponsor',
-          alt: 'Broken logo',
-          src: '/broken.svg',
-          className: '',
-          width: 0,
-          height: 10,
-        },
-      ]),
-    );
-
-    const { branding } = await import('./branding');
-
-    expect(branding.sponsors).toHaveLength(0);
+    expect(branding.appName).toBe('HybridInference');
+    expect(branding.storageKeyPrefix).toBe('hybridinference');
+    expect(branding.team).toEqual([]);
   });
 });

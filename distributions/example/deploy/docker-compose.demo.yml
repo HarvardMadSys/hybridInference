@@ -21,6 +21,10 @@ services:
       DB_STORE_FULL_CONTENT: "false"
       USER_AUTH_ENABLED: "true"
       SITE_CONFIGURATION: "{\"schema_version\": 1, \"distribution\": {\"id\": \"example\", \"display_name\": \"Example Router\", \"release\": \"1.0.0\"}, \"site\": {\"public_base_url\": \"http://localhost:13001\", \"support_email\": \"support@example.test\"}, \"features\": {\"routers\": [\"fixed\"], \"public_signup\": true, \"rag\": false}, \"deployment\": {\"target\": \"local\"}}"
+      # The console's name comes from SITE_CONFIGURATION above; this document
+      # gives it the example's quickstart model and API base, and a storage
+      # prefix of its own so its browser preferences stay apart.
+      SITE_BRANDING: "{\"schema_version\": 1, \"app_description\": \"A gateway that routes LLM requests across local and remote inference providers.\", \"site_host\": \"Example Router\", \"organization\": {\"name\": \"\", \"url\": \"\", \"tagline\": \"\"}, \"links\": {\"docs_url\": \"\", \"status_url\": \"\", \"github_url\": \"https://github.com/HarvardMadSys/hybridInference\"}, \"example\": {\"api_base\": \"http://localhost:${FRONTEND_PORT:-13001}\", \"api_key_env_var\": \"HYBRIDINFERENCE_API_KEY\", \"model\": \"example-chat\"}, \"analytics\": {\"statcounter_project_id\": \"\", \"statcounter_security_key\": \"\"}, \"signup\": {\"turnstile_site_key\": \"\", \"fast_track_domain\": \"\", \"fast_track_org\": \"\"}, \"storage_key_prefix\": \"hybridinference-example\", \"data_policy_notice\": \"\", \"assets\": {\"logo_url\": \"\", \"favicon_url\": \"\"}, \"team\": [], \"sponsors\": []}"
       # Verification off keeps SMTP out of this loopback-only demo: with it on,
       # the SMTP settings would be required before anyone could sign up.
       SIGNUP_ENABLED: "true"
@@ -42,10 +46,6 @@ services:
         # the frontend's Next.js rewrites, including the full smoke below.
         NEXT_PUBLIC_API_BASE: ""
         BACKEND_INTERNAL_URL: http://backend:8080
-        NEXT_PUBLIC_APP_NAME: Example Router
-        NEXT_PUBLIC_EXAMPLE_API_BASE: http://localhost:${FRONTEND_PORT:-13001}
-        NEXT_PUBLIC_EXAMPLE_MODEL: example-chat
-        NEXT_PUBLIC_STORAGE_KEY_PREFIX: hybridinference-example
     container_name: ${EXAMPLE_FRONTEND_CONTAINER_NAME:-hybridinference-example-frontend}
     environment:
       REFRESH_TOKEN_COOKIE_NAME: hybridinference_example_refresh

@@ -1096,10 +1096,6 @@ jobs:
           build-args: |
             NEXT_PUBLIC_API_BASE=
             BACKEND_INTERNAL_URL=http://backend:8080
-            NEXT_PUBLIC_APP_NAME=Example Router
-            NEXT_PUBLIC_EXAMPLE_API_BASE=http://localhost:${{ steps.tutorial-port.outputs.frontend_port }}
-            NEXT_PUBLIC_EXAMPLE_MODEL=example-chat
-            NEXT_PUBLIC_STORAGE_KEY_PREFIX=hybridinference-example
           cache-from: |
             type=gha,scope=frontend
             type=gha,scope=tutorial-e2e-frontend
@@ -1121,10 +1117,6 @@ jobs:
           build-args: |
             NEXT_PUBLIC_API_BASE=
             BACKEND_INTERNAL_URL=http://backend:8080
-            NEXT_PUBLIC_APP_NAME=Example Router
-            NEXT_PUBLIC_EXAMPLE_API_BASE=http://localhost:${{ steps.tutorial-port.outputs.frontend_port }}
-            NEXT_PUBLIC_EXAMPLE_MODEL=example-chat
-            NEXT_PUBLIC_STORAGE_KEY_PREFIX=hybridinference-example
           cache-from: |
             type=gha,scope=frontend
             type=gha,scope=tutorial-e2e-frontend

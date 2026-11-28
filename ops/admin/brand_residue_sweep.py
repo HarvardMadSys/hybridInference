@@ -41,13 +41,14 @@ ATTRIBUTION: dict[str, str] = {
         "names the deployment this gateway runs for, and points at it as a "
         "worked example — true, useful to a reader, and not a leak"
     ),
-    "deploy/docker/docker-compose.yml": (
-        "NEXT_PUBLIC_GITHUB_URL defaults to this repository, which is where "
-        "the console's source link should point"
-    ),
     "apps/frontend/src/config/branding.ts": (
-        "the same default, and comments naming this deployment as the example "
-        "for why each neutral default is what it is"
+        "the console's source link defaults to this repository, and comments "
+        "name this deployment as the example for why each neutral default is "
+        "what it is"
+    ),
+    "distributions/example/deploy/docker-compose.demo.yml": (
+        "the example's SITE_BRANDING links the console's source to this "
+        "repository, as the neutral console does"
     ),
     "docs/developer/router-tutorial.md": "the clone URL, same as installation.md",
     "docs/developer/_extra/404.html": "the source-repository link, same as index.rst",
