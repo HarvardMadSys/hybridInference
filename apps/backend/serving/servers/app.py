@@ -9,7 +9,7 @@ from fastapi import FastAPI
 
 from ..config.settings import get_settings
 from ..utils.logging import attach_quiet_access_filter
-from . import bootstrap, restart
+from . import allocator, bootstrap, restart
 from .handoff import HandoffMiddleware
 from .idle_connection import install_idle_connection_timeout
 from .middleware.body_limit import RequestBodyLimitMiddleware
@@ -69,6 +69,9 @@ async def lifespan(app: FastAPI):
     # Attach after uvicorn's own logging setup, which would otherwise wipe filters
     # added at import time. LOG_LEVEL=DEBUG disables suppression.
     attach_quiet_access_filter()
+    # Before the first request body: a large buffer is unmapped when freed
+    # instead of growing the heap for good (serving/servers/allocator.py).
+    allocator.pin_mmap_threshold()
 
     # Loads dotenv and the database-backed configuration, then refuses to start
     # without the authentication secrets, before it opens stores or starts tasks.

@@ -1775,6 +1775,27 @@ msgid ""
 msgstr "控制台没能在三秒内从后端拿到有效的 `/site-config`。检查前端日志和后端，然后重试"
 
 #: ../developer/deployment.md:694
+msgid "The backend's memory after large requests"
+msgstr "大请求过后后端的内存"
+
+#: ../developer/deployment.md:696
+msgid ""
+"At startup the backend fixes glibc's mmap threshold at 128 KiB, glibc's "
+"own starting value, and logs `Allocator: glibc mmap threshold fixed at "
+"128 KiB`. Without this, the threshold rises with every large request body "
+"or reply the backend frees, and the process keeps a burst's memory long "
+"after the burst ends. `serving/servers/allocator.py` has the details. An "
+"operator's own `MALLOC_MMAP_THRESHOLD_`, or `glibc.malloc.mmap_threshold` "
+"in `GLIBC_TUNABLES`, takes precedence. With any other C library the "
+"backend changes nothing."
+msgstr ""
+"后端启动时会把 glibc 的 mmap 阈值固定在 128 KiB，也就是 glibc 自己的初始值，并记录日志 "
+"`Allocator: glibc mmap threshold fixed at 128 KiB`。不这样做的话，后端每释放一个大的请求体或回复，"
+"阈值就会随之升高，一阵大请求过去很久之后，进程仍占着那批内存。细节见 "
+"`serving/servers/allocator.py`。运维人员自己设置的 `MALLOC_MMAP_THRESHOLD_`，或 "
+"`GLIBC_TUNABLES` 中的 `glibc.malloc.mmap_threshold`，优先生效。换成其他 C 库时，后端不做任何改动。"
+
+#: ../developer/deployment.md:705
 msgid "A monitor or service account is suddenly getting 429s"
 msgstr "监控或服务账号突然开始收到 429"
 
