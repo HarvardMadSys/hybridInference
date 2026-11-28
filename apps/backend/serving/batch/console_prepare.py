@@ -93,6 +93,11 @@ _YIELD_EVERY = 500
 _MAX_VALUES = 10
 #: Distinct file models listed.
 _MAX_MODELS = 50
+#: Distinct other request parameters listed; the rest are counted together.
+_MAX_OTHER_PARAMS = 50
+#: Characters of a file model's name a report shows. A name is the file's own
+#: text, as long as a line; no model id comes near this.
+_MAX_MODEL_NAME = 256
 
 _ENVELOPE = ("custom_id", "method", "url", "body")
 _MAX_CUSTOM_ID = 512
@@ -546,6 +551,7 @@ class ConsoleScan:
         self._model_unset = 0
         self._params = {key: _Distribution() for key in ("temperature", "max_tokens")}
         self._other_params: dict[str, int] = {}
+        self._other_params_other = 0
         self._stopped = False
         self._rejected: set[str] = set()
         # The outcome.
@@ -759,7 +765,14 @@ class ConsoleScan:
         for key in body:
             if key not in ("model", "messages", "input", "temperature", "max_tokens"):
                 name = key[:64]
-                self._other_params[name] = self._other_params.get(name, 0) + 1
+                if name in self._other_params:
+                    self._other_params[name] += 1
+                elif len(self._other_params) < _MAX_OTHER_PARAMS:
+                    self._other_params[name] = 1
+                else:
+                    # A file of distinct keys would otherwise list every one,
+                    # holding them all in memory and in the report.
+                    self._other_params_other += 1
 
     def _decide_type(self) -> None:
         present = [target for target, count in self._type_counts.items() if count]
@@ -1106,12 +1119,15 @@ class ConsoleScan:
                     "undetermined": self._undetermined,
                 },
                 "url_missing_rows": self._missing_url,
-                "models": self._model_view,
+                "models": [
+                    {**entry, "name": entry["name"][:_MAX_MODEL_NAME]} for entry in self._model_view
+                ],
                 "models_other_rows": self._models_other,
                 "model_unset_rows": self._model_unset,
             },
             "params": params,
             "other_params": dict(sorted(self._other_params.items())),
+            "other_params_other": self._other_params_other,
             "model_resolution": (
                 {"requested": self.requested, "canonical": self.canonical}
                 if self.canonical is not None

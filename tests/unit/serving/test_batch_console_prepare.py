@@ -186,3 +186,56 @@ async def test_preflight_rejects_online_message_limits_before_schema_validation(
     assert scan.errors[0]["custom_id"] == "row-one"
     assert scan.errors[0]["code"] == "invalid_request"
     assert "Too many messages" in scan.errors[0]["message"]
+
+
+async def _identify(monkeypatch, lines: list[dict]) -> dict:
+    """Identify a source of *lines* (chat requests) and return the report."""
+    from serving.batch.config import batch_config
+
+    monkeypatch.setattr(cp, "resolve_model", AsyncMock(return_value="m"))
+    raw = b"".join(json.dumps(line).encode() + b"\n" for line in lines)
+
+    async def chunks(_file_id, *, after_seq, limit):
+        return [(0, raw)] if after_seq < 0 else []
+
+    scan = cp.ConsoleScan(
+        store=SimpleNamespace(
+            take_read_lease=AsyncMock(return_value="lease"), drop_read_lease=AsyncMock()
+        ),
+        file_store=SimpleNamespace(read_chunks=chunks),
+        ctx=None,
+        config=batch_config(),
+        source={"id": "source", "bytes": len(raw)},
+        overrides=cp.Overrides(),
+    )
+    await scan.run(validate=False)
+    return scan.report()
+
+
+def _chat_line(index: int, body: dict) -> dict:
+    messages = [{"role": "user", "content": "hi"}]
+    return {
+        "custom_id": f"row-{index}",
+        "url": "/v1/chat/completions",
+        "body": {"model": "m", "messages": messages, **body},
+    }
+
+
+async def test_other_parameters_are_listed_up_to_a_cap_and_the_rest_counted(monkeypatch):
+    # Each line names three keys of its own: one file can hold millions.
+    lines = [_chat_line(n, {"top_p": 1, f"a{n}": 1, f"b{n}": 1, f"c{n}": 1}) for n in range(100)]
+    report = await _identify(monkeypatch, lines)
+    listed = report["other_params"]
+    assert len(listed) == cp._MAX_OTHER_PARAMS
+    assert listed["top_p"] == 100
+    assert sum(listed.values()) + report["other_params_other"] == 400
+    assert report["other_params_other"] == 400 - 100 - (cp._MAX_OTHER_PARAMS - 1)
+
+
+async def test_a_long_file_model_name_is_cut_in_the_report(monkeypatch):
+    name = "m" * 100_000
+    lines = [{**_chat_line(0, {}), "body": {"model": name, "messages": []}}]
+    report = await _identify(monkeypatch, lines)
+    (model,) = report["detected"]["models"]
+    assert model["name"] == name[: cp._MAX_MODEL_NAME]
+    assert model["rows"] == 1
