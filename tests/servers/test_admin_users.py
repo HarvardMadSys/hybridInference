@@ -267,6 +267,34 @@ async def test_list_users_filters_by_role(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_list_users_filters_service_accounts(admin_client):
+    """GET /admin/users?service_account=true lists them and counts them unfiltered."""
+    client, op_store, _log_store, _log = admin_client
+
+    sc = {
+        "all": 4,
+        "pending_approval": 0,
+        "active": 4,
+        "suspended": 0,
+        "rejected": 0,
+        "deleted": 0,
+        "roles": {"free": 1, "pro": 2, "internal": 0, "admin": 1},
+        "service_accounts": 2,
+    }
+    row = {**_user_row(role="pro"), "is_service_account": True}
+    op_store.list_users.return_value = (2, [row], sc)
+
+    response = await client.get("/admin/users?service_account=true", headers=AUTH)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["service_account_count"] == 2
+    assert body["users"][0]["is_service_account"] is True
+    assert op_store.list_users.await_args.kwargs["service_account"] is True
+    assert op_store.list_users.await_args.kwargs["role"] is None
+
+
+@pytest.mark.asyncio
 async def test_list_users_rejects_an_unknown_role(admin_client):
     client, op_store, _log_store, _log = admin_client
 

@@ -595,12 +595,16 @@ class OperationalStore(ABC):
         include_usage_totals: bool = True,
         tag: str | None = None,
         role: str | None = None,
+        service_account: bool | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Return ``(total_count, user_rows, status_counts_row)``.
 
         *tag* keeps only the users that tag applies to.
         *role* keeps only accounts in that tier (``free``, ``pro``,
         ``internal``, ``admin``).
+        *service_account* keeps only service accounts (``True``) or only the
+        other accounts (``False``); ``status_counts["service_accounts"]``
+        counts them, unfiltered.
 
         *sort_by* values that reference cost (``cost_today``, ``cost_month``,
         ``cost_alltime``) or usage (``requests``, ``tokens``) require joining

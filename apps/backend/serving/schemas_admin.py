@@ -330,6 +330,8 @@ class ListUsersResponse(BaseModel):
     users: list[UserListItem]
     status_counts: StatusCounts = Field(default_factory=StatusCounts)
     role_counts: RoleCounts = Field(default_factory=RoleCounts)
+    # Not a tier: each service account also holds one of the tiers above.
+    service_account_count: int = 0
 
 
 # ========================================
