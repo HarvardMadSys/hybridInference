@@ -11,7 +11,6 @@ blank value as unset.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -64,16 +63,10 @@ def _distribution_root() -> Path | None:
     ``distributions/`` is bind-mounted beside it
     (deploy/docker/docker-compose.yml), so the app root is the base there.
 
-    A deployment that has declared its manifest through
-    ``DISTRIBUTION_CONFIG_PATH`` has already named its overlay, so that wins.
-    Otherwise a single overlay in the tree is unambiguous and is used; zero
-    (a plain clone) or several (nothing says which) resolve to nothing, and
-    both ``RAG_CORPUS_DIR`` and ``RAG_INDEX_PATH`` still override outright.
+    A single overlay in the tree is unambiguous and is used; zero (a plain
+    clone) or several (nothing says which) resolve to nothing, and both
+    ``RAG_CORPUS_DIR`` and ``RAG_INDEX_PATH`` still override outright.
     """
-    manifest = os.getenv("DISTRIBUTION_CONFIG_PATH", "").strip()
-    if manifest:
-        return Path(manifest).resolve().parent
-
     app_root = Path(__file__).resolve().parents[2]
     for base in (_REPO_ROOT, app_root):
         candidates = sorted(

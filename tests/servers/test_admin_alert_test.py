@@ -35,12 +35,8 @@ WECOM_URL = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=synthetic-secr
 async def admin_client(monkeypatch, tmp_path):
     for entry in static_entries():
         monkeypatch.delenv(entry.key, raising=False)
-    monkeypatch.delenv("DISTRIBUTION_CONFIG_PATH", raising=False)
     models = tmp_path / "models.yaml"
     models.write_text("models: []\n")
-    monkeypatch.setenv("MODELS_CONFIG_PATH", str(models))
-    monkeypatch.setenv("ROUTING_CONFIG_PATH", str(tmp_path / "routing.yaml"))
-    monkeypatch.setenv("ALERTS_CONFIG_PATH", str(tmp_path / "alerts.yaml"))
     monkeypatch.setenv("ADMIN_TOKEN", "test-admin")
     monkeypatch.setenv("API_KEY_SECRET", "unit-test-secret")
     monkeypatch.setenv("JWT_SECRET_KEY", "unit-test-jwt-secret-at-least-32-characters")

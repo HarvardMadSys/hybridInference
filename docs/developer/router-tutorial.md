@@ -231,7 +231,6 @@ The example is one [distribution](glossary.md#deployments):
 distributions/example/
 ├── EXAMPLE_OVERLAY
 ├── distribution.json
-├── distribution.demo.json
 ├── config/
 │   ├── models.json
 │   └── routing.json
@@ -244,9 +243,10 @@ distributions/example/
 └── full_smoke.py
 ```
 
-- `distribution.json` holds Stage 1's site settings, with public signup off,
-  and `distribution.demo.json` the demo's, with signup on. Both stages seed
-  the model catalog and the routing file from `config/`.
+- `distribution.json` holds Stage 1's site settings, with public signup off;
+  the demo's, with signup on, are the `SITE_CONFIGURATION` in
+  `deploy/docker-compose.demo.yml`. Both stages seed the model catalog and the
+  routing file from `config/`.
 - `docker-compose.yml` adds the fake provider and starts the backend alone.
   `docker-compose.demo.yml` adds Postgres, the console and a database volume of
   the example's own; the first start copies the settings into that database,

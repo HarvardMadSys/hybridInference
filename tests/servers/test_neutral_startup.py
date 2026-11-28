@@ -4,9 +4,8 @@ Open-source criterion 3: someone who clones the repo, configures nothing
 deployment-specific, and supplies a single provider key must get a
 working, neutral gateway. This test *is* that criterion, executable.
 
-It runs in a subprocess with a deliberately bare environment (no
-DISTRIBUTION_CONFIG_PATH, no SITE_* overrides, DB and user auth disabled) so it cannot
-inherit the shared suite's deployment-flavored test settings, and it
+It runs in a subprocess with a deliberately bare environment (no SITE_*
+overrides, DB and user auth disabled) so it cannot inherit the shared suite's deployment-flavored test settings, and it
 boots the real app through its lifespan rather than inspecting config.
 """
 
@@ -18,7 +17,6 @@ import sys
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_EXAMPLE_REGISTRY = "config/examples/models.openrouter.json"
 
 _SCRIPT = """
 import json
@@ -64,7 +62,6 @@ def test_neutral_deployment_does_not_assume_any_provider_or_model() -> None:
         # deployment. Opt out explicitly rather than starting with auth on
         # and missing secrets (which must now fail before serving traffic).
         "USER_AUTH_ENABLED": "false",
-        "MODELS_CONFIG_PATH": _EXAMPLE_REGISTRY,
         "OPENROUTER_API_KEY": "sk-or-neutral-startup-dummy",
     }
     proc = subprocess.run(

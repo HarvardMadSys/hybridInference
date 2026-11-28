@@ -30,8 +30,6 @@ async def test_concurrent_config_changes_validate_the_previous_commit(
     monkeypatch.setenv("TRUST_PROXY_HEADERS", "false")
     monkeypatch.setenv("TRUST_X_REAL_IP", "false")
     monkeypatch.setenv("TRUST_CLOUDFLARE_HEADERS", "false")
-    for name in ("MODELS_CONFIG_PATH", "ROUTING_CONFIG_PATH", "ALERTS_CONFIG_PATH"):
-        monkeypatch.setenv(name, str(tmp_path / name))
     get_settings.cache_clear()
     store = AppConfigStore(pool)
     await store.write(
@@ -380,8 +378,6 @@ async def test_boot_load_imports_generates_and_guards_api_keys(
 
     for entry in static_entries():
         monkeypatch.delenv(entry.key, raising=False)
-    monkeypatch.setenv("MODELS_CONFIG_PATH", str(tmp_path / "models.yaml"))
-    monkeypatch.setenv("ROUTING_CONFIG_PATH", str(tmp_path / "routing.yaml"))
     monkeypatch.setenv("SITE_NAME", "Imported")
     get_settings.cache_clear()
     store = AppConfigStore(isolated_connection)

@@ -237,8 +237,8 @@ def test_probe_urls_follow_make_extra_env_files_and_local_overrides(
     )
 
 
-# What a deployment of the release before database-backed configuration names
-# in its overlay's deploy/*.env: the previous image reads its files through them.
+# What a deployment of a release before database-backed configuration named in
+# its overlay's deploy/*.env: those releases read their files through them.
 _RETIRED_SELECTORS = {
     "DISTRIBUTION_CONFIG_PATH": "/app/distributions/site/distribution.yaml",
     "DISTRIBUTION_CONFIG_MODE": "active",
@@ -246,51 +246,21 @@ _RETIRED_SELECTORS = {
     "ROUTING_CONFIG_PATH": "/app/distributions/site/config/routing.yaml",
     "ALERTS_CONFIG_PATH": "/app/distributions/site/config/alerts.yaml",
 }
-_PINNED = (
-    "BACKEND_IMAGE=registry.example/backend@sha256:" + "a" * 64,
-    "FRONTEND_IMAGE=registry.example/frontend@sha256:" + "b" * 64,
-)
 
 
-@pytest.mark.parametrize(
-    "overlay",
-    [None, "docker-compose.artifacts.yml"],
-    ids=["source", "deploy-and-rollback"],
-)
-def test_a_rolled_back_backend_still_gets_its_configuration_selectors(
-    tmp_path: Path, docker_cli: str, overlay: str | None
+def test_the_retired_configuration_selectors_never_reach_the_backend(
+    tmp_path: Path, docker_cli: str
 ) -> None:
-    """A failed deploy or `make rollback` starts the previous image from these files.
-
-    That image reads its manifest, models, routing and alert files through
-    these variables; without them it reopens public signup, drops the
-    manifest's feature restrictions and branding, and alerts on the built-in
-    thresholds. Every way a pinned image is started must carry them.
-    """
-    overlays = (COMPOSE.parent / overlay,) if overlay else ()
+    """Compose passes none of them, even when an overlay's env file still sets one."""
     # The overlay's env file, not .env: Compose reads it, the container does not.
     deployment = tmp_path / "backend.env"
     deployment.write_text("".join(f"{key}={value}\n" for key, value in _RETIRED_SELECTORS.items()))
-    backend = _render(
-        tmp_path, docker_cli, None, overlays=overlays, extra=_PINNED, env_files=(deployment,)
-    )["services"]["backend"]
-
-    for key, value in _RETIRED_SELECTORS.items():
-        assert backend["environment"].get(key) == value, key
-
-
-def test_unset_configuration_selectors_stay_out_of_the_container(
-    tmp_path: Path, docker_cli: str
-) -> None:
-    """Unset must stay unset: the previous release then defaults to dark mode.
-
-    An empty mode is an error there, and a path default would outrank the
-    manifest, so Compose may only pass on what a deployment sets.
-    """
-    environment = _render(tmp_path, docker_cli, None)["services"]["backend"]["environment"]
+    environment = _render(tmp_path, docker_cli, None, env_files=(deployment,))["services"][
+        "backend"
+    ]["environment"]
 
     for key in _RETIRED_SELECTORS:
-        assert environment.get(key) is None, key
+        assert key not in environment, key
 
 
 def test_the_restore_drill_server_shares_nothing_with_the_deployment_database(

@@ -134,13 +134,12 @@ def test_status_requires_auth(tmp_path, monkeypatch):
     assert TestClient(app).get("/v1/rag/status").status_code == 401
 
 
-def _configure_distribution(tmp_path, monkeypatch, *, mode="active", features="  rag: false"):
+def _configure_distribution(tmp_path, monkeypatch, *, features="  rag: false"):
     manifest = tmp_path / "distribution.yaml"
     manifest.write_text(
         "schema_version: 1\ndistribution:\n  id: test\nfeatures:\n" + features + "\n"
     )
     seed_site(monkeypatch, manifest)
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", mode)
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
     return manifest
@@ -174,20 +173,10 @@ def test_disabled_rag_rejects_before_index_or_upstream(
         spy.assert_not_awaited()
 
 
-@pytest.mark.parametrize(
-    ("mode", "features"),
-    [
-        ("active", "  rag: true"),
-        ("active", "  rag: null"),
-        ("active", "  {}"),
-        ("dark", "  rag: true"),
-    ],
-)
+@pytest.mark.parametrize("features", ["  rag: true", "  rag: null", "  {}"])
 @pytest.mark.parametrize("endpoint", ["status", "json", "stream"])
-def test_rag_preserves_enabled_and_legacy_paths(
-    client, tmp_path, monkeypatch, mode, features, endpoint
-):
-    _configure_distribution(tmp_path, monkeypatch, mode=mode, features=features)
+def test_rag_preserves_enabled_and_legacy_paths(client, tmp_path, monkeypatch, features, endpoint):
+    _configure_distribution(tmp_path, monkeypatch, features=features)
     capture = {}
     monkeypatch.setattr(rag_module, "_gateway_chat_json", _fake_chat_json(capture))
     monkeypatch.setattr(rag_module, "_open_chat_stream", _fake_open_stream(["answer"], capture))
@@ -203,15 +192,7 @@ def test_rag_preserves_enabled_and_legacy_paths(
 )
 def test_invalid_rag_policy_fails_closed(client, tmp_path, monkeypatch, endpoint, problem):
     manifest = _configure_distribution(tmp_path, monkeypatch)
-    if problem == "empty-mode":
-        monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "")
-    elif problem == "typo-mode":
-        monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "activ")
-    elif problem == "no-path":
-        monkeypatch.delenv("DISTRIBUTION_CONFIG_PATH")
-    elif problem == "missing-file":
-        manifest.unlink()
-    elif problem == "bad-yaml":
+    if problem == "bad-yaml":
         manifest.write_text("private-secret: [")
     elif problem == "typo-key":
         manifest.write_text(manifest.read_text().replace("rag:", "RAG:"))

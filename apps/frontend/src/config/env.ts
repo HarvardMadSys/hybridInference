@@ -18,9 +18,6 @@ export const config = {
   // only an absent value falls back to the standalone local backend.
   apiBase: process.env.NEXT_PUBLIC_API_BASE ?? DEFAULT_API_BASE,
 
-  // Application Configuration
-  appName: process.env.NEXT_PUBLIC_APP_NAME || 'HybridInference',
-
   // Build Identity (baked in at build time by deploy scripts)
   buildSha: process.env.NEXT_PUBLIC_BUILD_SHA || '',
   buildTimestamp: process.env.NEXT_PUBLIC_BUILD_TIMESTAMP || '',

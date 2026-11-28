@@ -78,9 +78,10 @@ selection belongs to each model in the catalog.
 ### Activating a manifest
 
 Save the document in Admin Settings. It applies when backend settings refresh,
-normally within ten seconds. To bring in an old YAML manifest, run the
-[legacy importer](configuration.md#model-and-routing-documents-in-the-database)
-and check the stored documents before removing the old files.
+normally within ten seconds. An old YAML manifest is not imported: store its
+settings as this document, as
+[the upgrade notes](configuration.md#model-and-routing-documents-in-the-database)
+describe.
 
 If the stored document stops validating, the gateway passes over it: the
 explicit `SITE_*` settings and then neutral defaults apply, public sign-up is

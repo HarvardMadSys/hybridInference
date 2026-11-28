@@ -339,7 +339,6 @@ def test_neutral_quota_example_boots_and_routes(mode, tmp_path):
             **os.environ,
             "PYTHONPATH": os.pathsep.join((str(_REPO_ROOT / "apps/backend"), str(_REPO_ROOT))),
             **_catalog_environment(config),
-            "ROUTING_CONFIG_PATH": str(_REPO_ROOT / "config/examples/routing.minimal.json"),
             "BACKEND_EXTENSIONS": (
                 "" if mode == "unregistered" else "distributions.example.quota_extension"
             ),
@@ -460,7 +459,6 @@ def _boot_and_ask(
         **os.environ,
         "PYTHONPATH": str(_REPO_ROOT / "apps" / "backend"),
         **_catalog_environment(config),
-        "ROUTING_CONFIG_PATH": str(_REPO_ROOT / "config" / "examples" / "routing.minimal.json"),
         "DB_ENABLED": "false",
         "USER_AUTH_ENABLED": "false",
         "DEMO_EXPECT": expect,

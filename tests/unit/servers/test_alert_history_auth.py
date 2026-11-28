@@ -58,11 +58,7 @@ def writer(**over):
 def config_env(monkeypatch, tmp_path):
     for entry in static_entries():
         monkeypatch.delenv(entry.key, raising=False)
-    monkeypatch.delenv("DISTRIBUTION_CONFIG_PATH", raising=False)
     (tmp_path / "models.yaml").write_text("models: []\n")
-    monkeypatch.setenv("MODELS_CONFIG_PATH", str(tmp_path / "models.yaml"))
-    monkeypatch.setenv("ROUTING_CONFIG_PATH", str(tmp_path / "routing.yaml"))
-    monkeypatch.setenv("ALERTS_CONFIG_PATH", str(tmp_path / "alerts.yaml"))
     get_settings.cache_clear()
     auth._CACHE.clear()
     yield monkeypatch

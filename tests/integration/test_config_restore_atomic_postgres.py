@@ -32,8 +32,6 @@ async def stores(monkeypatch, tmp_path):
 
     for entry in static_entries():
         monkeypatch.delenv(entry.key, raising=False)
-    for name in ("MODELS_CONFIG_PATH", "ROUTING_CONFIG_PATH", "ALERTS_CONFIG_PATH"):
-        monkeypatch.setenv(name, str(tmp_path / name))
     get_settings.cache_clear()
 
     pool = await postgres.create_pool(min_size=1, max_size=4)

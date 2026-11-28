@@ -671,7 +671,6 @@ jobs:
           JWT_ACCESS_TOKEN_EXPIRE_MINUTES: 15
           JWT_REFRESH_TOKEN_EXPIRE_DAYS: 30
           SIGNUP_ENABLED: "1"
-          SIGNUP_DEFAULT_TIER: free
           SIGNUP_DEFAULT_DAILY_QUOTA_USD: "100.00"
           SIGNUP_REQUIRE_EMAIL_VERIFICATION: "0"
           COOKIE_SECURE: "0"
@@ -704,7 +703,6 @@ jobs:
           JWT_ACCESS_TOKEN_EXPIRE_MINUTES: 15
           JWT_REFRESH_TOKEN_EXPIRE_DAYS: 30
           SIGNUP_ENABLED: "1"
-          SIGNUP_DEFAULT_TIER: free
           SIGNUP_DEFAULT_DAILY_QUOTA_USD: "100.00"
           SIGNUP_REQUIRE_EMAIL_VERIFICATION: "0"
           COOKIE_SECURE: "0"
@@ -1098,10 +1096,6 @@ jobs:
           build-args: |
             NEXT_PUBLIC_API_BASE=
             BACKEND_INTERNAL_URL=http://backend:8080
-            NEXT_PUBLIC_APP_NAME=Example Router
-            NEXT_PUBLIC_EXAMPLE_API_BASE=http://localhost:${{ steps.tutorial-port.outputs.frontend_port }}
-            NEXT_PUBLIC_EXAMPLE_MODEL=example-chat
-            NEXT_PUBLIC_STORAGE_KEY_PREFIX=hybridinference-example
           cache-from: |
             type=gha,scope=frontend
             type=gha,scope=tutorial-e2e-frontend
@@ -1123,10 +1117,6 @@ jobs:
           build-args: |
             NEXT_PUBLIC_API_BASE=
             BACKEND_INTERNAL_URL=http://backend:8080
-            NEXT_PUBLIC_APP_NAME=Example Router
-            NEXT_PUBLIC_EXAMPLE_API_BASE=http://localhost:${{ steps.tutorial-port.outputs.frontend_port }}
-            NEXT_PUBLIC_EXAMPLE_MODEL=example-chat
-            NEXT_PUBLIC_STORAGE_KEY_PREFIX=hybridinference-example
           cache-from: |
             type=gha,scope=frontend
             type=gha,scope=tutorial-e2e-frontend

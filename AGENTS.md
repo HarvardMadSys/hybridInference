@@ -166,9 +166,8 @@ settings. A setting resolves from its database row, then the environment seed,
 then the registered default. Catalog, routing-policy and alert-rule changes
 need a restart; Admin route edits synchronize across processes, and each
 process reports whether it applied them. Preserve request ownership and
-feedback across those updates. Old YAML is imported only by an explicit
-`python -m serving.config.manage import-legacy`, never at startup; keep the old
-files and `route_catalog` rows through the rollback window. See
+feedback across those updates. Nothing reads or imports the old YAML files;
+keep the `route_catalog` rows through the rollback window. See
 [the accepted design](docs/agents/specs/2026-11-08-database-only-configuration.md)
 and [configuration.md](docs/developer/configuration.md).
 

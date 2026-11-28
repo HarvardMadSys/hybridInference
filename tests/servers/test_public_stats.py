@@ -30,8 +30,6 @@ SNAPSHOT = {"schema_version": 1, "totals": {"tokens": 42}}
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
-    monkeypatch.delenv("DISTRIBUTION_CONFIG_PATH", raising=False)
-    monkeypatch.delenv("DISTRIBUTION_CONFIG_MODE", raising=False)
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
     yield
@@ -43,7 +41,6 @@ def _activate(monkeypatch, tmp_path, extra: str = "") -> None:
     manifest = tmp_path / "distribution.yaml"
     manifest.write_text(MANIFEST.format(extra=extra))
     seed_site(monkeypatch, manifest)
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
 

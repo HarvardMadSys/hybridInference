@@ -38,11 +38,7 @@ def clean_config(monkeypatch, tmp_path):
     # verification) for every later test in the same worker.
     for key in registry.RUNTIME_SETTING_NAMES:
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.delenv("DISTRIBUTION_CONFIG_PATH", raising=False)
     (tmp_path / "models.yaml").write_text("models: []\n")
-    monkeypatch.setenv("MODELS_CONFIG_PATH", str(tmp_path / "models.yaml"))
-    monkeypatch.setenv("ROUTING_CONFIG_PATH", str(tmp_path / "routing.yaml"))
-    monkeypatch.setenv("ALERTS_CONFIG_PATH", str(tmp_path / "alerts.yaml"))
     get_settings.cache_clear()
     current = get_settings()
     monkeypatch.setattr(email, "settings", current)

@@ -19,11 +19,6 @@ _SITE_ENV_VARS = (
     "SMTP_FROM_NAME",
     "DB_NAME",
     "CORS_ALLOWED_ORIGINS",
-    "ALERTS_CONFIG_PATH",
-    "MODELS_CONFIG_PATH",
-    "MODELS_CONFIG",
-    "ROUTING_CONFIG_PATH",
-    "ROUTING_CONFIG",
 )
 
 
@@ -65,10 +60,6 @@ def test_cors_default_origins(settings):
         "https://127.0.0.1:8443",
     ]
     assert not any("freeinference" in origin for origin in settings.cors_allowed_origins)
-
-
-def test_config_path_defaults(settings):
-    assert settings.alerts_config_path == "config/alerts.yaml"
 
 
 def test_role_concurrency_defaults():

@@ -81,13 +81,6 @@ regexes = [
 ]
 
 [[allowlists]]
-description = "With an empty DB_PASSWORD, the generic rule can consume the following boolean setting."
-targetRules = ["generic-api-key"]
-condition = "AND"
-paths = ['''^\.env\.example$''']
-regexes = ['''^DB_ENABLED=true$''']
-
-[[allowlists]]
 description = "Provider key probe tests check that this dummy key never reaches a result."
 targetRules = ["generic-api-key"]
 condition = "AND"

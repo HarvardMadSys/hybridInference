@@ -73,35 +73,13 @@ model, with the reason in Admin and the log. The legacy rows stay for a
 rollback, and catalog changes saved later are copied back to them, so a rollback
 runs the latest catalog it can.
 
-Site identity, branding and alert rules kept in files need one explicit import,
-with the new image, after the migrations and before it serves. Until then the
-new release runs with a neutral site and built-in alert thresholds, so public
-signup or RAG that the old manifest turned off is on. Name the old manifest as
-the backend container sees it (its `DISTRIBUTION_CONFIG_PATH`, or its path in
-the checkout), and the lifecycle commands import at the right point:
-
-```bash
-make deploy BACKEND_IMAGE=<image@sha256:...> FRONTEND_IMAGE=<image@sha256:...> LEGACY_MANIFEST=distributions/<name>/distribution.yaml
-make build LEGACY_MANIFEST=distributions/<name>/distribution.yaml
-```
-
-Use the second form for a stack built from source. Both run
-`python -m serving.config.manage import-legacy <manifest>` in a one-off
-container of the new backend image; with another deployment method, run that
-command at the same point. It imports what the previous release had in force:
-
-- the manifest's identity, features, branding and documents, if that release
-  ran it with `DISTRIBUTION_CONFIG_MODE=active`. A dark manifest is skipped;
-  `--include-dark` (`LEGACY_IMPORT_OPTIONS=--include-dark`) imports it anyway,
-  which applies it for the first time;
-- the alert rules from `ALERTS_CONFIG_PATH` if set, otherwise from the
-  manifest. `--alerts=<file>` names a file explicitly.
-
-The import stores only missing settings, in one conditional update, so running
-it again changes nothing; a running backend needs a restart for catalog and
-rule changes. Keep the old files and the `DISTRIBUTION_CONFIG_PATH`,
-`DISTRIBUTION_CONFIG_MODE` and `*_CONFIG_PATH` values through the rollback
-window: the import reads them, and a rolled-back release needs them.
+Site identity, branding and alert rules kept in files are not imported, and the
+new release reads none of those files. Until those settings are stored it runs
+with a neutral site and built-in alert thresholds, so public signup or RAG that
+the old manifest turned off is on. Store them in **Admin → Settings**, or before
+the new release serves with `python -m serving.config.manage document <kind>
+<file>` in a one-off container of its backend image; `document` validates a
+JSON document (`distribution`, `branding` or `alerts`) and stores it once.
 
 ## The model registry
 
@@ -151,10 +129,8 @@ The backend warns at startup about each of these that is still set:
 
 - `DISTRIBUTION_CONFIG_PATH`, `DISTRIBUTION_CONFIG_MODE`, `MODELS_CONFIG_PATH`,
   `MODELS_CONFIG`, `ROUTING_CONFIG_PATH`, `ROUTING_CONFIG` and
-  `ALERTS_CONFIG_PATH`. Compose still passes the path and mode variables to the
-  backend, because a failed deploy or `make rollback` starts the previous
-  release, which reads its files through them. Remove them, and the files, once
-  no earlier release will run.
+  `ALERTS_CONFIG_PATH`, which named the configuration files of the releases
+  that read YAML. Remove them, and the files.
 - `BATCH_EXPANSION_ENABLED`. Every batch kind is available whenever
   `BATCH_ENABLED` is on.
 

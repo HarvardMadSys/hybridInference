@@ -309,25 +309,11 @@ msgstr "manifest"
 #: ../developer/glossary.md:114
 msgid ""
 "The retired configuration file `distributions/<name>/distribution.yaml`. "
-"Its settings now live in Admin's `SITE_CONFIGURATION` document and "
-"startup no longer reads it; `python -m serving.config.manage import-"
-"legacy` imports an old one once."
+"Its settings now live in Admin's `SITE_CONFIGURATION` document; nothing "
+"reads the file."
 msgstr ""
 "已停用的配置文件 `distributions/<name>/distribution.yaml`。其中的设置现在位于 Admin 的 "
-"`SITE_CONFIGURATION` 文档中，启动时不再读取它；`python -m serving.config.manage "
-"import-legacy` 可以把旧文件导入一次。"
-
-#: ../developer/glossary.md:119
-msgid "Dry run and active"
-msgstr "试运行与生效（dry run / active）"
-
-#: ../developer/glossary.md:120
-msgid ""
-"The modes of the retired `DISTRIBUTION_CONFIG_MODE` setting: `active` "
-"applied a manifest, and the dry run (`dark`) only compared it."
-msgstr ""
-"已停用的 `DISTRIBUTION_CONFIG_MODE` 设置的两种模式：`active` 会应用 "
-"manifest，试运行（`dark`）只做比较。"
+"`SITE_CONFIGURATION` 文档中，任何程序都不再读取这个文件。"
 
 #: ../developer/glossary.md:123
 msgid "Operational store"
@@ -431,4 +417,3 @@ msgid ""
 msgstr ""
 "启动时加载的受信任 Python 模块，用来添加 adapter kind、Cloud Agent 访问规则或配额来源。见[后端扩展"
 "](backend-extensions.md)。"
-

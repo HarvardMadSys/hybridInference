@@ -69,7 +69,6 @@ def test_probes_cover_every_exception_file_and_the_design_records():
             assert expected[(name, rule)] == 1
     for directory in ("plans", "specs"):
         assert f"docs/agents/{directory}/new-{directory[:-1]}.md" in cases
-    assert "DB_PASSWORD=\nDB_ENABLED=true" in cases[".env.example"]
     # These values were incorrectly shared between files before the review.
     assert expected[("tests/servers/test_admin_provider_quotas.py", "generic-api-key")] == 2
     assert expected[("tests/unit/test_admin_provider_definitions.py", "generic-api-key")] == 2

@@ -1,8 +1,9 @@
 """Public signup availability and domain-based approval policy.
 
-An active manifest can disable public signup. Otherwise the runtime
-``signup_enabled`` setting (falling back to the environment) decides whether
-registration is available. The API and console share this decision.
+The site configuration (``SITE_CONFIGURATION``) can disable public signup.
+Otherwise the runtime ``signup_enabled`` setting (falling back to the
+environment) decides whether registration is available. The API and console
+share this decision.
 
 ``/site-config`` is unauthenticated and read while rendering every console
 page, so that runtime read is coalesced: concurrent callers that miss the
@@ -60,7 +61,7 @@ logger = get_logger(__name__)
 
 
 def distribution_allows_public_signup() -> bool:
-    """Check the manifest restriction before applying the operational toggle.
+    """Check the site configuration's restriction before the operational toggle.
 
     Invalid distribution selections raise ``DistributionConfigError`` so
     callers can distinguish invalid configuration from an explicit closure.
@@ -72,9 +73,9 @@ def distribution_allows_public_signup() -> bool:
 async def is_public_signup_enabled() -> bool:
     """Resolve signup availability for both registration and public site config.
 
-    An explicit ``public_signup: false`` in an active manifest is a hard
+    An explicit ``public_signup: false`` in the site configuration is a hard
     restriction; runtime or environment settings cannot reopen registration.
-    Dark/absent manifests and true/null feature values preserve the existing
+    No site configuration, and true/null feature values, preserve the existing
     runtime-over-environment signup policy.
     """
     try:

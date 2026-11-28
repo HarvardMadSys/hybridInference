@@ -999,9 +999,9 @@ async def _bind_accounting_policy(operational_store: Any) -> None:
     if accounting_policy.currency != expected_currency:
         raise RuntimeError(
             f"The database's accounting currency is {accounting_policy.currency} but "
-            f"SITE_CONFIGURATION declares {expected_currency}: import the deployment's site "
-            "configuration (`python -m serving.config.manage import-legacy <manifest>`) or set "
-            f'its "accounting": {{"currency": "{accounting_policy.currency}"}}, or run the '
+            f"SITE_CONFIGURATION declares {expected_currency}: set its "
+            f'"accounting": {{"currency": "{accounting_policy.currency}"}} '
+            "(`python -m serving.config.manage set SITE_CONFIGURATION <json>`), or run the "
             "offline currency migration first"
         )
     bind_accounting_policy(accounting_policy)

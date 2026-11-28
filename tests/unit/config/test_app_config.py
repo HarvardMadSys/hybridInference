@@ -22,14 +22,10 @@ def config_env(tmp_path, monkeypatch):
     """A clean environment: no registered setting set, and config files under tmp_path."""
     for entry in static_entries():
         monkeypatch.delenv(entry.key, raising=False)
-    for key in ("ENVIRONMENT", "DISTRIBUTION_CONFIG_PATH"):
-        monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
     monkeypatch.setenv("MODEL_CATALOG", "{}")
     models = tmp_path / "models.yaml"
     models.write_text("models: []\n")
-    monkeypatch.setenv("MODELS_CONFIG_PATH", str(models))
-    monkeypatch.setenv("ROUTING_CONFIG_PATH", str(tmp_path / "routing.yaml"))
-    monkeypatch.setenv("ALERTS_CONFIG_PATH", str(tmp_path / "alerts.yaml"))
     get_settings.cache_clear()
     yield tmp_path
 

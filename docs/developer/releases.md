@@ -110,10 +110,8 @@ to upgrade.
    [Diagnostics, deployment and recovery](deployment.md#diagnostics-deployment-and-recovery).
 
    Upgrading from a release that read its site identity, branding and alert
-   rules from files, add `LEGACY_MANIFEST=<manifest>` to `make deploy` or
-   `make build` so the new image imports them between the migrations and the
-   restart. Until the import runs, the new release serves neutral site settings
-   and the built-in alert thresholds. See
+   rules from files, store them in the database as well: until then the new
+   release serves neutral site settings and the built-in alert thresholds. See
    [Model and routing documents in the database](configuration.md#model-and-routing-documents-in-the-database).
 
 A migration leaves the previous release working on the new schema, so restoring
@@ -125,7 +123,5 @@ loses later writes. There is no schema downgrade, and deleting a volume is a
 reset, not a rollback.
 
 `make rollback` returns to the images the last accepted `make deploy` replaced.
-A release from before the database-backed configuration reads its files through
-`DISTRIBUTION_CONFIG_PATH`, `DISTRIBUTION_CONFIG_MODE` and the `*_CONFIG_PATH`
-variables, which Compose still passes to the backend. Keep them, and the files
-they name, until a rollback to such a release is no longer an option.
+Roll back only to a release with the database-backed configuration: Compose no
+longer passes the variables an earlier release read its files through.

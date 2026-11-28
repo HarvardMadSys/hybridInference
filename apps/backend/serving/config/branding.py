@@ -1,25 +1,20 @@
-"""Validated public branding, plus a legacy file reader for explicit imports."""
+"""Validated public branding (the SITE_BRANDING document)."""
 
 from __future__ import annotations
 
 import posixpath
 import re
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import unquote, urlsplit
 
-import yaml
 from pydantic import (
     AnyHttpUrl,
     BaseModel,
     ConfigDict,
     Field,
     PositiveInt,
-    ValidationError,
     field_validator,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 class _BrandingModel(BaseModel):
@@ -287,26 +282,3 @@ class BrandingConfig(_BrandingModel):
             "docs_url": validate_public_https_base_url(docs_url),
         }
         return payload
-
-
-class BrandingConfigError(Exception):
-    """Raised when a declared branding document cannot be loaded."""
-
-
-def load_branding_config(path: Path) -> BrandingConfig:
-    """Read and validate a versioned public branding YAML document.
-
-    Raises:
-        BrandingConfigError: On unreadable files, YAML errors, or schema
-            validation failures.
-    """
-    try:
-        data = yaml.safe_load(path.read_text())
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
-        raise BrandingConfigError(f"cannot read branding config {path}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise BrandingConfigError(f"branding config {path} must be a YAML mapping")
-    try:
-        return BrandingConfig.model_validate(data)
-    except ValidationError as exc:
-        raise BrandingConfigError(f"invalid branding config {path}: {exc}") from exc

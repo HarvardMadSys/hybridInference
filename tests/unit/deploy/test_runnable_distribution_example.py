@@ -15,7 +15,8 @@ import pytest
 import yaml
 
 from routing.routers import FixedRouter
-from serving.config.distribution import load_distribution_config
+from serving.config.distribution import DistributionConfig
+from serving.config.documents import validate
 from serving.servers.registry import register_from_models_yaml
 
 REPO = Path(__file__).resolve().parents[3]
@@ -24,7 +25,6 @@ FAKE_PROVIDER = EXAMPLE / "fixtures" / "fake-openai-provider"
 BASE_COMPOSE = REPO / "deploy" / "docker" / "docker-compose.yml"
 EXAMPLE_COMPOSE = EXAMPLE / "deploy" / "docker-compose.yml"
 DEMO_COMPOSE = EXAMPLE / "deploy" / "docker-compose.demo.yml"
-DEMO_MANIFEST = EXAMPLE / "distribution.demo.json"
 FULL_SMOKE = EXAMPLE / "full_smoke.py"
 ACTIVE_CI = REPO / ".github" / "workflows" / "ci.yml"
 TUTORIAL = REPO / "docs" / "developer" / "router-tutorial.md"
@@ -54,8 +54,12 @@ def _make_dry_run(*args: str, cwd: Path = REPO) -> str:
     return proc.stdout
 
 
+def _site_configuration(path: Path) -> DistributionConfig:
+    return DistributionConfig.model_validate(json.loads(path.read_text()))
+
+
 def test_example_manifest_and_config_are_self_contained() -> None:
-    config = load_distribution_config(EXAMPLE / "distribution.json")
+    config = _site_configuration(EXAMPLE / "distribution.json")
     assert config.distribution.id == "example"
     assert config.site.public_base_url == "http://localhost:18080"
     assert config.features.public_signup is False
@@ -73,20 +77,19 @@ def test_example_manifest_and_config_are_self_contained() -> None:
     assert route["provider_model_id"] == "${EXAMPLE_UPSTREAM_MODEL}"
 
 
-def test_demo_manifest_enables_signup_without_changing_stage_one() -> None:
-    stage_one = load_distribution_config(EXAMPLE / "distribution.json")
-    demo = load_distribution_config(DEMO_MANIFEST)
+def test_demo_site_configuration_enables_signup_without_changing_stage_one() -> None:
+    stage_one = _site_configuration(EXAMPLE / "distribution.json")
+    backend = yaml.safe_load(DEMO_COMPOSE.read_text())["services"]["backend"]["environment"]
+    demo = DistributionConfig.model_validate(json.loads(backend["SITE_CONFIGURATION"]))
 
     assert stage_one.features.public_signup is False
     assert demo.distribution.id == "example"
     assert demo.site.public_base_url == "http://localhost:13001"
     assert demo.features.public_signup is True
-    assert demo.paths.models == ""
-    assert demo.paths.routing == ""
 
 
 def test_manifest_only_reference_has_no_dangling_config_paths() -> None:
-    reference = load_distribution_config(REPO / "config" / "examples" / "distribution.example.json")
+    reference = _site_configuration(REPO / "config" / "examples" / "distribution.example.json")
     assert not any(reference.paths.model_dump().values())
 
     readme = (REPO / "README.md").read_text()
@@ -226,6 +229,16 @@ def test_demo_compose_is_an_explicit_full_local_third_layer() -> None:
     assert backend["DB_STORE_FULL_CONTENT"] == "false"
     assert backend["USER_AUTH_ENABLED"] == "true"
     assert json.loads(backend["SITE_CONFIGURATION"])["features"]["public_signup"] is True
+    # The example's branding is a runtime document, not console build input.
+    branding = backend["SITE_BRANDING"].replace("${FRONTEND_PORT:-13001}", "13001")
+    validate("SITE_BRANDING", branding)
+    example = json.loads(branding)["example"]
+    assert example == {
+        "api_base": "http://localhost:13001",
+        "api_key_env_var": "HYBRIDINFERENCE_API_KEY",
+        "model": "example-chat",
+    }
+    assert json.loads(branding)["storage_key_prefix"] == "hybridinference-example"
     assert backend["SIGNUP_ENABLED"] == "true"
     assert backend["SIGNUP_REQUIRE_EMAIL_VERIFICATION"] == "false"
     assert backend["REFRESH_TOKEN_COOKIE_NAME"] == "hybridinference_example_refresh"
@@ -239,8 +252,10 @@ def test_demo_compose_is_an_explicit_full_local_third_layer() -> None:
     assert frontend["container_name"] == (
         "${EXAMPLE_FRONTEND_CONTAINER_NAME:-hybridinference-example-frontend}"
     )
-    assert frontend["build"]["args"]["NEXT_PUBLIC_API_BASE"] == ""
-    assert frontend["build"]["args"]["BACKEND_INTERNAL_URL"] == "http://backend:8080"
+    assert frontend["build"]["args"] == {
+        "NEXT_PUBLIC_API_BASE": "",
+        "BACKEND_INTERNAL_URL": "http://backend:8080",
+    }
     assert demo["services"]["postgres"]["container_name"] == (
         "${EXAMPLE_POSTGRES_CONTAINER_NAME:-hybridinference-example-postgres}"
     )
@@ -804,8 +819,8 @@ def test_the_restore_drill_runs_the_rollback_code_path(tmp_path: Path) -> None:
     """CI's restore drill must exercise what `make rollback` does, not a side door.
 
     It used to start the previous image through the digest overlay with
-    drill-only variables, so a rollback losing the older image's configuration
-    selectors -- through the overlay `make rollback` uses -- passed CI.
+    drill-only variables, so a rollback that lost part of the previous image's
+    environment -- through the overlay `make rollback` uses -- passed CI.
     """
     sandbox = tmp_path / "repo"
     deploy = sandbox / "distributions" / "example" / "deploy"
@@ -823,20 +838,16 @@ def test_the_restore_drill_runs_the_rollback_code_path(tmp_path: Path) -> None:
         "PREVIOUS_BACKEND_IMAGE=ghcr.io/example/backend:dev-previous",
         cwd=sandbox,
     )
-    selectors = (
-        "DISTRIBUTION_CONFIG_PATH=/app/distributions/example/distribution.demo.json "
-        "DISTRIBUTION_CONFIG_MODE=active docker compose"
-    )
     state = ".ops/example/restore-drill"
     (record,) = [line for line in output.splitlines() if "previous.json" in line]
     assert f'> "{state}/previous.json"' in record
     (rollback,) = [line for line in output.splitlines() if "gateway_ops rollback" in line]
     assert f'--state "{state}"' in rollback
     assert '--base-url "http://localhost:13001"' in rollback
-    assert f"--compose env COMPOSE_PROFILES= {selectors}" in rollback
+    assert "--compose env COMPOSE_PROFILES= docker compose" in rollback
     assert "-f distributions/example/deploy/docker-compose.demo.yml" in rollback
     (smoke,) = [line for line in output.splitlines() if "full_smoke.py" in line]
-    assert f"--recreate-command env COMPOSE_PROFILES= {selectors}" in smoke
+    assert "--recreate-command env COMPOSE_PROFILES= docker compose" in smoke
     assert (
         f"-f deploy/docker/docker-compose.artifacts.yml --env-file {state}/images.env "
         "up -d --no-deps --no-build --force-recreate --wait backend"

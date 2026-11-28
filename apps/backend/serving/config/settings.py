@@ -386,49 +386,12 @@ class Settings(BaseSettings):
     failed_request_alert_rate: float = Field(default=0.10, ge=0.0, le=1.0)
     failed_request_alert_rate_min_count: int = Field(default=10, ge=0)
 
-    # Config file paths. Canonical env names are MODELS_CONFIG_PATH /
-    # ROUTING_CONFIG_PATH; the legacy MODELS_CONFIG / ROUTING_CONFIG names stay
-    # honored, with the canonical name winning when both are set. The field
-    # name itself is the last alias so Settings(models_config_path=...) works
-    # in tests. Empty string means "not configured": callers warn when an
-    # explicit override points at a missing file, but skip the config/*.yaml
-    # defaults silently.
-    models_config_path: str = Field(
-        default="",
-        validation_alias=AliasChoices("MODELS_CONFIG_PATH", "MODELS_CONFIG", "models_config_path"),
-    )
-    routing_config_path: str = Field(
-        default="",
-        validation_alias=AliasChoices(
-            "ROUTING_CONFIG_PATH", "ROUTING_CONFIG", "routing_config_path"
-        ),
-    )
-    # Distribution manifest (serving.config.distribution). Empty path = pure
-    # legacy behavior. Mode "dark" (the default) loads and validates the
-    # manifest and logs what would change while current resolution stays
-    # effective; applying manifest paths requires an explicit
-    # DISTRIBUTION_CONFIG_MODE=active. Values are case-insensitive; anything
-    # else degrades to "dark" with a warning — neither a typo nor a missing
-    # mode can ever activate the manifest.
-    distribution_config_path: str = Field(
-        default="",
-        validation_alias=AliasChoices("DISTRIBUTION_CONFIG_PATH", "distribution_config_path"),
-    )
-    distribution_config_mode: str = Field(
-        default="dark",
-        validation_alias=AliasChoices("DISTRIBUTION_CONFIG_MODE", "distribution_config_mode"),
-    )
-
     # Alerting framework
     alerts_enabled: bool = Field(default=False, alias="ALERTS_ENABLED")
     slack_alerts_webhook_url: str = Field(default="", alias="SLACK_ALERTS_WEBHOOK_URL")
     # WeCom group-bot webhook, an alternative to Slack: one deployment alerts
     # through one channel, and an empty value disables WeCom.
     wecom_alerts_webhook_url: str = Field(default="", alias="WECOM_ALERTS_WEBHOOK_URL")
-    alerts_config_path: str = Field(
-        default="config/alerts.yaml",
-        validation_alias=AliasChoices("ALERTS_CONFIG_PATH", "alerts_config_path"),
-    )
 
     @field_validator(
         "trusted_proxies", "trusted_cloudflare_networks", "trusted_direct_client_networks"

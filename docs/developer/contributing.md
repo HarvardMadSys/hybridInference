@@ -131,12 +131,11 @@ The backend packages, `serving` and `routing`, are rooted at `apps/backend`.
 | `make check` | `lint` + `test` |
 | `make all` | `format` + `check` |
 
-Nothing type-checks the backend: `mypy` is in the `dev` group, but no target
-runs it and `pyproject.toml` has no `[tool.mypy]` section. Tooling enforces
-style: ruff (line length 100, target `py311`, rules `E`, `W`, `F`, `I`, `UP`,
-`B`, `C4`, `SIM`, `TCH` and `RUF`) and pydocstyle (Google convention), which skips `tests`,
-`.venv`, `node_modules`, `apps/frontend`, `ops` and `docs` and so enforces
-docstrings in `apps/backend`.
+Nothing type-checks the backend. Tooling enforces style: ruff (line length
+100, target `py311`, rules `E`, `W`, `F`, `I`, `UP`, `B`, `C4`, `SIM`, `TCH`
+and `RUF`) and pydocstyle (Google convention), which skips `tests`, `.venv`,
+`node_modules`, `apps/frontend`, `ops` and `docs` and so enforces docstrings in
+`apps/backend`.
 
 The pre-commit hooks (`pre-commit run --all-files` runs them on the whole tree)
 cover ruff at the version CI uses, pydocstyle, `gitleaks` secret scanning, the

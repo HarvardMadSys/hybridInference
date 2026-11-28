@@ -35,9 +35,10 @@ first-token latency, cached tokens and, for RouteWise, whether a backup request
 was sent and won.
 
 A fresh gateway starts with no models and shows **Ask admin to configure**. It
-reads no model, routing, alert, distribution or branding files at runtime; a
-deployment with old YAML files can bring them in with the
-[legacy importer](docs/developer/configuration.md#model-and-routing-documents-in-the-database).
+reads no model, routing, alert, distribution or branding files; a deployment
+upgrading from old YAML files stores their settings in Admin, as
+[the upgrade notes](docs/developer/configuration.md#model-and-routing-documents-in-the-database)
+describe.
 
 ## Quickstart
 

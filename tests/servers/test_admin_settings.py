@@ -193,7 +193,6 @@ async def test_cannot_enable_signup_against_active_manifest(admin_client, monkey
         "schema_version: 1\ndistribution: {id: example}\nfeatures: {public_signup: false}\n"
     )
     seed_site(monkeypatch, manifest)
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     get_settings.cache_clear()
 
     response = await client.patch(
