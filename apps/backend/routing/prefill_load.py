@@ -113,6 +113,47 @@ ELEPHANT_LIMIT: int = 1
 # well above an ordinary prompt so normal traffic never trips it.
 INTERVENE_TOKENS: int = 50_000
 
+# Estimated un-cached prefill an endpoint must save for selection to prefer it
+# over the weighted draw's choice. A prefix-cache hit is the single largest
+# latency term a request can avoid, but route weights encode cost and
+# contractual preference, and a difference smaller than this is jitter or a
+# partly-shared prefix -- not the conversation's own warm head. Below the
+# threshold the configured weight keeps deciding, exactly as it did before
+# locality was considered.
+LOCALITY_MIN_SAVING_TOKENS: int = 4_096
+
+# Whether locality may move a request at all.
+#
+# Locality has its own switch because it changes routing on every
+# FixedRouter request, and the only other way to turn it off --
+# ``ROUTING_PREFILL_AWARE_ENABLED=0`` -- gives up all prefill-aware
+# routing with it.
+LOCALITY_ENABLED: bool = True
+
+# Minimum symmetric weight ratio between the drawn and warmer candidate before
+# locality may move the request.
+#
+# The saving threshold says *how much* prefill a move must avoid; this says how
+# strong a preference it may overturn. Weights are not only a load split: for a
+# remote provider they encode cost, and for an operator they encode a deliberate
+# choice, so a cache hit -- which saves one prefill -- must not silently turn
+# weighted routing into "always the warmest endpoint". At half, a 60/40 pair may
+# follow the prefix in either direction, while 90/10 stays on the 90 in both
+# directions and a first turn with no prefix at all is unaffected. Both weights
+# must be positive; an unweighted pool is unaffected.
+LOCALITY_MIN_WEIGHT_SHARE: float = 0.5
+
+# Longest a conversation may stay on one endpoint under locality.
+#
+# Each completed turn writes a fresh warm-prefix hint with a new expiry, so
+# the hint's own age never lapses while a conversation is active: locality
+# would otherwise hold a conversation on one endpoint for ever. The affinity
+# pin carries the same cap for the same reason -- a reweight or a recovery
+# from a failover must reach a busy caller. This is that cap, measured from
+# the time the conversation first landed on the endpoint, across the hint's
+# refreshes.
+LOCALITY_MAX_AGE_SEC: float = 24 * 60 * 60
+
 # Session affinity is a cache-locality optimization, not a correctness
 # guarantee. Above this in-flight backlog the pin costs more (queueing behind a
 # mega-prefill) than the prefix-cache hit it buys, so selection is re-run.
@@ -165,6 +206,7 @@ def _load_settings() -> None:
     """Read the ``ROUTING_PREFILL_*`` and ``ROUTING_PRIORITY_*`` settings."""
     global PREFILL_AWARE_ENABLED, ELEPHANT_TOKENS, ELEPHANT_LIMIT, INTERVENE_TOKENS
     global AFFINITY_BACKLOG_CEILING, PRIORITY_INTERACTIVE, PRIORITY_LARGE, PRIORITY_ELEPHANT
+    global LOCALITY_ENABLED, LOCALITY_MAX_AGE_SEC
     global _PREFIX_HINT_TTL_SEC
     PREFILL_AWARE_ENABLED = config_value("ROUTING_PREFILL_AWARE_ENABLED", "1") != "0"
     ELEPHANT_TOKENS = _env_int("ROUTING_PREFILL_ELEPHANT_TOKENS", 200_000)
@@ -175,6 +217,8 @@ def _load_settings() -> None:
     PRIORITY_LARGE = _env_int("ROUTING_PRIORITY_LARGE", 15)
     PRIORITY_ELEPHANT = _env_int("ROUTING_PRIORITY_ELEPHANT", 0)
     _PREFIX_HINT_TTL_SEC = float(_env_int("ROUTING_PREFILL_HINT_TTL_SEC", 20 * 60))
+    LOCALITY_ENABLED = config_value("ROUTING_PREFILL_LOCALITY_ENABLED", "1") != "0"
+    LOCALITY_MAX_AGE_SEC = float(_env_int("ROUTING_PREFILL_LOCALITY_MAX_AGE_SEC", 24 * 60 * 60))
 
 
 _load_settings()
@@ -621,6 +665,12 @@ class _PrefixHint:
     expires_at: float
     fingerprint: str | None = None
     anchor: tuple[int, str] | None = None
+    #: When this conversation first landed on this endpoint, preserved across
+    #: the hint's own refreshes. Each completed turn writes a fresh hint with a
+    #: new expiry, so the hint's age never lapses on its own; this is what the
+    #: locality age cap reads, so a conversation cannot stay pinned here for
+    #: ever by sending another turn.
+    first_seen_at: float = 0.0
 
 
 @dataclass
@@ -937,11 +987,15 @@ class PrefillLoadTracker:
     ) -> None:
         """Record a prompt size for warm-continuation discounting. Caller holds the lock."""
         key = (affinity_key, endpoint_id)
+        previous = self._prefix_hints.get(key)
         self._prefix_hints[key] = _PrefixHint(
             tokens=tokens,
             expires_at=now + _PREFIX_HINT_TTL_SEC,
             fingerprint=fingerprint,
             anchor=anchor,
+            # The first landing is what the locality age cap measures, so a
+            # refresh keeps the original time rather than starting a new one.
+            first_seen_at=previous.first_seen_at if previous is not None else now,
         )
         self._prefix_hints.move_to_end(key)
         self._hint_callers.setdefault(endpoint_id, set()).add(affinity_key)
@@ -1081,6 +1135,8 @@ class PrefillLoadTracker:
         affinity_key: str | None = None,
         avoid: str | None = None,
         fingerprint: str | None = None,
+        messages: Sequence[dict[str, Any]] | None = None,
+        affinity_ceiling: int | None = None,
     ) -> int:
         """Pick a candidate by weight, then break toward the lighter endpoint.
 
@@ -1109,6 +1165,17 @@ class PrefillLoadTracker:
         would bar a warm continuation from the one endpoint that could serve it
         cheaply.
 
+        Locality is a second, stricter decision stacked on the draw. The load
+        numbers above use the caller-scoped discount, where a wrong estimate
+        costs one draw and self-corrects. A locality verdict instead *moves the
+        request and then records affinity for the next turn*, so a wrong one
+        persists: ``affinity_key`` is the API-key hash and spans every
+        conversation one key sends, while the hint table holds one prefix per
+        (key, endpoint). Selection therefore requires ``fingerprint`` -- proof
+        this is the conversation the hint belongs to -- and is skipped entirely
+        when the caller cannot supply one, which is the conservative answer: an
+        unfingerprintable turn keeps ordinary weighted routing.
+
         Args:
             keys: Candidate endpoint ids, parallel to ``weights``.
             weights: Positive selection weights, parallel to ``keys``.
@@ -1119,9 +1186,11 @@ class PrefillLoadTracker:
                 Dropped from the candidates when anything else remains --
                 a weighted draw would otherwise re-pick it a fair fraction of
                 the time, undoing the decision that was just made.
-            fingerprint: This request's conversation, so its elephant status is
-                judged as :meth:`acquire` will count it: another conversation
-                of the same caller gets no warm-prefix discount.
+            fingerprint: Conversation identity, required for a locality
+                preference. None disables locality and keeps the draw.
+            messages: This request's messages, to additionally require that it
+                still contains the remembered prompt (see
+                :meth:`uncached_estimate`).
 
         Returns:
             Index into ``keys`` of the selected candidate.
@@ -1168,14 +1237,192 @@ class PrefillLoadTracker:
         if not PREFILL_AWARE_ENABLED:
             return first
         second = _weighted_pick(eligible, weights, rand)
-        if first == second:
-            return first
+        load_tie_break = False
+        if first != second:
+            with self._lock:
+                first_load = self._backlog.get(keys[first], 0)
+                second_load = self._backlog.get(keys[second], 0)
+            if max(first_load, second_load) < INTERVENE_TOKENS:
+                chosen = first
+            else:
+                chosen = first if first_load <= second_load else second
+                # The draw's preference lost to the load comparison, so the
+                # load judgement is what moved the request. Locality must not
+                # undo it.
+                load_tie_break = chosen != first
+        else:
+            chosen = first
+        locality_here: dict[int, int] | None = None
+        if fingerprint is not None:
+            # Re-read with the evidence a *routing* verdict needs. The discount
+            # above is deliberately loose; this one charges any endpoint whose
+            # hint belongs to another conversation in full.
+            locality_here = {
+                i: self.uncached_estimate(
+                    keys[i],
+                    tokens,
+                    affinity_key,
+                    fingerprint=fingerprint,
+                    messages=messages,
+                )
+                for i in eligible
+            }
+        return self._prefer_cached(
+            chosen,
+            eligible,
+            keys,
+            locality_here,
+            weights,
+            affinity_key=affinity_key,
+            affinity_ceiling=affinity_ceiling,
+            load_tie_break=load_tie_break,
+        )
+
+    def _foreign_backlog_locked(self, endpoint_id: str, affinity_key: str | None) -> int:
+        """Return an endpoint's backlog without the caller's own load.
+
+        Only requests that have left the gateway count, as in
+        :meth:`should_keep_affinity`: one still fetching media or waiting for a
+        slot is in no endpoint's queue. Caller holds the lock.
+        """
+        total = self._dispatched.get(endpoint_id, 0)
+        own = self._by_caller.get((endpoint_id, affinity_key), 0) if affinity_key is not None else 0
+        return total - own
+
+    def _locality_within_max_age(
+        self,
+        endpoint_id: str,
+        affinity_key: str | None,
+        now: float | None,
+    ) -> bool:
+        """Return whether the conversation may still prefer this endpoint.
+
+        The age is measured from the first time the conversation landed on the
+        endpoint, which the hint preserves across its own refreshes. A
+        conversation with no hint there, or one whose hint has aged out, is
+        free to move.
+        """
+        if affinity_key is None:
+            return True
+        # The hint's clock is the tracker's own clock (see ``acquire``), so
+        # the comparison must use that one.
+        current = self._clock() if now is None else now
         with self._lock:
-            first_load = self._backlog.get(keys[first], 0)
-            second_load = self._backlog.get(keys[second], 0)
-        if max(first_load, second_load) < INTERVENE_TOKENS:
-            return first
-        return first if first_load <= second_load else second
+            hint = self._prefix_hints.get((affinity_key, endpoint_id))
+            if hint is None:
+                return True
+            first_seen = hint.first_seen_at
+        if first_seen <= 0.0:
+            return True
+        return (current - first_seen) <= LOCALITY_MAX_AGE_SEC
+
+    def _prefer_cached(
+        self,
+        chosen: int,
+        eligible: list[int],
+        keys: Sequence[str],
+        uncached: dict[int, int] | None,
+        weights: Sequence[float],
+        *,
+        affinity_key: str | None = None,
+        affinity_ceiling: int | None = None,
+        load_tie_break: bool = False,
+        now: float | None = None,
+    ) -> int:
+        """Return ``chosen``, or a comparable candidate holding more of the prefix.
+
+        Route selection had a locality signal already -- ``uncached_estimate``
+        knows how much of this caller's prompt each endpoint must prefill -- but
+        it was used only to discount load and gate elephants, so a warm
+        conversation could be sent to a cold replica by a weighted draw that saw
+        nothing but weights and backlog.
+
+        ``uncached`` is the *strict* estimate (see :meth:`select_index`), and
+        ``None`` means the caller could not be fingerprinted. Selection then
+        falls back to the draw: a wrong locality verdict moves the request and
+        then records affinity, so it is not the self-correcting kind of error a
+        load estimate is.
+
+        Deliberately not a hard pin, in three ways:
+
+        - the candidate must be an ordinary admissible one (the elephant and
+          ``avoid`` filters have already run);
+        - it must save at least :data:`LOCALITY_MIN_SAVING_TOKENS` against the
+          drawn candidate;
+        - its weight must be comparable to the drawn candidate's, measured
+          symmetrically as ``min(w_i, w_chosen) / max(w_i, w_chosen) >=
+          :data:`LOCALITY_MIN_WEIGHT_SHARE``, so locality refines a choice
+          between comparable candidates instead of overriding a cost or
+          operator preference in either direction;
+        - it must not be carrying a foreign backlog past
+          :data:`AFFINITY_BACKLOG_CEILING` -- past that the queue costs more
+          than the prefill it saves, which is the same judgement
+          :meth:`should_keep_affinity` makes for a sticky pin;
+        - it must not reverse a load tie-break: when the draw already moved
+          the request off a busy endpoint, moving it back to save a prefix
+          costs more than it saves;
+        - and the conversation must not have been on that endpoint for longer
+          than :data:`LOCALITY_MAX_AGE_SEC`, the same cap the affinity pin
+          carries.
+        """
+        if not LOCALITY_ENABLED:
+            return chosen
+        chosen_cost = None if uncached is None else uncached.get(chosen)
+        if chosen_cost is None or len(eligible) < 2:
+            return chosen
+        chosen_weight = max(weights[chosen], 0.0)
+        if chosen_weight <= 0.0:
+            return chosen
+        if load_tie_break:
+            # The draw already moved this request off a busy endpoint because
+            # of load. Moving it back to save a prefix would put it in the
+            # queue it just left, and the queue costs more than the prefill it
+            # saves. The load judgement wins.
+            return chosen
+        # Filter first, then take the lowest strict cost among the survivors.
+        # Picking the globally cheapest candidate first and gating it afterwards
+        # would miss a second cache-warm candidate that clears both gates when
+        # the cheapest one fails one -- a model with three or more ordinary
+        # candidates would keep sending warm conversations cold.
+        with self._lock:
+            # The caller's own in-flight load is excluded, as
+            # :meth:`should_keep_affinity` excludes it for a sticky pin:
+            # breaking a caller's affinity because of the load the caller
+            # itself put there relocates that work to a cold endpoint and pays
+            # a full prefill for nothing.
+            backlogs = {
+                i: self._foreign_backlog_locked(keys[i], affinity_key)
+                for i in eligible
+                if i != chosen
+            }
+        best, best_cost = chosen, chosen_cost
+        for i in eligible:
+            if i == chosen:
+                continue
+            candidate_weight = max(weights[i], 0.0)
+            if candidate_weight <= 0.0:
+                continue
+            larger_weight = max(candidate_weight, chosen_weight)
+            if min(candidate_weight, chosen_weight) / larger_weight < LOCALITY_MIN_WEIGHT_SHARE:
+                # Either candidate is the operator's preference by more than a
+                # prefix-cache hit is worth. Leave the decision with the weights.
+                continue
+            if backlogs[i] > (affinity_ceiling or AFFINITY_BACKLOG_CEILING):
+                # Past that the queue costs more than the prefill it saves,
+                # the same judgement :meth:`should_keep_affinity` makes for a
+                # sticky pin.
+                continue
+            if not self._locality_within_max_age(keys[i], affinity_key, now):
+                # This conversation has been on that endpoint for longer than
+                # the cap the affinity pin carries, so a reweight or a
+                # recovery must be able to reach it.
+                continue
+            cost = uncached.get(i)
+            if cost is not None and cost < best_cost:
+                best, best_cost = i, cost
+        if best == chosen or chosen_cost - best_cost < LOCALITY_MIN_SAVING_TOKENS:
+            return chosen
+        return best
 
     def snapshot(self) -> dict[str, dict[str, int]]:
         """Return a copy of current per-endpoint load, for logging and admin views."""

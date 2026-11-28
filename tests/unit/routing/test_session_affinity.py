@@ -6,6 +6,11 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from routing.endpoints import endpoint_id_for_adapter
+from routing.prefill_load import (
+    AFFINITY_BACKLOG_CEILING,
+    conversation_fingerprint,
+    prompt_anchor,
+)
 from routing.protocols import RoutingRequestOptions
 from routing.routers import (
     AFFINITY_MAX_AGE_SECONDS,
@@ -132,6 +137,230 @@ def test_first_pick_creates_entry():
     entry = r._affinity[("u1", "m")]
     assert entry.endpoint_id in {a.config.provider, b.config.provider}
     assert entry.expires_at > time.monotonic()
+
+
+@pytest.mark.unit
+def test_warm_prefix_outranks_the_weighted_draw(monkeypatch):
+    """A conversation's resident prefix breaks a tie the draw cannot see.
+
+    Without a locality term the draw hands this conversation to the cold replica,
+    which is the measured staging symptom: identical-prefix requests reached the
+    cache-capable endpoint only about half the time. The hint is the tracker's
+    own, so this exercises route selection, not the sticky pin table -- no
+    affinity entry exists when the draw runs. Weights are equal: locality is
+    choosing between comparable candidates, not overriding a preference.
+    """
+    r = FixedRouter()
+    cold = _EchoAdapter(_cfg("m", provider="A", base_url="http://A"))
+    warm = _EchoAdapter(_cfg("m", provider="B", base_url="http://B"))
+    r.register_route("m", [(cold, 0.5), (warm, 0.5)])
+
+    warm_id = endpoint_id_for_adapter(warm)
+    tracker = r.prefill_load
+    tracker.release(
+        tracker.acquire(warm_id, 5_000, affinity_key="u1", fingerprint="conv-a"),
+        prefill_confirmed=True,
+    )
+
+    # Both draws choose index 0: the cold candidate.
+    monkeypatch.setattr("random.random", lambda: 0.0)
+    req_ctx.set({"affinity_key": "u1"})
+
+    assert r._select_adapter("m", prefill_tokens=10_000, fingerprint="conv-a") is warm
+    # Selection records what it chose, so the next turn pins to the warm endpoint.
+    assert r._affinity[("u1", "m")].endpoint_id == warm_id
+
+
+@pytest.mark.unit
+def test_a_heavy_weight_preference_is_not_overturned_by_locality(monkeypatch):
+    """Weights are cost and operator preference, not only a load split.
+
+    The measured saving is large and the conversation is genuinely warm on the
+    10%-weighted replica, which is exactly the situation the earlier revision
+    rewarded unconditionally. A 10x weight difference is a decision the operator
+    made; one avoided prefill does not outrank it.
+    """
+    r = FixedRouter()
+    preferred = _EchoAdapter(_cfg("m", provider="A", base_url="http://A"))
+    warm = _EchoAdapter(_cfg("m", provider="B", base_url="http://B"))
+    r.register_route("m", [(preferred, 0.9), (warm, 0.1)])
+
+    tracker = r.prefill_load
+    tracker.release(
+        tracker.acquire(
+            endpoint_id_for_adapter(warm), 5_000, affinity_key="u1", fingerprint="conv-a"
+        ),
+        prefill_confirmed=True,
+    )
+
+    monkeypatch.setattr("random.random", lambda: 0.0)
+    req_ctx.set({"affinity_key": "u1"})
+
+    assert r._select_adapter("m", prefill_tokens=10_000, fingerprint="conv-a") is preferred
+
+
+@pytest.mark.unit
+def test_an_unrelated_conversation_does_not_inherit_the_keys_locality(monkeypatch):
+    """One API key, two conversations: the hint table cannot tell them apart.
+
+    ``affinity_key`` is the API-key hash, so the hint left by conversation A is
+    visible to conversation B under the loose caller-scoped discount. Acting on
+    it would move B to a replica that holds nothing of B's prompt -- and then
+    re-pin the whole key there. The fingerprint is what distinguishes them.
+    """
+    r = FixedRouter()
+    cold = _EchoAdapter(_cfg("m", provider="A", base_url="http://A"))
+    warm = _EchoAdapter(_cfg("m", provider="B", base_url="http://B"))
+    r.register_route("m", [(cold, 0.5), (warm, 0.5)])
+
+    warm_id = endpoint_id_for_adapter(warm)
+    tracker = r.prefill_load
+    tracker.release(
+        tracker.acquire(warm_id, 5_000, affinity_key="u1", fingerprint="conv-a"),
+        prefill_confirmed=True,
+    )
+    # The caller-scoped number is what a cache-blind selection would have used.
+    assert tracker.uncached_estimate(warm_id, 10_000, "u1") == 5_000
+
+    monkeypatch.setattr("random.random", lambda: 0.0)
+    req_ctx.set({"affinity_key": "u1"})
+
+    assert r._select_adapter("m", prefill_tokens=10_000, fingerprint="conv-b") is cold
+
+
+@pytest.mark.unit
+def test_selection_without_a_fingerprint_keeps_the_draw(monkeypatch):
+    """No conversation identity means no locality, not the caller-scoped guess."""
+    r = FixedRouter()
+    cold = _EchoAdapter(_cfg("m", provider="A", base_url="http://A"))
+    warm = _EchoAdapter(_cfg("m", provider="B", base_url="http://B"))
+    r.register_route("m", [(cold, 0.5), (warm, 0.5)])
+
+    tracker = r.prefill_load
+    tracker.release(
+        tracker.acquire(
+            endpoint_id_for_adapter(warm), 5_000, affinity_key="u1", fingerprint="conv-a"
+        ),
+        prefill_confirmed=True,
+    )
+
+    monkeypatch.setattr("random.random", lambda: 0.0)
+    req_ctx.set({"affinity_key": "u1"})
+
+    assert r._select_adapter("m", prefill_tokens=10_000) is cold
+
+
+@pytest.mark.unit
+def test_backlogged_warm_endpoint_does_not_capture_the_request(monkeypatch):
+    """Locality loses to capacity: a queue past the ceiling costs more than prefill."""
+    r = FixedRouter()
+    cold = _EchoAdapter(_cfg("m", provider="A", base_url="http://A"))
+    warm = _EchoAdapter(_cfg("m", provider="B", base_url="http://B"))
+    r.register_route("m", [(cold, 0.5), (warm, 0.5)])
+
+    warm_id = endpoint_id_for_adapter(warm)
+    tracker = r.prefill_load
+    tracker.release(
+        tracker.acquire(warm_id, 5_000, affinity_key="u1", fingerprint="conv-a"),
+        prefill_confirmed=True,
+    )
+    # Someone else's cold mega-prefill is now queued on the warm endpoint.
+    tracker.acquire(warm_id, AFFINITY_BACKLOG_CEILING + 1, affinity_key="other")
+
+    monkeypatch.setattr("random.random", lambda: 0.0)
+    req_ctx.set({"affinity_key": "u1"})
+
+    assert r._select_adapter("m", prefill_tokens=10_000, fingerprint="conv-a") is cold
+
+
+@pytest.mark.unit
+def test_locality_does_not_override_an_explicit_pin():
+    """An operator's pin collapses the route; locality must not second-guess it."""
+    r = FixedRouter()
+    a = _EchoAdapter(_cfg("m", provider="A", base_url="http://A"))
+    b = _EchoAdapter(_cfg("m", provider="B", base_url="http://B"))
+    r.register_route("m", [(a, 0.9), (b, 0.1)])
+
+    a_id = endpoint_id_for_adapter(a)
+    tracker = r.prefill_load
+    tracker.release(
+        tracker.acquire(a_id, 5_000, affinity_key="u1", fingerprint="conv-a"),
+        prefill_confirmed=True,
+    )
+    req_ctx.set({"affinity_key": "u1"})
+
+    # The draw would avoid 'A', and 'A' is the worst possible choice by weight,
+    # but the pin is the caller's instruction.
+    assert r._select_adapter("m", pin_provider=a_id, prefill_tokens=10_000) is a
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_chat_completion_routes_a_warm_conversation_to_its_prefix(monkeypatch):
+    """End to end: the request path must actually carry the fingerprint.
+
+    The selection-level tests call ``_select_adapter`` directly, so they cannot
+    catch a call site that forgets to pass the conversation identity. This one
+    goes through ``chat_completion`` and checks where the dispatch landed.
+    """
+    r = FixedRouter()
+    cold = _EchoAdapter(_cfg("m", provider="A", base_url="http://A"))
+    warm = _EchoAdapter(_cfg("m", provider="B", base_url="http://B"))
+    r.register_route("m", [(cold, 0.5), (warm, 0.5)])
+    warm_id = endpoint_id_for_adapter(warm)
+
+    messages = [{"role": "user", "content": "k" * 40_000}]
+    tracker = r.prefill_load
+    tracker.release(
+        tracker.acquire(
+            warm_id,
+            5_000,
+            affinity_key="u1",
+            fingerprint=conversation_fingerprint(messages),
+            anchor=prompt_anchor(messages),
+        ),
+        prefill_confirmed=True,
+    )
+
+    monkeypatch.setattr("random.random", lambda: 0.0)
+    req_ctx.set({"affinity_key": "u1"})
+
+    await r.chat_completion("m", messages)
+
+    assert r._affinity[("u1", "m")].endpoint_id == warm_id
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_chat_completion_does_not_route_an_unrelated_conversation_by_locality(
+    monkeypatch,
+):
+    """Same key, different conversation, warm hint present: no locality, no re-pin."""
+    r = FixedRouter()
+    cold = _EchoAdapter(_cfg("m", provider="A", base_url="http://A"))
+    warm = _EchoAdapter(_cfg("m", provider="B", base_url="http://B"))
+    r.register_route("m", [(cold, 0.5), (warm, 0.5)])
+
+    theirs = [{"role": "user", "content": "k" * 40_000}]
+    ours = [{"role": "user", "content": "z" * 40_000}]
+    tracker = r.prefill_load
+    tracker.release(
+        tracker.acquire(
+            endpoint_id_for_adapter(warm),
+            5_000,
+            affinity_key="u1",
+            fingerprint=conversation_fingerprint(theirs),
+            anchor=prompt_anchor(theirs),
+        ),
+        prefill_confirmed=True,
+    )
+
+    monkeypatch.setattr("random.random", lambda: 0.0)
+    req_ctx.set({"affinity_key": "u1"})
+
+    await r.chat_completion("m", ours)
+
+    assert r._affinity[("u1", "m")].endpoint_id == endpoint_id_for_adapter(cold)
 
 
 @pytest.mark.unit
