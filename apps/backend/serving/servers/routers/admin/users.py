@@ -72,6 +72,7 @@ from serving.schemas_admin import (
     UsersSummaryResponse,
     UserTurnAverages,
 )
+from serving.schemas_auth import normalize_login_name
 from serving.servers.auth import generate_api_key, hash_api_key, log_admin_action
 from serving.servers.deps import (
     AppServices,
@@ -559,6 +560,30 @@ async def admin_get_user_cost_history(
     )
 
 
+#: What a login name derived from a one- or two-character display name is
+#: padded with to reach the three-character minimum ("CI" becomes "ci-svc").
+_DERIVED_LOGIN_NAME_SUFFIX = "-svc"
+#: The longest login name :func:`normalize_login_name` accepts.
+_LOGIN_NAME_MAX_LENGTH = 32
+
+
+def derive_service_login_name(name: str) -> str | None:
+    """A valid login name made from display name *name*, or None when it has nothing to use.
+
+    Runs of anything but ASCII letters and digits become one ``-``; the result
+    is cut to the 32-character maximum and, below the 3-character minimum,
+    padded with :data:`_DERIVED_LOGIN_NAME_SUFFIX`. None for a name with no
+    ASCII letter or digit at all (the caller asks for a login name then).
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    slug = slug[:_LOGIN_NAME_MAX_LENGTH].rstrip("-")
+    if not slug:
+        return None
+    if len(slug) < 3:
+        slug += _DERIVED_LOGIN_NAME_SUFFIX
+    return normalize_login_name(slug)
+
+
 @router.post("/service-accounts", response_model=CreateServiceAccountResponse, status_code=201)
 async def create_service_account(
     request: Request,
@@ -571,8 +596,13 @@ async def create_service_account(
     A service account is a user row with no email and an unknowable random
     password, flagged ``is_service_account``: browser sign-in refuses it and
     it acts only through its API keys. Minting a lasting credential for a
-    new account needs the signed-in administrator's ``password`` (400 when
-    missing or wrong, 403 for the admin token, as for key creation).
+    new account needs the signed-in administrator to confirm it
+    (:func:`confirm_administrator`: a ``password``, an authenticator code or a
+    fresh single sign-on; 400 when missing or wrong, 403 for the admin token,
+    as for key creation).
+
+    ``login_name`` is checked like every login name (422); without one it is
+    derived from ``name``. 409 when another account holds it.
 
     Returns the plaintext API key ONLY ONCE. Save it immediately.
 
@@ -581,20 +611,25 @@ async def create_service_account(
     if not op_store:
         raise HTTPException(500, "Database not configured")
 
+    # Settled before the administrator is asked to confirm, so a bad or taken
+    # name does not spend a password attempt or a single sign-on confirmation.
+    # The schema has already checked a given login name (normalize_login_name).
+    login_name = payload.login_name or derive_service_login_name(payload.name)
+    if login_name is None:
+        raise HTTPException(
+            422,
+            f"The name '{payload.name.strip()}' has no letters or digits to make a login name "
+            "from; enter a login name (3-32 letters, digits, '.', '_' or '-').",
+        )
+    if await op_store.get_user_by_login_name(login_name):
+        raise HTTPException(409, f"Login name '{login_name}' is already in use")
+
     await confirm_administrator(
         request,
         op_store,
         payload.password,
         action=f"Creating service account {payload.name}",
     )
-
-    login_name = (payload.login_name or "").strip().lower()
-    if not login_name:
-        login_name = re.sub(r"[^a-z0-9]+", "-", payload.name.strip().lower()).strip("-")
-    if not login_name:
-        raise HTTPException(422, "name does not yield a login name; pass login_name")
-    if await op_store.get_user_by_login_name(login_name):
-        raise HTTPException(409, f"Login name '{login_name}' is already in use")
 
     user_id = generate_ulid()
     # Nobody knows this password: it exists only so the row satisfies the
