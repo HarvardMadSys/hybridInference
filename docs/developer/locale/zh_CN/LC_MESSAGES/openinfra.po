@@ -334,6 +334,24 @@ msgstr "`sglang[].gpu_indexes`"
 msgid "The GPUs it runs on; its tab shows only those"
 msgstr "它运行所在的 GPU；它的标签页只显示这些 GPU"
 
+#: ../developer/openinfra.md:0
+msgid "`sglang[].on_demand_url`"
+msgstr "`sglang[].on_demand_url`"
+
+#: ../developer/openinfra.md:0
+msgid ""
+"For an engine a proxy starts on demand: that proxy's model list, `GET "
+"/v1/models`. See \"On-demand engines\" below"
+msgstr "适用于由代理按需启动的引擎：该代理的模型列表，即 `GET /v1/models`。见下文“按需引擎”"
+
+#: ../developer/openinfra.md:0
+msgid "`sglang[].on_demand_model`"
+msgstr "`sglang[].on_demand_model`"
+
+#: ../developer/openinfra.md:0
+msgid "The engine's model id in that list, such as `BAAI/bge-m3`"
+msgstr "该引擎在这个列表中的模型 id，例如 `BAAI/bge-m3`"
+
 #: ../developer/openinfra.md:95
 msgid "Try one snapshot before installing the service:"
 msgstr "安装服务之前，先试发一次快照："
@@ -402,6 +420,18 @@ msgstr ""
 "`http://127.0.0.1:9400/metrics`。PCIe 吞吐量也来自 DCGM；没有 DCGM 时则来自 `nvidia-smi"
 " dmon`。"
 
+#: ../developer/openinfra.md:129
+msgid ""
+"**On-demand engines**, which a proxy stops after a spell without requests "
+"and starts again on the next one, read as offline while stopped unless "
+"their entry names the proxy in `on_demand_url` and `on_demand_model`. They "
+"then show as idle, with no figures, while the proxy lists the model as "
+"anything but `loaded`. FreeInference's idle proxies answer `GET "
+"/v1/models` on their own port without a key. An engine that stops "
+"answering while its proxy calls it loaded, or whose proxy does not answer "
+"either, still reads as offline."
+msgstr "**按需引擎**由代理在一段时间没有请求后停止，并在下一个请求到来时重新启动。停止期间它们显示为离线，除非其配置条目在 `on_demand_url` 和 `on_demand_model` 中指明了该代理。指明之后，只要代理列出的模型状态不是 `loaded`，它们就显示为空闲，且没有数据。FreeInference 的空闲代理在其自身端口上无需密钥即可响应 `GET /v1/models`。如果引擎不再响应而其代理仍称其为已加载，或者代理本身也不响应，引擎仍显示为离线。"
+
 #: ../developer/openinfra.md:128
 msgid ""
 "The reporter gives each engine figure the same meaning on SGLang and vLLM. "
@@ -458,6 +488,13 @@ msgstr ""
 "`sglang` 列出主机上的每个引擎，包括 vLLM（由 `engine` 区分）。引擎发送解析好的 `metrics`、原始的 "
 "`prometheus` 文本，或两者都发。暴露多个模型的 Prometheus 文本会让每个模型成为单独的引擎，即 "
 "`<id>:<model>`。"
+
+#: ../developer/openinfra.md:188
+msgid ""
+"An engine whose proxy has stopped it sends `\"state\": \"idle\"` in "
+"`server` and needs no figures. It is stored as idle, with none, and keeps "
+"no sample."
+msgstr "被其代理停止的引擎在 `server` 中发送 `\"state\": \"idle\"`，无需附带任何数据。它以空闲状态存储，没有数据，也不保留样本。"
 
 #: ../developer/openinfra.md:167
 msgid ""

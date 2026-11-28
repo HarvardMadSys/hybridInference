@@ -1202,6 +1202,32 @@ def sibling_metrics_url(url: str) -> str | None:
     return f"{parsed.scheme}://{parsed.netloc}/metrics"
 
 
+def on_demand_idle(target: dict[str, Any]) -> bool:
+    """Whether an engine that did not answer was stopped on purpose, by the proxy that starts it.
+
+    ``on_demand_url`` is that proxy's model listing (OpenAI's ``GET
+    /v1/models``, which FreeInference's idle proxies answer without a key, each
+    model with a ``status``), and ``on_demand_model``, else ``model_name``, the
+    engine's id in it. The engine is idle while the listing has it and does not
+    call it ``loaded``. A proxy that does not answer, or that calls the model
+    loaded, says nothing of the kind, so the engine goes unreported and reads
+    as offline, as an engine with no proxy does.
+    """
+    url = target.get("on_demand_url")
+    model = target.get("on_demand_model") or target.get("model_name")
+    if not url or not model:
+        return False
+    try:
+        listing = json.loads(fetch(url))
+    except (urllib.error.URLError, OSError, TimeoutError, ValueError):
+        return False
+    models = listing.get("data") if isinstance(listing, dict) else None
+    for entry in models if isinstance(models, list) else ():
+        if isinstance(entry, dict) and entry.get("id") == model:
+            return entry.get("status") != "loaded"
+    return False
+
+
 _no_metrics_noted: set[str] = set()
 #: Each repeating failure's last report and the reports held back since.
 _error_log: dict[str, tuple[float, int]] = {}
@@ -1659,6 +1685,9 @@ def scrape(args: argparse.Namespace, targets: list[dict[str, str]]) -> dict[str,
             sglang[target["id"] or target["url"]] = {"target": target, **parsed}
         except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError) as exc:
             name = target.get("id") or target.get("url")
+            if on_demand_idle(target):
+                sglang[target["id"] or target["url"]] = {"target": target, "idle": True}
+                return
             log_error(f"sglang {name}", f"sglang scrape {name}: {exc}")
 
     with ThreadPoolExecutor(max_workers=5) as pool:
@@ -2113,6 +2142,25 @@ def _fillable(metrics: dict[str, Any], measured: frozenset[str], key: str, *empt
     return key not in measured and (value is None or value in empty)
 
 
+def engine_identity(
+    args: argparse.Namespace, target: dict[str, Any], sid: str, metrics: dict[str, Any]
+) -> dict[str, Any]:
+    """The ``server`` part of an engine's body: which engine it is, where, on which GPUs."""
+    gpu_indexes = target.get("gpu_indexes") or []
+    return {
+        "id": target.get("id") or sid,
+        "node_id": args.node_id,
+        "name": target.get("name") or target.get("id"),
+        "endpoint": target.get("endpoint") or target.get("url"),
+        "model_name": metrics.get("model_name")
+        or target.get("model_name")
+        or target.get("name")
+        or target.get("id"),
+        "gpu_indexes": ",".join(str(i) for i in gpu_indexes) if gpu_indexes else None,
+        "engine": target.get("engine") or metrics.get("engine") or "sglang",
+    }
+
+
 def flush(
     args: argparse.Namespace,
     node: dict[str, Any],
@@ -2148,6 +2196,20 @@ def flush(
     commits: list[tuple[str, dict[str, Any] | None, tuple[str, ...], Any]] = []
     lines: list[str] = []
     for sid, payload in sglang.items():
+        if payload.get("idle"):
+            # Stopped on purpose by the proxy that starts it on demand: posted
+            # as idle, with no figures. Empty metrics rather than none, which a
+            # gateway from before idle engines would refuse the whole body for.
+            # No counters for the next rates to start from: they start again
+            # with the engine.
+            server = engine_identity(args, payload["target"], sid, {})
+            server["model_name"] = payload["target"].get("model_name") or payload["target"].get(
+                "on_demand_model"
+            )
+            engines.append({"server": {**server, "state": "idle"}, "metrics": {}})
+            commits.append((sid, None, (), None))
+            lines.append(f"flush {sid} gpus={server['gpu_indexes']} idle")
+            continue
         next_prev[sid] = payload
         agg = snapshot_sglang(payload, prev_sglang.get(sid), elapsed)
         target = agg["target"]
@@ -2299,19 +2361,8 @@ def flush(
             metrics["queue_avg_s"] = round(q, 4) if q > 0.0005 else 0.0
         for key in _DROP_COUNTERS:
             metrics.pop(key, None)
-        indexes = ",".join(str(i) for i in gpu_indexes) if gpu_indexes else None
-        server = {
-            "id": target["id"] or sid,
-            "node_id": args.node_id,
-            "name": target["name"] or target["id"],
-            "endpoint": target["endpoint"] or target["url"],
-            "model_name": metrics.get("model_name")
-            or target.get("model_name")
-            or target.get("name")
-            or target["id"],
-            "gpu_indexes": indexes,
-            "engine": target.get("engine") or metrics.get("engine") or "sglang",
-        }
+        server = engine_identity(args, target, sid, metrics)
+        indexes = server["gpu_indexes"]
         requests = []
         if include_requests and log_stats and isinstance(log_stats.get("requests"), list):
             requests = log_stats["requests"][:MAX_REQUEST_EVENTS]

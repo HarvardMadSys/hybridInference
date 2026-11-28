@@ -91,6 +91,8 @@ library, so the host's system Python runs it. It needs `nvidia-smi`. Copy
 | `sglang[].engine` | `sglang` or `vllm` |
 | `sglang[].endpoint` | The address shown for it |
 | `sglang[].gpu_indexes` | The GPUs it runs on; its tab shows only those |
+| `sglang[].on_demand_url` | For an engine a proxy starts on demand: that proxy's model list, `GET /v1/models`. See "On-demand engines" below |
+| `sglang[].on_demand_model` | The engine's model id in that list, such as `BAAI/bge-m3` |
 
 Try one snapshot before installing the service:
 
@@ -124,6 +126,13 @@ What each source needs:
   `ops/openinfra/dcgm/`. The reporter reads `http://127.0.0.1:9400/metrics`
   when it answers. PCIe throughput comes from DCGM too, or from
   `nvidia-smi dmon` without it.
+- **On-demand engines**, which a proxy stops after a spell without requests and
+  starts again on the next one, read as offline while stopped unless their
+  entry names the proxy in `on_demand_url` and `on_demand_model`. They then
+  show as idle, with no figures, while the proxy lists the model as anything
+  but `loaded`. FreeInference's idle proxies answer `GET /v1/models` on their
+  own port without a key. An engine that stops answering while its proxy calls
+  it loaded, or whose proxy does not answer either, still reads as offline.
 
 The reporter gives each engine figure the same meaning on SGLang and vLLM.
 Token rates come from counters that move as each step runs: vLLM's own, and
@@ -176,6 +185,8 @@ the configuration file: `--dashboard` (the gateway address), `--token`,
   An engine sends parsed `metrics`, raw `prometheus` text, or both. Prometheus
   text that exposes several models gives each model its own engine,
   `<id>:<model>`.
+- An engine whose proxy has stopped it sends `"state": "idle"` in `server` and
+  needs no figures. It is stored as idle, with none, and keeps no sample.
 - Unknown fields and values of the wrong type are ignored, so older reporters
   keep working. A body of the wrong shape is refused whole.
 - A body may carry up to 64 GPUs and 16 engines, and up to 2 MiB. Only the

@@ -133,6 +133,27 @@ describe('OpenInfraPage', () => {
     expect(screen.getByText('embed-model · GPU 0 · node-b')).toBeInTheDocument();
   });
 
+  it('says an engine its on-demand proxy stopped is idle, not offline', async () => {
+    const data = dashboard();
+    data.sglang = data.sglang.map((s) =>
+      s.id === 'node-b-embed' ? { ...s, status: 'idle' as const } : s,
+    );
+    api.getOpenInfraDashboard.mockResolvedValue(ok(data));
+    window.history.replaceState(null, '', '/openinfra#embed-model');
+
+    render(<OpenInfraContent />);
+    await loaded();
+    expect(screen.getByText('node-b · idle')).toBeInTheDocument();
+    cleanup();
+
+    render(
+      <LocaleProvider locale="zh-CN" catalog={zhCN as Catalog} moduleLocale="">
+        <OpenInfraContent />
+      </LocaleProvider>,
+    );
+    expect(await screen.findByText('node-b · 空闲')).toBeInTheDocument();
+  });
+
   it('opens on the deployment and range the address names', async () => {
     window.history.replaceState(null, '', '/openinfra?hours=168#embed-model');
     render(<OpenInfraContent />);

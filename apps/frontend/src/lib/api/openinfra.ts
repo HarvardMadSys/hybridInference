@@ -6,8 +6,11 @@ import { fetchWithAuth, jsonOrThrow } from '@/lib/api/client';
 
 const API_BASE = config.apiBase;
 
-/** A row's health; `offline` once nothing has been heard from it for 90 seconds. */
-export type OpenInfraStatus = 'online' | 'degraded' | 'offline' | 'unknown';
+/**
+ * A row's health; `offline` once nothing has been heard from it for 90 seconds.
+ * `idle` is an engine the proxy that starts it on demand has stopped.
+ */
+export type OpenInfraStatus = 'online' | 'degraded' | 'idle' | 'offline' | 'unknown';
 
 /** The whole fleet's health, or one deployment's as the page computes it. */
 export type FleetHealth = 'healthy' | 'busy' | 'degraded' | 'offline';

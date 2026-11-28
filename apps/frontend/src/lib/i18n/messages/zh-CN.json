@@ -3807,6 +3807,10 @@
     "source": "degraded",
     "text": "异常"
   },
+  "openinfra.status.idle": {
+    "source": "idle",
+    "text": "空闲"
+  },
   "openinfra.status.offline": {
     "source": "offline",
     "text": "离线"
