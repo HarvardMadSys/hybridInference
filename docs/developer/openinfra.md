@@ -121,6 +121,12 @@ Engine details:
   minute and held in between, which needs `docker` (the docker group, or
   `sudo -n docker`). An engine whose `/v1/loads` needs its API key, which the
   reporter does not send, is scraped through `/metrics`.
+- **Recent requests.** Request events come only from the engines' container
+  logs, whatever counters an engine has, so the reporter's account needs
+  `docker` for them (the unit's install commands add `openinfra` to the docker
+  group). Without it everything else is still reported and the page's recent
+  requests stay empty; the reporter says why once in its log
+  (`journalctl -u openinfra-reporter | grep 'engine logs'`).
 - **vLLM.** It has no `/v1/loads`: scrape `/metrics` and set
   `"engine": "vllm"`.
 - **DCGM (optional).** Tensor-core, DRAM, NVLink and PCIe charts need NVIDIA's
