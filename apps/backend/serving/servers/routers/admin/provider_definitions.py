@@ -409,14 +409,19 @@ def _remove_provider_from_document(
         model_provider = (
             dynamic_keys.normalize_key_provider(raw_model_provider) if raw_model_provider else None
         )
-        routes = model.get("route")
-        if not isinstance(routes, list):
-            if model_provider == provider_slug:
-                removed_models += 1
-                removed_routes += 1
-            else:
-                kept.append(model)
+        # A falsy `route` means the loader synthesizes one from the model's
+        # provider, exactly as _configured_provider_specs reads it; decide
+        # that route's ownership through the same slug function. A non-list
+        # truthy value is not a route list the registry would accept, so the
+        # model is left alone rather than guessed at.
+        declared = model.get("route")
+        if declared and not isinstance(declared, list):
+            kept.append(model)
             continue
+        synthesized = not declared
+        routes = (
+            declared if isinstance(declared, list) and declared else [{"kind": raw_model_provider}]
+        )
         remaining = [
             route
             for route in routes
@@ -426,12 +431,12 @@ def _remove_provider_from_document(
             )
         ]
         removed_routes += len(routes) - len(remaining)
-        if remaining:
-            kept.append({**model, "route": remaining} if len(remaining) != len(routes) else model)
-        elif routes:
-            removed_models += 1
-        else:
+        if len(remaining) == len(routes):
             kept.append(model)
+        elif remaining and not synthesized:
+            kept.append({**model, "route": remaining})
+        else:
+            removed_models += 1
     if not removed_routes and not removed_models:
         return document, 0, 0
     return {**document, "models": kept}, removed_routes, removed_models
@@ -941,6 +946,12 @@ async def create_provider_definition(
         await op_store.delete_provider_definition(provider)
         raise
     provider_registry.register_provider_definition(row)
+    # Re-creating a slug a built-in deletion disabled must not leave it
+    # silently off: a fresh definition is an explicit decision to serve it.
+    if await op_store.clear_provider_disabled(provider):
+        resolver = getattr(services, "disabled_provider_resolver", None)
+        if resolver is not None:
+            resolver.clear_disabled(provider)
     # A newly known provider starts with no cached tier declarations, and
     # ``add_key_to_provider`` below reconciles against that cache — load first so a
     # reserved row for this slug (one that outlived an earlier definition) is
@@ -1142,19 +1153,22 @@ async def delete_provider_definition(
         return DeleteProviderDefinitionResponse(provider=provider_slug, deleted_keys=deleted_keys)
 
     # Built-in: remove the catalog routes first, so a refused catalog write
-    # leaves keys, routing, and the registry untouched.
+    # leaves keys, routing, and the registry untouched. Disable immediately
+    # after that write, before anything else can fail, so the provider stops
+    # serving even if a later step raises; every later step is idempotent,
+    # so a retry converges.
     removed_routes, removed_models = await _remove_provider_from_catalog(
         provider_slug, updated_by=actor.id or "admin_token"
     )
     display_name = row.display_name if row is not None else _display_name(provider_slug)
-    deleted_keys = await op_store.delete_provider_keys_for_provider(provider_slug)
-    if row is not None:
-        await op_store.delete_provider_definition(provider_slug)
-        provider_registry.unregister_provider_definition(provider_slug)
     await op_store.set_provider_disabled(provider_slug, actor.id)
     resolver = getattr(services, "disabled_provider_resolver", None)
     if resolver is not None:
         resolver.set_disabled(provider_slug)
+    deleted_keys = await op_store.delete_provider_keys_for_provider(provider_slug)
+    if row is not None:
+        await op_store.delete_provider_definition(provider_slug)
+        provider_registry.unregister_provider_definition(provider_slug)
     if getattr(services, "model_router_registry", None) is not None:
         from serving.servers.routewise_rebuild import rebuild_routewise_routers
 

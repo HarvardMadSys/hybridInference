@@ -694,8 +694,9 @@ export function ProviderOverviewTab({ onManageKeys }: ProviderOverviewTabProps) 
           <p>
             This removes the built-in provider {provider.provider} from the model catalog: its
             routes are deleted, models left without a route are removed, and its stored provider
-            keys ({formatCount(provider.keys_count, 'key')}) are deleted. It is disabled immediately
-            and gone entirely after the next restart. This cannot be undone.
+            keys ({formatCount(provider.keys_count, 'key')}) are deleted. It stops serving
+            immediately, and its catalog routes are not registered again after the next restart.
+            This cannot be undone.
           </p>
         ),
       run: async () => {

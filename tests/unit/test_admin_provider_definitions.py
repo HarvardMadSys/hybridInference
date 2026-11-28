@@ -1492,6 +1492,151 @@ async def test_an_unknown_provider_is_404(wiring, call):
     assert caught.value.status_code == 404
 
 
+def test_remove_provider_from_document_drops_empty_route_and_metadata_owned():
+    document = {
+        "models": [
+            {"id": "empty-route", "provider": "kimi", "route": []},
+            {
+                "id": "metadata-owned",
+                "provider": "ollama",
+                "route": [
+                    {
+                        "kind": "ollama",
+                        "base_url": "https://y/v1",
+                        "route_metadata": {"key_provider": "kimi"},
+                    },
+                    {"kind": "ollama", "base_url": "https://y/v1"},
+                ],
+            },
+            {"id": "kept", "provider": "ollama", "route": []},
+        ]
+    }
+
+    updated, removed_routes, removed_models = provider_definitions._remove_provider_from_document(
+        document, "kimi"
+    )
+
+    assert (removed_routes, removed_models) == (2, 1)
+    assert [model["id"] for model in updated["models"]] == ["metadata-owned", "kept"]
+    assert len(updated["models"][0]["route"]) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attach", [False, True], ids=["no-store-503", "version-conflict-409"])
+async def test_delete_builtin_provider_refused_catalog_write_changes_nothing(monkeypatch, attach):
+    """A refused catalog write leaves keys, the row, and the disabled state alone."""
+    import json
+
+    from serving.config import app_config
+    from tests.fixtures.app_config_store import FakeAppConfigStore, row
+
+    catalog_models = [
+        {
+            "id": "kimi-only",
+            "provider": "kimi",
+            "route": [
+                {
+                    "kind": "kimi",
+                    "base_url": "https://api.kimi.test/v1",
+                    "provider_model_id": "kimi-only",
+                }
+            ],
+        }
+    ]
+    catalog_text = json.dumps({"models": catalog_models})
+    config_store = FakeAppConfigStore([row("MODEL_CATALOG", catalog_text)])
+    await app_config.load(config_store, bootstrap=False)
+    if attach:
+        app_config.attach(config_store)
+
+    store = FakeProviderDefinitionStore(
+        {
+            "kimi": ProviderDefinitionRow(
+                provider="kimi",
+                display_name="Kimi",
+                adapter_kind="kimi",
+                default_base_url="https://api.moonshot.ai/v1",
+                status="active",
+                created_at=None,  # type: ignore[arg-type]
+                updated_at=None,  # type: ignore[arg-type]
+            )
+        }
+    )
+    config_spec = provider_definitions.ConfigProviderSpec(
+        provider="kimi",
+        adapter_kind="kimi",
+        default_base_url="https://api.moonshot.ai/v1",
+        model_ids=frozenset(["kimi-only"]),
+    )
+    disabled_live: list[str] = []
+    services = SimpleNamespace(
+        router=SimpleNamespace(routes={}),
+        model_router_registry=None,
+        disabled_provider_resolver=SimpleNamespace(set_disabled=disabled_live.append),
+    )
+
+    async def noop_audit(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        provider_definitions, "_configured_provider_specs", lambda: {"kimi": config_spec}
+    )
+    monkeypatch.setattr(provider_definitions, "log_admin_action", noop_audit)
+    if attach:
+        # The stored catalog moved under the delete: the optimistic write is
+        # refused with a version conflict, which must surface as 409.
+        async def conflicted_update(*_args, **_kwargs):
+            raise app_config.ConfigUpdateError(409, "catalog changed; reload and retry")
+
+        monkeypatch.setattr(app_config, "update", conflicted_update)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await provider_definitions.delete_provider_definition(
+            "kimi",
+            actor=ADMIN_ACTOR,
+            op_store=store,
+            services=services,
+        )
+
+    assert exc_info.value.status_code == (409 if attach else 503)
+    assert store.deleted_keys == []
+    assert store.disabled_providers == []
+    assert disabled_live == []
+    assert "kimi" in store.rows
+    assert config_store.rows["MODEL_CATALOG"].value == catalog_text
+
+
+@pytest.mark.asyncio
+async def test_recreating_a_deleted_slug_clears_its_disabled_marker(wiring):
+    class Store(_KeyStore):
+        def __init__(self):
+            super().__init__()
+            self.cleared: list[str] = []
+
+        async def clear_provider_disabled(self, provider: str) -> bool:
+            self.cleared.append(provider)
+            return True
+
+    store = Store()
+    cleared_live: list[str] = []
+    services = SimpleNamespace(
+        router=SimpleNamespace(routes={}),
+        model_router_registry=None,
+        disabled_provider_resolver=SimpleNamespace(clear_disabled=cleared_live.append),
+    )
+
+    await provider_definitions.create_provider_definition(
+        _create_request(),
+        admin_id="admin",
+        actor=ADMIN_ACTOR,
+        op_store=store,
+        services=services,
+    )
+
+    assert store.cleared == ["acme"]
+    assert cleared_live == ["acme"]
+
+
 def test_provider_metadata_follows_the_json_catalog(monkeypatch):
     import json
 
