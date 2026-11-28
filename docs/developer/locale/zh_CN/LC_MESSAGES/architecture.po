@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-11-28 06:22+0000\n"
+"POT-Creation-Date: 2026-11-28 06:35+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -18,7 +18,7 @@ msgstr ""
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=utf-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"Generated-By: Babel 2.18.0\n"
+"Generated-By: Babel 2.19.0\n"
 
 #: ../developer/architecture.md:1
 msgid "Architecture"
@@ -327,12 +327,11 @@ msgid ""
 "The ledger is per process, so limits hold within each worker but not "
 "across workers; production runs one. A shared spend mode, off unless an "
 "operator turns it on, keeps reservations in PostgreSQL for all processes;"
-" see [Shared accounting and draining](accounting.md#shared-accounting-"
-"and-draining)."
+" see [Shared accounting](accounting.md#shared-accounting)."
 msgstr ""
 "账本按进程独立，所以限额只在每个 worker 内部生效，不跨 worker；生产环境只运行一个 "
 "worker。共享消费模式默认关闭，由运维人员开启后，所有进程的预留都存放在 PostgreSQL "
-"中；见[共享记账与排空](accounting.md#shared-accounting-and-draining)。"
+"中；见[共享记账](accounting.md#shared-accounting)。"
 
 #: ../developer/architecture.md:165
 msgid ""
@@ -454,6 +453,12 @@ msgstr ""
 msgid "The routing engine in detail"
 msgstr "路由引擎详解"
 
+#: ../developer/architecture.md:220
+msgid ""
+"Diagrams are in [Router types and execution boundaries](routing.md"
+"#router-types-and-execution-boundaries)."
+msgstr "示意图见[router 类型与执行边界](routing.md#router-types-and-execution-boundaries)。"
+
 #: ../developer/architecture.md:223
 msgid "Routers and strategies"
 msgstr "router 与策略"
@@ -534,6 +539,18 @@ msgstr ""
 #: ../developer/architecture.md:259
 msgid "Execution and composition"
 msgstr "执行与组合"
+
+#: ../developer/architecture.md:261
+msgid ""
+"Every router runs its chosen endpoint through a thin wrapper called a "
+"leaf. An experimental composition, `HybridRouter`, splits a model's "
+"routes into a local and a cloud pool; a model opts in with "
+"`router_params.hybrid_composition: true`. See [Hybrid "
+"composition](routing.md#hybrid-composition)."
+msgstr ""
+"每个 router 都通过一层称为 leaf 的薄包装来调用选中的端点。实验性的组合 `HybridRouter` "
+"把模型的路由分成本地池和云端池；模型通过 `router_params.hybrid_composition: true` "
+"选择启用。见[混合组合](routing.md#hybrid-composition)。"
 
 #: ../developer/architecture.md:266
 msgid "`provider` versus `endpoint_id`"
@@ -1153,22 +1170,4 @@ msgid ""
 "Next: [Deployment Guide](deployment.md), [Installation](installation.md),"
 " [Contributing](contributing.md)."
 msgstr "接下来：[部署指南](deployment.md)、[安装](installation.md)、[贡献指南](contributing.md)。"
-
-#: ../developer/architecture.md:220
-msgid ""
-"Diagrams are in [Router types and execution boundaries](routing.md"
-"#router-types-and-execution-boundaries)."
-msgstr "示意图见[router 类型与执行边界](routing.md#router-types-and-execution-boundaries)。"
-
-#: ../developer/architecture.md:261
-msgid ""
-"Every router runs its chosen endpoint through a thin wrapper called a "
-"leaf. An experimental composition, `HybridRouter`, splits a model's "
-"routes into a local and a cloud pool; a model opts in with "
-"`router_params.hybrid_composition: true`. See [Hybrid "
-"composition](routing.md#hybrid-composition)."
-msgstr ""
-"每个 router 都通过一层称为 leaf 的薄包装来调用选中的端点。实验性的组合 `HybridRouter` "
-"把模型的路由分成本地池和云端池；模型通过 `router_params.hybrid_composition: true` "
-"选择启用。见[混合组合](routing.md#hybrid-composition)。"
 

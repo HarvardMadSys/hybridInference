@@ -76,7 +76,7 @@ client → FastAPI gateway (serving/) → routing engine (routing/) → adapter 
 
 [Architecture](docs/developer/architecture.md) explains adapters, `provider`
 versus `endpoint_id`, and the two kinds of strategy.
-[Routing Internals](docs/developer/routing-internals.md) explains routers,
+[Routing](docs/developer/routing.md#router-types-and-execution-boundaries) explains routers,
 leaves and pools, and the
 [composable hybrid routing design](docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md)
 is their agreed contract, with the opt-in wiring and deferred work. The rules:

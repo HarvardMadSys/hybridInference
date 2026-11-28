@@ -122,8 +122,6 @@ tracker <https://github.com/HarvardMadSys/hybridInference/issues>`_.
    adding-models
    add-local-model
    provider-adapters
-   openrouter
-   hpc-model-host
    claude-code-setup
    batches
    rag-chat

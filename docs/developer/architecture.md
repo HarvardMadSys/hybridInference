@@ -160,7 +160,7 @@ request adds at most $1,000; a larger cost is capped and logged as
 The ledger is per process, so limits hold within each worker but not across
 workers; production runs one. A shared spend mode, off unless an operator turns
 it on, keeps reservations in PostgreSQL for all processes; see
-[Shared accounting and draining](accounting.md#shared-accounting-and-draining).
+[Shared accounting](accounting.md#shared-accounting).
 
 A response cut off by the client or the request timeout is billed for what the
 upstream already did: its reported usage, or an estimate marked

@@ -66,7 +66,7 @@ The
 [composable hybrid routing design](../../../docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md)
 is the agreed contract for routers, leaves and pools, including the opt-in
 wiring and deferred work. The root [AGENTS.md](../../../AGENTS.md) summarizes it
-in section 6.2, and [Routing Internals](../../../docs/developer/routing-internals.md)
+in section 6.2, and [Routing](../../../docs/developer/routing.md#router-types-and-execution-boundaries)
 shows the current code with diagrams. A dated record does not by itself make
 transitional code a lasting contract.
 
