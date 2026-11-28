@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-11-28 06:23+0000\n"
+"POT-Creation-Date: 2026-11-28 15:39+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -1288,27 +1288,107 @@ msgstr ""
 "`auth_ip_blocked`）静音一小时、一天、一周或直到取消静音。静音保存在数据库中，几秒内就会到达每个进程。在静音或暂停期间开始的事件结束时不会发送恢复消息；之前已发出的事件仍会收到恢复消息。"
 
 #: ../developer/deployment.md:493
+msgid "Administrator activity"
+msgstr "管理员活动"
+
+#: ../developer/deployment.md:495
+msgid ""
+"Every hour the backend checks what administrators did since its last "
+"report and sends up to two cards, each an alert type you can mute on its "
+"own:"
+msgstr "后端每小时检查一次管理员自上次报告以来的操作，最多发送两张卡片，每张都是一个可以单独静音的告警类型："
+
+#: ../developer/deployment.md:498
+msgid ""
+"**Administrator access from a new address** (`admin_new_address`): an "
+"administrator signed in, or failed to sign in, from an address the "
+"account had not used in the previous 30 days; an administrator's session "
+"acted from such an address; or the admin token acted from an address it "
+"had not acted from. A session acting from an address the account has not "
+"signed in from is marked as such, because a stolen session cookie looks "
+"like that."
+msgstr ""
+"**Administrator access from a new "
+"address**（`admin_new_address`）：管理员从该账户在之前 30 "
+"天内没有用过的地址登录或登录失败；管理员的会话从这样的地址执行了操作；或者管理员令牌从它没有用过的地址执行了操作。会话从该账户没有登录过的地址执行操作时会被特别标注，因为会话"
+" cookie 被盗用时就是这个样子。"
+
+#: ../developer/deployment.md:504
+msgid ""
+"**Dangerous administrator actions** (`admin_dangerous_action`): deleting "
+"an account, removing an authenticator, creating a service account, "
+"revealing an API key, exporting request logs or reading a batch's "
+"prompts, downloading or restoring a configuration backup, adding, "
+"removing or changing provider keys and definitions, muting or snoozing "
+"alerts, purging sign-in records, lifting an auth-failure block, "
+"restarting the backend, and giving an account the admin or internal role."
+" Changing a setting that decides where alerts go, who may sign in or sign"
+" up, or which client addresses the backend believes, or any secret "
+"setting, counts too. Refused attempts are listed as well."
+msgstr ""
+"**Dangerous administrator "
+"actions**（`admin_dangerous_action`）：删除账户、移除身份验证器、创建服务账户、显示 API "
+"key、导出请求日志或读取批处理任务的提示词、下载或恢复配置备份、添加、移除或修改 provider key 和 provider "
+"定义、将告警静音或暂停、清除登录记录、解除认证失败封禁、重启后端，以及授予账户 admin 或 internal "
+"角色。修改决定告警发往何处、谁可以登录或注册、后端信任哪些客户端地址的设置项，或修改任何机密设置项，同样计入。被拒绝的尝试也会列出。"
+
+#: ../developer/deployment.md:514
+msgid ""
+"An address is an IPv4 address or an IPv6 /64. Each card lists up to 20 "
+"findings (who, what, from which address and when) and counts the rest."
+msgstr "地址指一个 IPv4 地址或一个 IPv6 /64。每张卡片最多列出 20 条发现（谁、做了什么、从哪个地址、何时），其余的只计数。"
+
+#: ../developer/deployment.md:517
+msgid ""
+"Each finding is reported once. When a card is delivered, the backend "
+"writes an `admin_activity.alerted` row to the audit log saying how far it"
+" covered, and the next check starts there, whichever replica runs it. A "
+"card that is not delivered, because the channel refused it or alerts are "
+"snoozed, goes out with the next check's findings, for up to seven days. A"
+" muted type is recorded as handled without a card. The first check covers"
+" the hour before it and records an `admin_activity.started` row."
+msgstr ""
+"每条发现只报告一次。卡片送达后，后端会在审计日志中写入一行 "
+"`admin_activity.alerted`，记录它覆盖到的时间点，下一次检查就从那里开始，无论由哪个副本运行。因渠道拒收或告警被暂停而未送达的卡片，会随下一次检查的发现一起发出，最长可追溯七天。被静音的类型会被记录为已处理，但不发送卡片。第一次检查覆盖它之前的一小时，并写入一行"
+" `admin_activity.started`。"
+
+#: ../developer/deployment.md:525
+msgid ""
+"The check reads nothing while no notification channel is set. It needs "
+"the backend to know client addresses (see [Trusted Proxies and Client IPs"
+"](trusted-proxies-and-client-ips.md)): a sign-in or action whose address "
+"was not recorded is never new. In `ALERT_RULES`, `admin_activity.enabled:"
+" false` turns it off and `admin_activity.lookback_days` (30 by default, 1"
+" to 365) sets how long an address stays known; both apply after a "
+"restart."
+msgstr ""
+"未设置通知渠道时，检查不读取任何数据。它需要后端知道客户端地址（见[可信代理与客户端 IP](trusted-proxies-and-"
+"client-ips.md)）：没有记录地址的登录或操作永远不算新地址。在 `ALERT_RULES` "
+"中，`admin_activity.enabled: false` 会关闭它，`admin_activity.lookback_days`（默认 "
+"30，取值 1 到 365）设定一个地址保持为已知的时长；两者都在重启后生效。"
+
+#: ../developer/deployment.md:537
 msgid "The first admin account"
 msgstr "第一个管理员账号"
 
-#: ../developer/deployment.md:495
+#: ../developer/deployment.md:539
 msgid ""
 "A new deployment creates its first administrator on the console's setup "
 "page. Until then the backend refuses every sign-up, by email or phone:"
 msgstr "新部署在控制台的设置页面上创建第一个管理员。在此之前，后端拒绝所有注册，无论通过邮箱还是手机号："
 
-#: ../developer/deployment.md:498
+#: ../developer/deployment.md:542
 msgid ""
 "Read the setup code from the backend's log. It is stored in the database,"
 " stays the same across restarts until setup is complete, and is logged at"
 " every start whatever `LOG_LEVEL` is:"
 msgstr "从后端日志中读取设置码。它保存在数据库中，在设置完成之前跨重启保持不变，并且无论 `LOG_LEVEL` 如何，每次启动都会打印："
 
-#: ../developer/deployment.md:506
+#: ../developer/deployment.md:550
 msgid "Open the console; while setup is pending every page sends you to `/setup`."
 msgstr "打开控制台；设置未完成时，每个页面都会把你带到 `/setup`。"
 
-#: ../developer/deployment.md:507
+#: ../developer/deployment.md:551
 msgid ""
 "Enter the code and choose a username and password. This administrator has"
 " no email address and signs in with the username. It can add one later in"
@@ -1317,7 +1397,7 @@ msgstr ""
 "输入设置码，选择用户名和密码。这个管理员没有邮箱，用用户名登录。邮件发送可用后，它可以在 **Account Settings → Email "
 "Address** 中添加邮箱。"
 
-#: ../developer/deployment.md:511
+#: ../developer/deployment.md:555
 msgid ""
 "Anyone who can read the backend log or the database can create this "
 "account, so keep both private. Wrong codes are limited to ten per client "
@@ -1328,7 +1408,7 @@ msgstr ""
 "能读取后端日志或数据库的人就能创建这个账号，所以两者都要严格保密。错误的设置码每个客户端地址 15 "
 "分钟内最多十次；正确的设置码永远不会被拒绝。管理员创建之后，可以用运行时设置 `signup_enabled` 关闭注册。"
 
-#: ../developer/deployment.md:516
+#: ../developer/deployment.md:560
 msgid ""
 "**Choose a username that is hard to guess.** Sign-in counts attempts "
 "before it checks the password:"
@@ -1378,7 +1458,7 @@ msgstr "1 小时 20 次"
 msgid "`LOGIN_RATE_LIMIT_PER_HOUR_PER_IP`"
 msgstr ""
 
-#: ../developer/deployment.md:525
+#: ../developer/deployment.md:569
 msgid ""
 "A browser that has signed in to the account before holds a device cookie "
 "(`<REFRESH_TOKEN_COOKIE_NAME>_device`, valid 180 days) and gets five "
@@ -1395,17 +1475,17 @@ msgstr ""
 "](trusted-proxies-and-client-ips.md#behind-the-console)）。`admin` "
 "是任何人都会最先尝试的用户名。"
 
-#: ../developer/deployment.md:534
+#: ../developer/deployment.md:578
 msgid ""
 "The recovery tools below need no sign-in. `ADMIN_TOKEN`, when set, also "
 "still reaches the admin API."
 msgstr "下面的恢复工具都不需要登录。设置了 `ADMIN_TOKEN` 时，它也仍能访问管理 API。"
 
-#: ../developer/deployment.md:537
+#: ../developer/deployment.md:581
 msgid "Creating an administrator without the browser"
 msgstr "不用浏览器创建管理员"
 
-#: ../developer/deployment.md:539
+#: ../developer/deployment.md:583
 msgid ""
 "`ops/admin/create_admin.py` creates an account with `role='admin'`, "
 "`status='active'` and `email_verified=TRUE`, or promotes the existing "
@@ -1418,24 +1498,24 @@ msgstr ""
 "的账号，或者提升使用该邮箱的现有账号。在迁移执行之后，在仓库根目录、项目环境中（`make setup-dev` 之后执行 `source "
 ".venv/bin/activate`）运行它："
 
-#: ../developer/deployment.md:549
+#: ../developer/deployment.md:593
 msgid ""
 "It reads the `DB_*` settings from `.env` and prompts for the password "
 "when you omit `--password`. Any account created this way also completes "
 "first-run setup."
 msgstr "它从 `.env` 读取 `DB_*` 设置，省略 `--password` 时会提示输入密码。用这种方式创建任何账号也会完成首次运行设置。"
 
-#: ../developer/deployment.md:552
+#: ../developer/deployment.md:596
 msgid "Resetting a forgotten password"
 msgstr "重置忘记的密码"
 
-#: ../developer/deployment.md:554
+#: ../developer/deployment.md:598
 msgid ""
 "The setup administrator has no email, so reset its password where the "
 "backend runs:"
 msgstr "首次设置创建的管理员没有邮箱，所以要在后端运行的地方重置它的密码："
 
-#: ../developer/deployment.md:561
+#: ../developer/deployment.md:605
 msgid ""
 "It reads only the `DB_*` settings, asks for the new password twice (or "
 "prints a strong one with `--generate`), and signs the account out "
@@ -1448,17 +1528,17 @@ msgstr ""
 "打印一个强密码），并让该账号在所有地方退出登录。它也接受邮箱地址。在源码检出中，在仓库根目录运行 `uv run python -m "
 "serving.auth.reset_password <username>`。它也能用于尚未执行迁移的数据库；这时请用邮箱指定账号。"
 
-#: ../developer/deployment.md:568
+#: ../developer/deployment.md:612
 msgid "Undoing a setting that breaks sign-in"
 msgstr "撤销导致无法登录的设置"
 
-#: ../developer/deployment.md:570
+#: ../developer/deployment.md:614
 msgid ""
 "A setting that stops sign-in cannot be fixed in `.env` or from the "
 "console. Reset it from the command line:"
 msgstr "导致无法登录的设置项既不能在 `.env` 中修复，也不能在控制台中修复。请在命令行中重置："
 
-#: ../developer/deployment.md:577
+#: ../developer/deployment.md:621
 msgid ""
 "`list`, `get KEY`, `set KEY VALUE` and `reset KEY` validate like Admin "
 "and never print secrets; see [Without the console](configuration.md"
@@ -1469,11 +1549,11 @@ msgstr ""
 "一样校验，并且从不打印密钥；见[不用控制台](configuration.md#without-the-"
 "console)。后端大约十秒内会读到修改；标有 **Restart required** 的设置项则在重启后生效。"
 
-#: ../developer/deployment.md:582
+#: ../developer/deployment.md:626
 msgid "Promoting accounts with `ADMIN_EMAILS`"
 msgstr "用 `ADMIN_EMAILS` 提升账号"
 
-#: ../developer/deployment.md:584
+#: ../developer/deployment.md:628
 msgid ""
 "`ADMIN_EMAILS` (under **Security** in **Admin → Settings → Access & "
 "Limits**) makes a listed address an administrator when that account signs"
@@ -1482,7 +1562,7 @@ msgstr ""
 "`ADMIN_EMAILS`（位于 **Admin → Settings → Access & Limits** 的 **Security** "
 "下）会在列出的邮箱对应的账号登录时把它设为管理员。创建第一个管理员不需要它。"
 
-#: ../developer/deployment.md:589
+#: ../developer/deployment.md:633
 msgid ""
 "Never combine open signup (`signup_enabled`), disabled email verification"
 " (`signup_require_email_verification` off) and `ADMIN_EMAILS` on an "
@@ -1496,7 +1576,7 @@ msgstr ""
 "会把任何地址标为已验证，而后端会在登录和每次刷新令牌时把列出的地址提升为 `admin`。猜到 `ADMIN_EMAILS` "
 "中任一地址的人都会成为管理员。"
 
-#: ../developer/deployment.md:597
+#: ../developer/deployment.md:641
 msgid ""
 "Email verification is on by default and needs working mail: set "
 "`SMTP_HOST`, `SMTP_USER` and `SMTP_PASSWORD` with `EMAIL_PROVIDER=smtp`, "
@@ -1512,11 +1592,11 @@ msgstr ""
 "#email-and-sms-delivery-providers)。`ADMIN_EMAILS` "
 "也是注册审批邮件的默认收件人列表；`SIGNUP_NOTIFY_EMAILS` 可以覆盖它。"
 
-#: ../developer/deployment.md:605
+#: ../developer/deployment.md:649
 msgid "Requiring two-factor authentication of administrators"
 msgstr "要求管理员使用双重验证"
 
-#: ../developer/deployment.md:607
+#: ../developer/deployment.md:651
 msgid ""
 "Any account can add an authenticator app (any TOTP app) in **Settings → "
 "Two-Factor Authentication** and then confirms lasting changes, such as "
@@ -1526,7 +1606,7 @@ msgstr ""
 "任何账号都可以在 **Settings → Two-Factor Authentication** 中添加身份验证器应用（任何 TOTP "
 "应用），之后用六位数验证码确认持久性的修改，例如提升角色、为其他账号生成 key 或导出密钥。它会得到十个恢复码，只显示一次。"
 
-#: ../developer/deployment.md:612
+#: ../developer/deployment.md:656
 msgid ""
 "`ADMIN_TWO_FACTOR_REQUIRED=true` in `.env` makes an authenticator a "
 "condition of administrator access. It is read from the environment only, "
@@ -1535,24 +1615,24 @@ msgstr ""
 "在 `.env` 中设置 `ADMIN_TWO_FACTOR_REQUIRED=true` "
 "后，拥有身份验证器就成为获得管理员权限的前提。它只从环境变量读取，所以管理员会话无法把它关掉。开启后："
 
-#: ../developer/deployment.md:616
+#: ../developer/deployment.md:660
 msgid ""
 "a console session reaches the Admin API only after giving a code, and "
 "again when it appears in a different kind of client;"
 msgstr "控制台会话只有在提供验证码后才能访问 Admin API，出现在另一种客户端中时还要再次提供；"
 
-#: ../developer/deployment.md:618
+#: ../developer/deployment.md:662
 msgid ""
 "an administrator without an authenticator has no administrator access "
 "until they add one, and only an account with one can be given the `admin`"
 " role;"
 msgstr "没有身份验证器的管理员在添加之前没有管理员权限，只有拥有身份验证器的账号才能被授予 `admin` 角色；"
 
-#: ../developer/deployment.md:620
+#: ../developer/deployment.md:664
 msgid "`ADMIN_TOKEN` is read-only, so move automation that writes with it first."
 msgstr "`ADMIN_TOKEN` 变为只读，所以先迁移用它写入的自动化任务。"
 
-#: ../developer/deployment.md:622
+#: ../developer/deployment.md:666
 msgid ""
 "Enroll the administrators before you turn it on: until an account has an "
 "authenticator, anyone with its password can add theirs. **Admin → Users**"
@@ -1564,7 +1644,7 @@ msgstr ""
 "显示账号是否有身份验证器，并可以移除丢失的身份验证器。`TWO_FACTOR_STEP_UP_MINUTES`（默认 "
 "10）是验证码可以持续确认修改的时长。"
 
-#: ../developer/deployment.md:629
+#: ../developer/deployment.md:673
 #, python-brace-format
 msgid ""
 "An administrator who loses both the device and the recovery codes cannot "
@@ -1577,11 +1657,11 @@ msgstr ""
 "/admin/users/{user_id}/two-"
 "factor/reset`）。如果没有其他管理员，就在数据库中删除它，再用该账号的密码添加新的："
 
-#: ../developer/deployment.md:638
+#: ../developer/deployment.md:682
 msgid "Database"
 msgstr "数据库"
 
-#: ../developer/deployment.md:640
+#: ../developer/deployment.md:684
 msgid ""
 "PostgreSQL runs in the `postgres` service with its data in the volume "
 "`hybridinference_postgres_data`. The schema, backups, pgAdmin and what "
@@ -1590,47 +1670,47 @@ msgstr ""
 "PostgreSQL 运行在 `postgres` 服务中，数据保存在卷 `hybridinference_postgres_data` "
 "里。schema、备份、pgAdmin 以及数据库中存放的内容见[数据库](database.md)。"
 
-#: ../developer/deployment.md:644
+#: ../developer/deployment.md:688
 msgid "Applying schema migrations"
 msgstr "执行表结构迁移"
 
-#: ../developer/deployment.md:646
+#: ../developer/deployment.md:690
 msgid ""
 "Run the migrations with the image you are about to start, while the old "
 "one still serves, and start the new one only when they succeed:"
 msgstr "在旧版本仍在服务时，用即将启动的镜像执行迁移，迁移成功后再启动新版本："
 
-#: ../developer/deployment.md:628
+#: ../developer/deployment.md:672
 msgid "Deployment"
 msgstr "部署方式"
 
-#: ../developer/deployment.md:628
+#: ../developer/deployment.md:672
 msgid "The step"
 msgstr "这一步怎么做"
 
-#: ../developer/deployment.md:628
+#: ../developer/deployment.md:672
 msgid "The bundled Compose stack"
 msgstr "自带的 Compose 栈"
 
-#: ../developer/deployment.md:628
+#: ../developer/deployment.md:672
 msgid "`make migrate`; `make up` and `make build` run it for you"
 msgstr "`make migrate`；`make up` 和 `make build` 会替你执行"
 
-#: ../developer/deployment.md:628
+#: ../developer/deployment.md:672
 msgid "Pinned images (`make deploy`)"
 msgstr "固定镜像（`make deploy`）"
 
-#: ../developer/deployment.md:628
+#: ../developer/deployment.md:672
 msgid ""
 "`make deploy` runs it before switching over; `make rollback` never runs "
 "an older image's migrations"
 msgstr "`make deploy` 会在切换之前执行这一步；`make rollback` 从不执行旧镜像的迁移"
 
-#: ../developer/deployment.md:628
+#: ../developer/deployment.md:672
 msgid "A systemd unit (`deploy/systemd/`)"
 msgstr "systemd 服务单元（`deploy/systemd/`）"
 
-#: ../developer/deployment.md:628
+#: ../developer/deployment.md:672
 msgid ""
 "`.venv/bin/python -m migrations upgrade` in the unit's working directory,"
 " with its environment, before `systemctl restart`"
@@ -1638,11 +1718,11 @@ msgstr ""
 "在 `systemctl restart` 之前，在单元的工作目录里、用它的环境执行 `.venv/bin/python -m "
 "migrations upgrade`"
 
-#: ../developer/deployment.md:655
+#: ../developer/deployment.md:699
 msgid "Rules for your own deploy script:"
 msgstr "自己编写部署脚本时的规则："
 
-#: ../developer/deployment.md:657
+#: ../developer/deployment.md:701
 msgid ""
 "Migrate with the same image, by digest, that you start. Images with "
 "versioned migrations carry the label "
@@ -1651,7 +1731,7 @@ msgstr ""
 "用将要启动的同一个镜像（按摘要）执行迁移。带版本化迁移的镜像有 "
 "`org.hybridinference.schema.migrations=alembic` 标签。"
 
-#: ../developer/deployment.md:659
+#: ../developer/deployment.md:703
 msgid ""
 "Use a one-off container with `--no-deps`, and check yourself that the "
 "database is up; otherwise Compose may recreate the database first. If the"
@@ -1664,7 +1744,7 @@ msgstr ""
 "`ipv4_address`，请给迁移单独定义一个服务（相同镜像和 `DB_*` 设置，只接入数据库所在网络，并放在一个 profile 中，让 "
 "`up` 永远不会启动它），否则 Docker 会以 `Address already in use` 拒绝。"
 
-#: ../developer/deployment.md:664
+#: ../developer/deployment.md:708
 msgid ""
 "If the script arrives on stdin (`ssh host bash -s`), run the one-off with"
 " `</dev/null`; `compose run` reads stdin even with `-T` and swallows the "
@@ -1673,70 +1753,70 @@ msgstr ""
 "如果脚本是通过 stdin 传入的（`ssh host bash -s`），运行一次性容器时加上 `</dev/null`；`compose "
 "run` 即使加了 `-T` 也会读取 stdin，吞掉脚本的剩余部分。"
 
-#: ../developer/deployment.md:667
+#: ../developer/deployment.md:711
 msgid ""
 "Do not run migrations on every start (a `service_completed_successfully` "
 "dependency, an init container): every restart would wait on table locks."
 msgstr "不要在每次启动时都运行迁移（`service_completed_successfully` 依赖、init 容器）：每次重启都会等待表锁。"
 
-#: ../developer/deployment.md:669
+#: ../developer/deployment.md:713
 msgid ""
 "If the step fails, stop. Exit status 75 means a lock was not available in"
 " time; run it again later."
 msgstr "这一步失败时就停下来。退出码 75 表示没能及时拿到锁；稍后再运行一次。"
 
-#: ../developer/deployment.md:672
+#: ../developer/deployment.md:716
 msgid ""
 "The backend refuses to start on an unmigrated database, so a missed step "
 "shows up as a failed start. Have the step working before the first image "
 "with the label arrives."
 msgstr "后端拒绝在未迁移的数据库上启动，所以漏掉这一步会表现为启动失败。在第一个带该标签的镜像到来之前，让这一步先跑通。"
 
-#: ../developer/deployment.md:676
+#: ../developer/deployment.md:720
 msgid "Troubleshooting"
 msgstr "故障排查"
 
-#: ../developer/deployment.md:678
+#: ../developer/deployment.md:722
 msgid "A service will not start"
 msgstr "某个服务起不来"
 
-#: ../developer/deployment.md:628
+#: ../developer/deployment.md:672
 msgid "Message"
 msgstr "消息"
 
-#: ../developer/deployment.md:628
+#: ../developer/deployment.md:672
 msgid "Fix"
 msgstr "解决办法"
 
-#: ../developer/deployment.md:628
+#: ../developer/deployment.md:672
 msgid ""
 "`required variable DB_NAME is missing a value: DB_NAME must be set in "
 ".env file`"
 msgstr ""
 
-#: ../developer/deployment.md:628
+#: ../developer/deployment.md:672
 msgid ""
 "Compose stopped before starting anything. Set `DB_NAME`, `DB_USER` and "
 "`DB_PASSWORD` in `.env`"
 msgstr "Compose 在启动任何服务之前就停止了。在 `.env` 中设置 `DB_NAME`、`DB_USER` 和 `DB_PASSWORD`"
 
-#: ../developer/deployment.md:628
+#: ../developer/deployment.md:672
 msgid "Port already in use"
 msgstr "端口已被占用"
 
-#: ../developer/deployment.md:628
+#: ../developer/deployment.md:672
 msgid "Override `BACKEND_PORT`, `FRONTEND_PORT` or `DB_PORT` in `.env`"
 msgstr "在 `.env` 中改用其他 `BACKEND_PORT`、`FRONTEND_PORT` 或 `DB_PORT`"
 
-#: ../developer/deployment.md:628
+#: ../developer/deployment.md:672
 msgid "Database connection failed"
 msgstr "数据库连接失败"
 
-#: ../developer/deployment.md:628
+#: ../developer/deployment.md:672
 msgid "Check the `postgres` health in `make ps`"
 msgstr "在 `make ps` 中检查 `postgres` 的健康状态"
 
-#: ../developer/deployment.md:628
+#: ../developer/deployment.md:672
 msgid ""
 "`The database records no schema version` or `The database is at revision "
 "…, behind this code's …`"
@@ -1744,13 +1824,13 @@ msgstr ""
 "`The database records no schema version` 或 `The database is at revision "
 "…, behind this code's …`"
 
-#: ../developer/deployment.md:628
+#: ../developer/deployment.md:672
 msgid ""
 "Run `make migrate` (or [your deployment's step](#applying-schema-"
 "migrations)), then start the backend"
 msgstr "运行 `make migrate`（或[你的部署方式对应的步骤](#applying-schema-migrations)），然后启动后端"
 
-#: ../developer/deployment.md:628
+#: ../developer/deployment.md:672
 msgid ""
 "`Configuration load failed after 3 attempts`, then `Authentication "
 "configuration incomplete`"
@@ -1758,27 +1838,27 @@ msgstr ""
 "`Configuration load failed after 3 attempts`，之后是 `Authentication "
 "configuration incomplete`"
 
-#: ../developer/deployment.md:628
+#: ../developer/deployment.md:672
 msgid ""
 "The backend could not read its settings from the database. Fix the "
 "connection; do not add secrets to `.env`"
 msgstr "后端无法从数据库读取设置项。修好数据库连接；不要把密钥写进 `.env`"
 
-#: ../developer/deployment.md:628
+#: ../developer/deployment.md:672
 msgid "The console shows a configuration error with a retry button"
 msgstr "控制台显示带重试按钮的配置错误"
 
-#: ../developer/deployment.md:628
+#: ../developer/deployment.md:672
 msgid ""
 "The console could not get a valid `/site-config` from the backend within "
 "three seconds. Check the frontend logs and the backend, then retry"
 msgstr "控制台没能在三秒内从后端拿到有效的 `/site-config`。检查前端日志和后端，然后重试"
 
-#: ../developer/deployment.md:694
+#: ../developer/deployment.md:738
 msgid "A monitor or service account is suddenly getting 429s"
 msgstr "监控或服务账号突然开始收到 429"
 
-#: ../developer/deployment.md:696
+#: ../developer/deployment.md:740
 msgid ""
 "`Too many authentication failures from this IP. Temporarily blocked.` is "
 "the gateway's own abuse defense. A source with "
@@ -1791,7 +1871,7 @@ msgstr ""
 "`AUTH_FAILURE_BLOCK_THRESHOLD` 次（默认一天 200 次）的来源会被拒绝 "
 "`AUTH_FAILURE_BLOCK_DURATION_SEC`（一天）。"
 
-#: ../developer/deployment.md:701
+#: ../developer/deployment.md:745
 msgid ""
 "It usually hits a caller you own whose key was rotated or revoked. The "
 "block is checked before the key, so fixing the credential does not lift "
@@ -1806,11 +1886,11 @@ msgstr ""
 "`ip_blocked` 行出现在 **Recent Requests** 中，写明 key "
 "背后的账号及其状态（`revoked`、`expired`、`user_suspended`）。没有用户的行表示未能解析，并不能证明是陌生人。"
 
-#: ../developer/deployment.md:709
+#: ../developer/deployment.md:753
 msgid "Fix the credential, then clear the block:"
 msgstr "修好凭据，然后解除封禁："
 
-#: ../developer/deployment.md:724
+#: ../developer/deployment.md:768
 msgid ""
 "`cleared: false` means nothing was blocked. To exempt a source "
 "permanently, list it in `AUTH_FAILURE_BLOCK_EXEMPT_IPS` (comma-separated "
@@ -1821,11 +1901,11 @@ msgstr ""
 "`AUTH_FAILURE_BLOCK_EXEMPT_IPS`（逗号分隔的地址或 CIDR）。封禁列表保存在每个进程的内存中：重启会清空它，多个 "
 "worker 各自维护一份。"
 
-#: ../developer/deployment.md:729
+#: ../developer/deployment.md:773
 msgid "Resetting the stack"
 msgstr "重置这套服务栈"
 
-#: ../developer/deployment.md:731
+#: ../developer/deployment.md:775
 msgid ""
 "`make down && make up` keeps the data. To start with an empty database, "
 "remove the volume by name. `docker compose down -v` does not remove it, "
@@ -1835,14 +1915,14 @@ msgstr ""
 "`make down && make up` 会保留数据。要从空数据库开始，请按名称删除卷。`docker compose down -v` "
 "不会删除它，因为它被声明为 `external: true`，`make up` 会带着同样的数据回来："
 
-#: ../developer/deployment.md:741
+#: ../developer/deployment.md:785
 msgid ""
 "The backend then starts as a new deployment: new secrets unless `.env` "
 "supplies them, the settings `.env` still holds imported, and a new setup "
 "code."
 msgstr "随后后端会像新部署一样启动：除非 `.env` 提供，否则生成新的密钥，导入 `.env` 中仍有的设置项，并打印新的设置码。"
 
-#: ../developer/deployment.md:745
+#: ../developer/deployment.md:789
 msgid ""
 "`docker volume rm` is irreversible and takes every account, API key, "
 "request log and stored setting with it. Take a `pg_dump` first if any of "
@@ -1851,9 +1931,8 @@ msgstr ""
 "`docker volume rm` 不可逆，所有账号、API key、请求日志和已存储的设置项都会随之删除。只要其中有任何数据还有用，先做一次 "
 "`pg_dump`。"
 
-#: ../developer/deployment.md:749
+#: ../developer/deployment.md:793
 msgid ""
 "pgAdmin's volume is separate; see [Resetting pgAdmin](database.md"
 "#resetting-pgadmin)."
 msgstr "pgAdmin 的卷是单独的；见[重置 pgAdmin](database.md#resetting-pgadmin)。"
-
