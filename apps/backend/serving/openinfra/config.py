@@ -10,11 +10,13 @@
   that one engine replaced another: one endpoint may serve several models, and
   the same localhost endpoint repeats across hosts.
 - ``OPENINFRA_RETENTION_DAYS``: how many days samples and request events stay
-  in the database (7 by default; 0 keeps them all).
+  in the database once their week is archived (7 by default; 0 keeps them
+  all).
 - ``OPENINFRA_ARCHIVE_DIR``: where each ended week is archived before it is
   deleted (:mod:`serving.openinfra.archive`). An environment setting, as a
-  path on the gateway's own filesystem is: unset, old rows are deleted
-  unarchived.
+  path on the gateway's own filesystem is. Unset, nothing is archived and
+  nothing deleted, unless ``OPENINFRA_DELETE_UNARCHIVED`` is on: then rows
+  past the retention are deleted unarchived.
 
 Publishing is the distribution's ``features.openinfra`` (:func:`published`).
 """
@@ -32,6 +34,7 @@ ENGINE_ORDER = "OPENINFRA_ENGINE_ORDER"
 RETIRED_ENGINES = "OPENINFRA_RETIRED_ENGINES"
 RETENTION_DAYS = "OPENINFRA_RETENTION_DAYS"
 ARCHIVE_DIR = "OPENINFRA_ARCHIVE_DIR"
+DELETE_UNARCHIVED = "OPENINFRA_DELETE_UNARCHIVED"
 #: The retention while the setting is unset or unreadable.
 DEFAULT_RETENTION_DAYS = 7
 
@@ -79,3 +82,8 @@ def archive_dir() -> Path | None:
     """The directory weeks are archived to, or ``None`` when there is none."""
     raw = os.environ.get(ARCHIVE_DIR, "").strip()
     return Path(raw) if raw else None
+
+
+def delete_unarchived() -> bool:
+    """Whether rows past the retention are deleted while there is no archive directory."""
+    return (config_value(DELETE_UNARCHIVED) or "").strip() not in ("", "0")

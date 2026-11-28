@@ -1,4 +1,4 @@
-"""The scheduled OpenInfra maintenance: one replica at a time, in order, never raising."""
+"""The scheduled OpenInfra jobs: one replica at a time, in order, never raising."""
 
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ def steps(monkeypatch):
 
     async def archive_weeks(conn, directory, now):
         taken.append(("archive", directory, now))
-        return []
+        return [now]
 
     async def prune(conn, now, days, *, archived_only):
         taken.append(("prune", now, days, archived_only))
@@ -65,43 +65,32 @@ def steps(monkeypatch):
     monkeypatch.setattr(archive, "prune", prune)
     monkeypatch.setattr(config, "retention_days", lambda: 7)
     monkeypatch.setattr(config, "archive_dir", lambda: None)
+    monkeypatch.setattr(config, "delete_unarchived", lambda: False)
     return taken
 
 
 @pytest.mark.asyncio
-async def test_a_run_refreshes_prunes_and_releases_the_lock(steps):
+async def test_without_an_archive_directory_nothing_is_deleted(steps):
     conn = FakeConn(locked=True)
     assert await maintenance.run_maintenance(FakePool(conn), now=42) is True
-    # Without an archive directory: no archive, and old rows go unarchived.
-    assert steps == [("convert",), ("rollups", 42), ("prune", 42, 7, False)]
+    assert steps == [("convert",), ("rollups", 42)]
     assert "pg_try_advisory_lock" in conn.calls[0]
     assert "pg_advisory_unlock" in conn.calls[-1]
 
 
 @pytest.mark.asyncio
-async def test_with_an_archive_directory_only_archived_weeks_are_pruned(steps, monkeypatch):
-    monkeypatch.setattr(config, "archive_dir", lambda: Path("/archive"))
+async def test_deleting_unarchived_rows_takes_the_switch(steps, monkeypatch):
+    monkeypatch.setattr(config, "delete_unarchived", lambda: True)
     await maintenance.run_maintenance(FakePool(FakeConn(locked=True)), now=42)
-    assert steps == [
-        ("convert",),
-        ("rollups", 42),
-        ("archive", Path("/archive"), 42),
-        ("prune", 42, 7, True),
-    ]
+    assert steps == [("convert",), ("rollups", 42), ("prune", 42, 7, False)]
 
 
 @pytest.mark.asyncio
-async def test_a_failed_archive_is_logged_and_the_run_goes_on(steps, monkeypatch, caplog):
-    async def failing(conn, directory, now):
-        raise OSError("read-only file system")
-
+async def test_with_an_archive_directory_only_archived_weeks_are_deleted(steps, monkeypatch):
     monkeypatch.setattr(config, "archive_dir", lambda: Path("/archive"))
-    monkeypatch.setattr(archive, "archive_ended_weeks", failing)
-    conn = FakeConn(locked=True)
-    assert await maintenance.run_maintenance(FakePool(conn), now=42) is True
+    await maintenance.run_maintenance(FakePool(FakeConn(locked=True)), now=42)
+    # Archiving is a job of its own: a long one never holds up the rollups.
     assert steps == [("convert",), ("rollups", 42), ("prune", 42, 7, True)]
-    assert "openinfra archive to /archive failed" in caplog.text
-    assert "pg_advisory_unlock" in conn.calls[-1]
 
 
 @pytest.mark.asyncio
@@ -109,6 +98,7 @@ async def test_a_failed_refresh_deletes_nothing(steps, monkeypatch):
     async def failing(conn, now):
         raise RuntimeError("down")
 
+    monkeypatch.setattr(config, "archive_dir", lambda: Path("/archive"))
     monkeypatch.setattr(store, "refresh_rollups", failing)
     conn = FakeConn(locked=True)
     with pytest.raises(RuntimeError):
@@ -126,24 +116,57 @@ async def test_a_replica_that_cannot_lock_skips_its_turn(steps):
 
 
 @pytest.mark.asyncio
-async def test_the_job_logs_a_failure_and_still_unlocks(steps, monkeypatch):
-    async def failing(conn, now):
-        raise RuntimeError("down")
-
-    monkeypatch.setattr(store, "refresh_rollups", failing)
+async def test_the_archive_run_holds_its_own_lock(steps, monkeypatch):
+    monkeypatch.setattr(config, "archive_dir", lambda: Path("/archive"))
     conn = FakeConn(locked=True)
-    await maintenance.maintenance_job(FakePool(conn))  # does not raise
-    assert "pg_advisory_unlock" in conn.calls[-1]
+    assert await maintenance.run_archive(FakePool(conn), now=42) == [42]
+    assert steps == [("archive", Path("/archive"), 42)]
+    assert conn.calls[0] == archive.TRY_LOCK_SQL
+    assert conn.calls[-1] == archive.UNLOCK_SQL
+    assert "openinfra-archive" in archive.TRY_LOCK_SQL
 
 
-def test_the_job_is_registered_every_five_minutes():
+@pytest.mark.asyncio
+async def test_the_archive_run_skips_without_a_directory_or_the_lock(steps, monkeypatch):
+    conn = FakeConn(locked=True)
+    assert await maintenance.run_archive(FakePool(conn), now=42) == []
+    assert conn.calls == []
+    monkeypatch.setattr(config, "archive_dir", lambda: Path("/archive"))
+    assert await maintenance.run_archive(FakePool(FakeConn(locked=False)), now=42) is None
+    assert steps == []
+
+
+@pytest.mark.asyncio
+async def test_the_jobs_log_a_failure_and_still_unlock(steps, monkeypatch, caplog):
+    async def failing(*args):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(config, "archive_dir", lambda: Path("/archive"))
+    monkeypatch.setattr(store, "refresh_rollups", failing)
+    monkeypatch.setattr(archive, "archive_ended_weeks", failing)
+    conn = FakeConn(locked=True)
+    await maintenance.maintenance_job(FakePool(conn))  # neither raises
+    assert conn.calls[-1].startswith("SELECT pg_advisory_unlock")
+    await maintenance.archive_job(FakePool(conn))
+    assert conn.calls[-1] == archive.UNLOCK_SQL
+    assert "openinfra archive to /archive failed" in caplog.text
+
+
+def test_both_jobs_are_registered():
     class Scheduler:
+        def __init__(self):
+            self.jobs = {}
+
         def add_job(self, func, **kwargs):
-            self.func, self.kwargs = func, kwargs
+            self.jobs[kwargs["id"]] = (func, kwargs)
 
     scheduler = Scheduler()
     maintenance.register_maintenance_job(scheduler, object())
-    assert scheduler.func is maintenance.maintenance_job
-    assert scheduler.kwargs["id"] == "openinfra_maintenance"
-    assert str(scheduler.kwargs["trigger"].fields[6]) == "1-59/5"  # minute
-    assert scheduler.kwargs["max_instances"] == 1
+    func, kwargs = scheduler.jobs["openinfra_maintenance"]
+    assert func is maintenance.maintenance_job
+    assert str(kwargs["trigger"].fields[6]) == "1-59/5"  # minute
+    assert kwargs["max_instances"] == 1
+    func, kwargs = scheduler.jobs["openinfra_archive"]
+    assert func is maintenance.archive_job
+    assert str(kwargs["trigger"].fields[6]) == "7"
+    assert kwargs["max_instances"] == 1

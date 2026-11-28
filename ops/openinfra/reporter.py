@@ -26,6 +26,7 @@ Python of a GPU host. See docs/developer/openinfra.md.
 from __future__ import annotations
 
 import argparse
+import atexit
 import datetime
 import json
 import math
@@ -1412,7 +1413,9 @@ class PcieMonitor:
     one-second interval. One long-running dmon prints a line per GPU every
     second instead, read here as it comes. It starts on the first call to
     :meth:`latest`, and is started again 10 s after it exits; without
-    ``nvidia-smi`` it gives up.
+    ``nvidia-smi`` it gives up. It is stopped when the reporter exits, and
+    should the reporter be killed instead, it ends at its next line, which
+    no longer has anywhere to go.
     """
 
     #: A reading older than this is not reported.
@@ -1422,12 +1425,14 @@ class PcieMonitor:
         self._lock = threading.Lock()
         self._latest: dict[int, tuple[float, dict[str, float]]] = {}
         self._thread: threading.Thread | None = None
+        self._proc: subprocess.Popen[str] | None = None
 
     def latest(self) -> dict[int, dict[str, float]]:
         """The readings of the last few seconds, by GPU index; empty until dmon prints."""
         if self._thread is None:
             self._thread = threading.Thread(target=self._run, name="pcie-dmon", daemon=True)
             self._thread.start()
+            atexit.register(self.stop)
         now = time.monotonic()
         with self._lock:
             return {
@@ -1435,6 +1440,12 @@ class PcieMonitor:
                 for idx, (at, values) in self._latest.items()
                 if now - at <= self.MAX_AGE_S
             }
+
+    def stop(self) -> None:
+        """End the running dmon, if any."""
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
 
     def _run(self) -> None:
         while True:
@@ -1447,6 +1458,7 @@ class PcieMonitor:
                 )
             except OSError:
                 return
+            self._proc = proc
             assert proc.stdout is not None
             for line in proc.stdout:
                 parsed = parse_dmon_line(line)
@@ -2123,7 +2135,7 @@ def flush(
         body["sglang"] = engines
     if gpus or engines or not args.skip_gpu:
         result = post(args.dashboard, args.token, body)
-        if log:
+        if log or result.get("requests_dropped"):
             print(
                 f"flush gpus interval={elapsed:.1f}s "
                 f"cpu={node_meta.get('cpu', {}).get('cpu_util_pct')} "

@@ -1,32 +1,39 @@
 """Weekly archives of OpenInfra's tables, and the retention that deletes old samples.
 
 **Weeks.** A week runs from Monday 00:00 UTC to the next (:func:`week_start`).
-Once one has ended and :data:`ARCHIVE_GRACE_MS` has passed, the scheduler
-writes it to ``<OPENINFRA_ARCHIVE_DIR>/<YYYY-MM-DD>/``, named for its Monday:
+Once one has ended and :data:`ARCHIVE_GRACE_MS` has passed, the hourly archive
+job writes it to ``<OPENINFRA_ARCHIVE_DIR>/<YYYY-MM-DD>/``, named for its Monday:
 one gzip-compressed CSV file per table, with a header row, and
 ``manifest.json`` (the week, and each file's rows and bytes). Each week holds
 its samples, request events and rollups, and the host, GPU and engine rows as
 they were when it was written, so it can be read on its own. The files go to
 a hidden directory beside it first and are renamed into place once complete,
 so a week's directory is either whole or absent; the week is then recorded in
-``openinfra_archives``. A week with nothing in it is skipped.
+``openinfra_archives``, with the host that wrote it. A week with nothing in it
+is skipped.
 
 Nothing reaches an archived week afterwards: a snapshot's samples are stored
 within :data:`~serving.openinfra.store.MAX_CLOCK_SKEW_MS` of the gateway's
-clock, and a request event older than
+clock, a request event older than
 :data:`~serving.openinfra.store.MAX_REQUEST_AGE_MS` is dropped, both well
-inside the grace period, and the D1 import leaves archived weeks alone.
+inside the grace period, and the D1 import holds the archive lock and leaves
+archived weeks alone. So each table is read in short transactions, a key at a
+time, rather than in one snapshot that would hold back vacuum for the whole
+week; only the host, GPU and engine rows, which every snapshot changes, are
+read together.
 
 **Retention.** Samples and request events older than ``OPENINFRA_RETENTION_DAYS``
 (7 by default; 0 keeps everything) are deleted, in batches. While there is an
 archive directory, only rows of weeks already archived are, so nothing leaves
-the database before it is on disk; without one they are deleted unarchived.
-Live rows, rollups and archive records are kept.
+the database before it is on disk; without one, only while
+``OPENINFRA_DELETE_UNARCHIVED`` is on. Live rows, rollups and archive records
+are kept.
 
-The scheduler runs both after the rollups (:mod:`serving.openinfra.maintenance`).
+The archive job and the retention run on the scheduler
+(:mod:`serving.openinfra.maintenance`), under locks of their own.
 ``python -m serving.openinfra.archive`` lists the archived weeks, or with
-``--run`` archives and prunes once, from an environment with the gateway's
-``DB_*`` settings.
+``--run`` runs both once, from an environment with the gateway's ``DB_*``
+settings.
 """
 
 from __future__ import annotations
@@ -37,6 +44,7 @@ import gzip
 import json
 import os
 import shutil
+import socket
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -68,6 +76,13 @@ _COMPRESS_CHUNK = 1 << 20
 _EXPORT_WORK_MEM = "128MB"
 MANIFEST = "manifest.json"
 FORMAT = "openinfra-archive/1"
+
+#: The advisory lock an archive run holds, and the D1 import with it, so no
+#: week is archived while rows are being imported into it; session-scoped.
+_LOCK_KEY = "hashtextextended('hybridinference:openinfra-archive', 0)"
+TRY_LOCK_SQL = f"SELECT pg_try_advisory_lock({_LOCK_KEY})"
+LOCK_SQL = f"SELECT pg_advisory_lock({_LOCK_KEY})"
+UNLOCK_SQL = f"SELECT pg_advisory_unlock({_LOCK_KEY})"
 
 
 class ArchiveError(RuntimeError):
@@ -240,8 +255,18 @@ def _copied(status: str) -> int:
     return int(status.split()[-1])
 
 
+async def _copy_sorted(conn: Any, query: str, *args: Any, output: Any) -> int:
+    """COPY *query*'s rows as CSV, in a transaction of its own with room to sort; how many."""
+    async with conn.transaction():
+        await conn.execute(f"SET LOCAL work_mem = '{_EXPORT_WORK_MEM}'")
+        return _copied(await conn.copy_from_query(query, *args, output=output, format="csv"))
+
+
 async def _export(conn: Any, table: Table, path: Path, start: int, end: int) -> int:
-    """Write *table*'s rows of the week [start, end) to *path*; the number of rows."""
+    """Write *table*'s rows of the week [start, end) to *path*; the number of rows.
+
+    A table with no time column is written whole, in the caller's transaction.
+    """
     out = _CompressedFile(path)
     try:
         # The header, from a query that matches nothing.
@@ -255,28 +280,27 @@ async def _export(conn: Any, table: Table, path: Path, start: int, end: int) -> 
             )
             rows = _copied(status)
         elif table.key is None:
-            status = await conn.copy_from_query(
+            rows = await _copy_sorted(
+                conn,
                 f"SELECT * FROM {table.name} WHERE {table.time} >= $1 AND {table.time} < $2 "
                 f"ORDER BY {table.time}",
                 table.bound(start),
                 table.bound(end),
                 output=out.write,
-                format="csv",
             )
-            rows = _copied(status)
         else:
-            # One key at a time: each an index range scan, already in order.
+            # One key at a time: each an index range scan, already in order, in
+            # a short transaction of its own.
             for key in await table_keys(conn, table):
-                status = await conn.copy_from_query(
+                rows += await _copy_sorted(
+                    conn,
                     f"SELECT * FROM {table.name} WHERE {table.key} = $1 "
                     f"AND {table.time} >= $2 AND {table.time} < $3 ORDER BY {table.time}",
                     key,
                     table.bound(start),
                     table.bound(end),
                     output=out.write,
-                    format="csv",
                 )
-                rows += _copied(status)
     except BaseException:
         out.discard()
         raise
@@ -310,12 +334,17 @@ def _read_manifest(directory: Path) -> dict[str, Any] | None:
     return manifest if isinstance(manifest, dict) else None
 
 
+def location_of(path: Path) -> str:
+    """Where a week is recorded as written: this host's name and the path on it."""
+    return f"{socket.gethostname()}:{path}"
+
+
 async def _record(conn: Any, start: int, location: Path, rows: dict[str, int], now: int) -> None:
     await conn.execute(
         "INSERT INTO openinfra_archives (week_start, location, tables, archived_at) "
         "VALUES ($1, $2, $3::jsonb, $4) ON CONFLICT (week_start) DO NOTHING",
         start,
-        str(location),
+        location_of(location),
         json.dumps(rows, sort_keys=True),
         now,
     )
@@ -350,17 +379,22 @@ async def archive_week(conn: Any, directory: Path, start: int, now: int) -> dict
     rows: dict[str, int] = {}
     files: dict[str, dict[str, Any]] = {}
     try:
-        # One snapshot of the tables for the whole week.
+
+        async def export(table: Table) -> None:
+            path = partial / f"{table.name}.csv.gz"
+            rows[table.name] = await _export(conn, table, path, start, end)
+            files[table.name] = {"file": path.name, "rows": rows[table.name]}
+            files[table.name]["bytes"] = path.stat().st_size
+
+        # An ended week no longer changes, so its tables need no common snapshot.
+        for table in TABLES:
+            if table.time is not None:
+                await export(table)
+        # The live host, GPU and engine rows do: read together, they agree.
         async with conn.transaction(isolation="repeatable_read", readonly=True):
-            await conn.execute(f"SET LOCAL work_mem = '{_EXPORT_WORK_MEM}'")
             for table in TABLES:
-                path = partial / f"{table.name}.csv.gz"
-                rows[table.name] = await _export(conn, table, path, start, end)
-                files[table.name] = {
-                    "file": path.name,
-                    "rows": rows[table.name],
-                    "bytes": path.stat().st_size,
-                }
+                if table.time is None:
+                    await export(table)
         manifest = {
             "format": FORMAT,
             "week_start": _iso(start),
@@ -484,7 +518,10 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--run",
         action="store_true",
-        help="archive and prune once, with OPENINFRA_ARCHIVE_DIR and OPENINFRA_RETENTION_DAYS",
+        help=(
+            "refresh the rollups, archive and apply the retention once, as the scheduler does "
+            "(OPENINFRA_ARCHIVE_DIR, OPENINFRA_RETENTION_DAYS, OPENINFRA_DELETE_UNARCHIVED)"
+        ),
     )
     return parser.parse_args(argv)
 
@@ -495,7 +532,7 @@ async def _main(args: argparse.Namespace) -> int:
     from serving.config.settings import get_settings
     from serving.openinfra import config
     from serving.openinfra.dashboard import now_ms
-    from serving.openinfra.maintenance import run_maintenance
+    from serving.openinfra.maintenance import run_archive, run_maintenance
 
     settings = get_settings()
     pool = await asyncpg.create_pool(
@@ -509,15 +546,28 @@ async def _main(args: argparse.Namespace) -> int:
         server_settings={"application_name": "openinfra_archive"},
     )
     try:
-        if args.run and not await run_maintenance(pool, now_ms()):
-            print("Another run holds the lock; try again shortly.")
-            return 1
+        if args.run:
+            # The rollups first, then the archive, then the retention again for
+            # what was just archived.
+            ran = (
+                await run_maintenance(pool, now_ms())
+                and await run_archive(pool, now_ms()) is not None
+                and await run_maintenance(pool, now_ms())
+            )
+            if not ran:
+                print("Another run holds a lock; try again shortly.")
+                return 1
         async with pool.acquire() as conn:
             weeks = await archived_weeks(conn)
     finally:
         await pool.close()
     directory = config.archive_dir()
-    print(f"Archive directory: {directory or '(none: old rows are deleted unarchived)'}")
+    if directory is not None:
+        print(f"Archive directory: {directory}")
+    elif config.delete_unarchived():
+        print("Archive directory: none; rows past the retention are deleted unarchived")
+    else:
+        print("Archive directory: none; nothing is archived or deleted")
     days = config.retention_days()
     print(f"Retention: {f'{days} days' if days else 'none (everything is kept)'}")
     if not weeks:

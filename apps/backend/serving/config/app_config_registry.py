@@ -1663,12 +1663,22 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     ConfigEntry(
         "OPENINFRA_RETENTION_DAYS",
         "integrations",
-        "Days the per-second OpenInfra samples and request events stay in the database. "
-        "With OPENINFRA_ARCHIVE_DIR set, a week is deleted only once it is archived; "
-        "without it, old rows are deleted unarchived. Rollups are kept. 0 keeps everything.",
+        "Days the per-second OpenInfra samples and request events stay in the database "
+        "once their week is archived to OPENINFRA_ARCHIVE_DIR. Rollups are kept. 0 keeps "
+        "everything.",
         type="int",
         default="7",
         minimum=0,
+    ),
+    ConfigEntry(
+        "OPENINFRA_DELETE_UNARCHIVED",
+        "integrations",
+        "Delete OpenInfra samples and request events past OPENINFRA_RETENTION_DAYS even "
+        "while OPENINFRA_ARCHIVE_DIR is unset, so they are never archived. Off, a gateway "
+        "without an archive directory keeps them all.",
+        type="bool",
+        default="0",
+        flag=True,
     ),
     ConfigEntry(
         "RAG_API_KEY",

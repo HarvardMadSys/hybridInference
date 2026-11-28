@@ -135,3 +135,22 @@ async def test_a_reported_snapshot_is_on_the_page(client):
     assert [r["utilization_pct"] for r in rows["gpu"]] == [77.0]
     assert [r["running"] for r in rows["sglang"]] == [4.0]
     assert [r["cpu_util_pct"] for r in rows["cpu"]] == [12.5]
+
+
+async def test_dropped_request_events_are_counted_in_the_answer(client, caplog):
+    taken = int(time.time() * 1000)
+    snapshot = {
+        "ts": taken,
+        "sglang": [
+            {
+                "server": {"id": "e", "node_id": "node-a"},
+                "metrics": {"num_running_reqs": 1},
+                "requests": [{"ts": taken - 3_600_000, "input_len": 5}, {"input_len": 6}],
+            }
+        ],
+    }
+    stored = await client.post(
+        "/internal/openinfra/ingest", json=snapshot, headers={"Authorization": f"Bearer {TOKEN}"}
+    )
+    assert stored.json() == {"ok": True, "gpus": 0, "sglang": 1, "requests_dropped": 1}
+    assert "dropped 1 request events" in caplog.text

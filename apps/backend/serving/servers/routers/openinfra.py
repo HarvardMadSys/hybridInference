@@ -274,4 +274,14 @@ async def ingest(request: Request, db=Depends(get_db_logger)) -> dict[str, Any]:
     except Exception:
         logger.warning("openinfra ingest failed", exc_info=True)
         raise error(status.HTTP_503_SERVICE_UNAVAILABLE, "unavailable", _UNAVAILABLE) from None
-    return {"ok": True, "gpus": len(write.gpus), "sglang": len(write.engines)}
+    answer: dict[str, Any] = {"ok": True, "gpus": len(write.gpus), "sglang": len(write.engines)}
+    if write.requests_dropped:
+        # Request events go once a minute, so this is at most a line a minute a host.
+        logger.warning(
+            "openinfra ingest from %s: dropped %d request events more than 15 minutes older, "
+            "or a minute newer, than their snapshot",
+            write.node[0] if write.node else "an engine",
+            write.requests_dropped,
+        )
+        answer["requests_dropped"] = write.requests_dropped
+    return answer

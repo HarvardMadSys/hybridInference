@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import gzip
 import json
+import socket
 
 import pytest
 import pytest_asyncio
@@ -95,7 +96,8 @@ async def test_an_ended_week_is_written_whole_and_recorded(pool, tmp_path):
         weeks = await archive.archived_weeks(conn)
         again = await archive.archive_ended_weeks(conn, tmp_path, READY + 60_000)
     assert list(weeks) == [WEEK]
-    assert weeks[WEEK]["location"] == str(week_dir)
+    # Which host wrote it, and where.
+    assert weeks[WEEK]["location"] == f"{socket.gethostname()}:{week_dir}"
     assert weeks[WEEK]["tables"]["openinfra_gpu_samples"] == 2
     assert again == []
     # Archiving deletes nothing.
@@ -219,6 +221,33 @@ async def test_without_an_archive_everything_past_the_retention_goes(pool, monke
     assert await count(pool, "openinfra_gpu_samples") == 1
 
 
+async def test_without_an_archive_or_the_switch_the_scheduled_run_keeps_everything(
+    pool, monkeypatch
+):
+    monkeypatch.setattr(config, "archive_dir", lambda: None)
+    monkeypatch.setattr(config, "retention_days", lambda: 7)
+    monkeypatch.setattr(config, "delete_unarchived", lambda: False)
+    await ingest(pool, WEEK)
+    assert await maintenance.run_maintenance(pool, WEEK + 30 * DAY)
+    assert await count(pool, "openinfra_gpu_samples") == 1
+    monkeypatch.setattr(config, "delete_unarchived", lambda: True)
+    assert await maintenance.run_maintenance(pool, WEEK + 30 * DAY)
+    assert await count(pool, "openinfra_gpu_samples") == 0
+
+
+async def test_an_archive_run_is_skipped_while_another_holds_the_lock(pool, tmp_path, monkeypatch):
+    """One archive run at a time; the D1 import takes the same lock."""
+    monkeypatch.setattr(config, "archive_dir", lambda: tmp_path)
+    await ingest(pool, WEEK + HOUR)
+    async with pool.acquire() as holder:
+        await holder.execute(archive.LOCK_SQL)
+        try:
+            assert await maintenance.run_archive(pool, READY) is None
+        finally:
+            await holder.execute(archive.UNLOCK_SQL)
+    assert await maintenance.run_archive(pool, READY) == [WEEK]
+
+
 async def test_zero_days_keeps_everything(pool):
     await ingest(pool, WEEK)
     async with pool.acquire() as conn:
@@ -227,13 +256,18 @@ async def test_zero_days_keeps_everything(pool):
     assert await count(pool, "openinfra_gpu_samples") == 1
 
 
-async def test_the_scheduled_run_archives_then_prunes(pool, tmp_path, monkeypatch):
+async def test_the_scheduled_runs_archive_then_prune(pool, tmp_path, monkeypatch):
     monkeypatch.setattr(config, "archive_dir", lambda: tmp_path / "archive")
     monkeypatch.setattr(config, "retention_days", lambda: 7)
     await ingest(pool, WEEK + HOUR)
     await ingest(pool, NEXT + 7 * DAY)
+    now = NEXT + 7 * DAY + archive.ARCHIVE_GRACE_MS
 
-    assert await maintenance.run_maintenance(pool, NEXT + 7 * DAY + archive.ARCHIVE_GRACE_MS)
+    # The maintenance run alone deletes nothing that is not archived.
+    assert await maintenance.run_maintenance(pool, now)
+    assert await count(pool, "openinfra_gpu_samples") == 2
+    assert await maintenance.run_archive(pool, now) == [WEEK]
+    assert await maintenance.run_maintenance(pool, now)
 
     assert (tmp_path / "archive" / "2027-01-11" / "manifest.json").exists()
     async with pool.acquire() as conn:

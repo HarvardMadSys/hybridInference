@@ -33,8 +33,8 @@ browser ──/openinfra──▶ console page ──GET /public-openinfra, /pub
   route itself; the console only relays it (see
   [The Public Path Table](public-path-table.md)).
 - **Any gateway replica can take a snapshot.** Replicas share the database,
-  and the maintenance job (rollups, archives, retention) runs on one replica at
-  a time.
+  and each scheduled job (rollups and retention, archives) runs on one replica
+  at a time.
 - **The routing engine does not read these metrics.** They feed the page only.
 
 ## Turning it on
@@ -58,7 +58,9 @@ browser ──/openinfra──▶ console page ──GET /public-openinfra, /pub
      rather than relying on one engine replacing another: one endpoint may serve
      several models, and the same localhost endpoint repeats across hosts.
    - `OPENINFRA_RETENTION_DAYS`: how many days the per-second samples and
-     request events stay in the database; 7 by default. See
+     request events stay in the database once their week is archived; 7 by
+     default. `OPENINFRA_DELETE_UNARCHIVED` deletes them past it even without
+     an archive. See
      [Retention and weekly archives](#retention-and-weekly-archives).
 
 ## Running a reporter on a GPU host
@@ -172,11 +174,14 @@ gateway address), `--token`, `--node-id`, `--hostname`, `--region`,
   is dropped. A body of the wrong shape is refused whole.
 - A body carries at most 64 GPUs and 16 engines, keeps 20 request events per
   engine, and is limited to 2 MiB. A request event more than 15 minutes older,
-  or more than a minute newer, than the snapshot is dropped.
+  or more than a minute newer, than the snapshot is dropped, both by the
+  reporter's clock, and counted in the answer's `requests_dropped`. While the
+  reporter's clock is off, its request events move with its samples onto the
+  gateway's time.
 
 | Answer | When |
 |---|---|
-| `200 {"ok": true, "gpus": N, "sglang": M}` | Committed |
+| `200 {"ok": true, "gpus": N, "sglang": M}` | Committed, with `"requests_dropped": K` when request events were dropped |
 | `400` | The body is not JSON, or not a snapshot; the message says why |
 | `401` | The token is missing or wrong. Checked before the body is read |
 | `404` | No token is configured: this deployment does not collect |
@@ -246,14 +251,15 @@ few megabytes a year per host and are kept.
 ## Retention and weekly archives
 
 Samples and request events older than `OPENINFRA_RETENTION_DAYS` (7 by
-default) are deleted by the same scheduled job, a few minutes' worth at a time;
-0 keeps everything. Live rows and rollups are kept, so the 24-hour and 7-day
-views reach back past the retention.
+default) are deleted by the maintenance job that refreshes the rollups, a few
+minutes' worth at a time; 0 keeps everything. Live rows and rollups are kept,
+so the 24-hour and 7-day views reach back past the retention.
 
 Before they go, each week is archived to `OPENINFRA_ARCHIVE_DIR`, a directory
 on the gateway's own filesystem and so an environment setting, not one under
-Admin. Once a week has ended (Monday 00:00 UTC) and an hour has passed, the job
-writes it to a directory named for its Monday:
+Admin. A job of its own, seven minutes past every hour, writes each week once it
+has ended (Monday 00:00 UTC) and an hour has passed, to a directory named for
+its Monday:
 
 ```text
 <OPENINFRA_ARCHIVE_DIR>/2026-11-16/
@@ -270,21 +276,25 @@ writes it to a directory named for its Monday:
 - **Nothing is deleted before it is archived.** While `OPENINFRA_ARCHIVE_DIR`
   is set, only weeks already archived are deleted, so a week stays in the
   database until it is on disk, however long the directory cannot be written.
-  Without it, old rows are deleted unarchived.
+  Without it nothing is deleted, unless `OPENINFRA_DELETE_UNARCHIVED` (an
+  Integrations setting, off by default) is on: then rows past the retention are
+  deleted unarchived.
 - **A week's directory is whole or absent.** It is written to a hidden
   directory beside it and renamed into place once complete, then recorded in
-  `openinfra_archives`. A week with nothing in it is skipped.
+  `openinfra_archives` with the host that wrote it. A week with nothing in it
+  is skipped. Each table is read a host, GPU or engine at a time, in short
+  transactions, so a long archive holds back neither vacuum nor the rollups.
 - **Docker Compose** sets it to `/app/var/data/openinfra-archive`, which is
   `var/data/openinfra-archive` in the deployment's checkout, outside the
   container. Set it to an empty value in the overlay to turn archiving off. A
   week of a host with eight GPUs and two engines compresses to roughly 200 MB;
   move old weeks elsewhere as you would any backup.
 - **More than one replica**: the job runs on whichever replica holds its lock,
-  so point the setting at storage every replica shares.
+  so point the setting at storage every replica shares, or run one gateway.
 
 `python -m serving.openinfra.archive` lists the weeks archived so far; with
-`--run` it archives and deletes once, as the job does. Run it where the gateway
-runs, with its `DB_*` settings and `OPENINFRA_ARCHIVE_DIR`.
+`--run` it refreshes the rollups, archives and deletes once, as the jobs do. Run
+it where the gateway runs, with its `DB_*` settings and `OPENINFRA_ARCHIVE_DIR`.
 
 The files are plain CSV: times are milliseconds since the Unix epoch, and a
 sample's `bucket` is its `ts` divided by 1000. To look at a week again, read
@@ -318,9 +328,10 @@ into the gateway. The snapshot format is the same; only the address changes.
    What the gateway already holds wins: a host, GPU or engine row or a rollup
    bucket it has is kept, and samples and request events are imported only
    from before each host's, GPU's or engine's first one in the gateway, and
-   never into a week already archived. The import can therefore run after the
-   switch, and again. Imported samples older than the retention are archived
-   and deleted by the job's next runs.
+   never into a week already archived; it holds the archive job's lock while it
+   runs. The import can therefore run after the switch, and again. Imported
+   samples older than the retention are archived and deleted by the jobs' next
+   runs.
 4. List the engines the Worker had retired in `OPENINFRA_RETIRED_ENGINES`.
 5. Turn on `features.openinfra`, send the old dashboard's address to
    `/openinfra`, and retire the Worker.

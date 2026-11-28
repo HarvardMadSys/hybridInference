@@ -15,7 +15,8 @@ were pointed at the gateway, and again: a host, GPU or engine row or a rollup
 bucket it has is kept, and a host's, GPU's or engine's samples and an engine's
 request events are imported only from before its first one here. Nothing is
 imported into a week already archived (:mod:`serving.openinfra.archive`): the
-archive would not have it, and the retention would delete it. Samples and
+archive would not have it, and the retention would delete it. The import holds
+the archive lock while it runs, so no week is archived under it. Samples and
 events older than the retention are deleted by the next scheduled run, once
 their week is archived. Engines the old dashboard had retired appear again
 unless ``OPENINFRA_RETIRED_ENGINES`` lists them.
@@ -343,7 +344,21 @@ async def import_table(
 
 
 async def run(path: Path, conn: Any, *, dry_run: bool = False) -> dict[str, tuple[int, int, int]]:
-    """Import every table of the export at *path*; per D1 table, (read, refused, skipped) rows."""
+    """Import every table of the export at *path*; per D1 table, (read, refused, skipped) rows.
+
+    Holds the archive lock throughout (waiting for an archive run to finish),
+    so no week is archived while rows are being imported into it.
+    """
+    if dry_run:
+        return await _run(path, conn, dry_run=True)
+    await conn.execute(archive.LOCK_SQL)
+    try:
+        return await _run(path, conn, dry_run=False)
+    finally:
+        await conn.execute(archive.UNLOCK_SQL)
+
+
+async def _run(path: Path, conn: Any, *, dry_run: bool) -> dict[str, tuple[int, int, int]]:
     results: dict[str, tuple[int, int, int]] = {}
     with open_source(path) as source:
         for table in TABLES:

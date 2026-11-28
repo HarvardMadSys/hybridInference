@@ -26,7 +26,7 @@ fallen behind, starts from its backfill horizon instead, and an hour older
 than the 20-minute horizon is computed from its samples. A rollup keeps the
 means of its bucket's samples, the number of samples, and for engines the
 sums of the request, cached-prefill, uncached-prefill and decode rates. A
-bucket whose samples have been deleted (:mod:`serving.openinfra.retention`)
+bucket whose samples have been deleted (:func:`serving.openinfra.archive.prune`)
 is never recomputed, so its rollup stays as it was.
 
 **Retired engines** (:func:`serving.openinfra.config.retired_engines`) stay
@@ -64,9 +64,9 @@ SAMPLE_MS = 1_000
 #: A snapshot's own time is used for its samples while it is this close to
 #: the gateway's clock; otherwise the gateway's time is.
 MAX_CLOCK_SKEW_MS = 60_000
-#: A request event older than this against its snapshot's time is dropped:
-#: it is not recent, and its week may already be archived. One newer than
-#: :data:`MAX_CLOCK_SKEW_MS` past it is dropped as well.
+#: A request event older than this against its snapshot's time, both by the
+#: reporter's clock, is dropped: it is not recent, and its week may already be
+#: archived. One newer than :data:`MAX_CLOCK_SKEW_MS` past it is dropped too.
 MAX_REQUEST_AGE_MS = 15 * 60_000
 GRAIN_1M = 60_000
 GRAIN_20M = 20 * 60_000
@@ -304,13 +304,19 @@ def sample_time(sent: int | None, now: int) -> int:
     return now
 
 
-def _request_time(ts: int | None, at: int) -> int | None:
-    """Where a request event is stored: its own time, *at* without one, ``None`` if out of bounds."""
+def _request_time(ts: int | None, taken: int, shift: int) -> int | None:
+    """Where a request event is stored, or ``None`` when it is out of bounds.
+
+    *taken* is when its snapshot was taken and *ts* the event's own time, both
+    by the reporter's clock, which is what bounds it; an event without a time
+    takes the snapshot's. *shift* moves the result onto the time the
+    snapshot's samples are stored at: 0 unless the reporter's clock is off.
+    """
     if ts is None:
-        return at
-    if ts < at - MAX_REQUEST_AGE_MS or ts > at + MAX_CLOCK_SKEW_MS:
+        return taken + shift
+    if ts < taken - MAX_REQUEST_AGE_MS or ts > taken + MAX_CLOCK_SKEW_MS:
         return None
-    return ts
+    return ts + shift
 
 
 class SnapshotWrite:
@@ -324,13 +330,18 @@ class SnapshotWrite:
         """Lay out *snapshot*'s rows as of *now* (milliseconds, the gateway's clock).
 
         Live rows are seen at *now*; samples are stored at
-        :func:`sample_time`.
+        :func:`sample_time`. Request events are bounded by the reporter's
+        clock, which they share with the snapshot's ``ts``, and moved with
+        the samples when that clock is off; :attr:`requests_dropped` counts
+        those out of bounds.
 
         Raises:
             IngestError: An engine sent neither metrics nor Prometheus text.
         """
         at = sample_time(snapshot.ts, now)
         bucket = at // SAMPLE_MS
+        taken = snapshot.ts if snapshot.ts is not None else at
+        shift = at - taken
         self.node: tuple[Any, ...] | None = None
         self.cpu_sample: tuple[Any, ...] | None = None
         self.gpus: list[tuple[Any, ...]] = []
@@ -338,6 +349,7 @@ class SnapshotWrite:
         self.engines: list[tuple[Any, ...]] = []
         self.engine_samples: list[tuple[Any, ...]] = []
         self.requests: list[tuple[Any, ...]] = []
+        self.requests_dropped = 0
 
         node = snapshot.node
         if node is not None:
@@ -401,8 +413,9 @@ class SnapshotWrite:
                 )
             model = engine.server.model_name or (engine.metrics or {}).get("model_name")
             for event in engine.requests:
-                ts = _request_time(event["ts"], at)
+                ts = _request_time(event["ts"], taken, shift)
                 if ts is None:
+                    self.requests_dropped += 1
                     continue
                 self.requests.append(
                     (

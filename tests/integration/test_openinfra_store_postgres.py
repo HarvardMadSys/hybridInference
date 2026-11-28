@@ -162,6 +162,21 @@ async def test_a_reporter_clock_that_is_off_gives_way_to_the_gateways(pool, sent
     assert samples == [{"ts": T0}]
 
 
+async def test_a_skewed_reporter_keeps_its_request_events(pool):
+    """Events share the reporter's clock: bounded by it, and moved with the samples."""
+    ahead = 5 * MINUTE  # the reporter's clock is five minutes fast
+    events = [{"ts": T0 + ahead - 2_000, "input_len": 1}, {"input_len": 2}]
+    payload = {**body(engines=[engine(requests=events)]), "ts": T0 + ahead}
+    async with pool.acquire() as conn:
+        write = store.SnapshotWrite(parse_snapshot(payload), T0)
+        await write.apply(conn)
+    rows = await fetch(pool, "SELECT ts, input_len FROM openinfra_request_events ORDER BY ts")
+    # Stored on the gateway's time, as the samples are.
+    assert rows == [{"ts": T0 - 2_000, "input_len": 1}, {"ts": T0, "input_len": 2}]
+    assert await fetch(pool, "SELECT ts FROM openinfra_cpu_samples") == [{"ts": T0}]
+    assert write.requests_dropped == 0
+
+
 async def test_request_events_outside_their_bounds_are_dropped(pool):
     events = [
         {"ts": T0 - 16 * MINUTE, "input_len": 1},  # too old: its week may be archived
@@ -169,11 +184,15 @@ async def test_request_events_outside_their_bounds_are_dropped(pool):
         {"input_len": 3},  # no time: the snapshot's
         {"ts": T0 + 2 * MINUTE, "input_len": 4},  # from the future
     ]
-    await ingest(pool, {**body(engines=[engine(requests=events)]), "ts": T0}, T0 + 500)
+    payload = {**body(engines=[engine(requests=events)]), "ts": T0}
+    async with pool.acquire() as conn:
+        write = store.SnapshotWrite(parse_snapshot(payload), T0 + 500)
+        await write.apply(conn)
     rows = await fetch(
         pool, "SELECT ts, input_len FROM openinfra_request_events ORDER BY input_len"
     )
     assert rows == [{"ts": T0 - 14 * MINUTE, "input_len": 2}, {"ts": T0, "input_len": 3}]
+    assert write.requests_dropped == 2
 
 
 async def test_absent_identity_keeps_what_was_stored_and_metrics_are_replaced(pool):

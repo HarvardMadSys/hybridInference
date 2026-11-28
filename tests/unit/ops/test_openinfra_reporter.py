@@ -308,8 +308,16 @@ def test_the_pcie_monitor_reports_recent_readings(monkeypatch):
     lines = ["# gpu rxpci txpci\n", "    0  100  200\n", "    1  300  400\n"]
 
     class Process:
+        terminated = False
+
         def __init__(self, *args, **kwargs):
             self.stdout = iter(lines)
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            Process.terminated = True
 
         def wait(self):
             raise SystemExit  # ends the reader thread
@@ -325,3 +333,6 @@ def test_the_pcie_monitor_reports_recent_readings(monkeypatch):
     # Readings go stale.
     monkeypatch.setattr(reporter.PcieMonitor, "MAX_AGE_S", -1.0)
     assert monitor.latest() == {}
+    # The reporter's exit ends it.
+    monitor.stop()
+    assert Process.terminated

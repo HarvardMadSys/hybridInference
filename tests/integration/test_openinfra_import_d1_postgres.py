@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 
@@ -242,3 +243,26 @@ def test_the_insert_keeps_existing_rows_and_takes_the_earliest_sample():
         "INSERT INTO openinfra_engine_samples (engine_id, ts, req_per_min, bucket)"
     )
     assert "ORDER BY u.ts ON CONFLICT (engine_id, bucket) DO NOTHING" in sql
+
+
+async def test_an_import_waits_for_an_archive_run(conn, tmp_path):
+    """No week is archived while rows are being imported into it."""
+    database = tmp_path / "d1.sqlite"
+    build_d1(database)
+    holder = await postgres.create_pool(min_size=1, max_size=1)
+    try:
+        async with holder.acquire() as archiving:
+            await archiving.execute(archive.LOCK_SQL)
+            task = asyncio.create_task(import_d1.run(database, conn))
+            await asyncio.sleep(0.5)
+            assert not task.done()
+            # Asked on the other connection: the import's is waiting for the lock.
+            assert await archiving.fetchval("SELECT COUNT(*) FROM openinfra_gpu_samples") == 0
+            await archiving.execute(archive.UNLOCK_SQL)
+            await asyncio.wait_for(task, timeout=30)
+    finally:
+        await holder.close()
+    assert await conn.fetchval("SELECT COUNT(*) FROM openinfra_gpu_samples") == 2
+    # And lets go of it.
+    assert await conn.fetchval(archive.TRY_LOCK_SQL)
+    await conn.execute(archive.UNLOCK_SQL)
