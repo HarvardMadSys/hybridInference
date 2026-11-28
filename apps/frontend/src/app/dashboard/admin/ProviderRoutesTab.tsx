@@ -69,7 +69,6 @@ import {
   type DeclaredChoice,
 } from './RouteCapabilityFields';
 import type { OffloadQueueInfo } from './OffloadRoutePanel';
-import { RoutewiseSettingsPanel } from './RoutewiseSettingsPanel';
 import { RoutewiseDecisionsPanel } from './RoutewiseDecisionsPanel';
 import { Select } from '@/components/ui/Select';
 
@@ -705,14 +704,10 @@ function createProviderOptionsFor(
   );
 }
 
-interface ProviderRoutesTabProps {
-  showRoutewiseSettings?: boolean;
-}
-
 // Why a control that would drop an unsaved draft is unavailable for now.
 const HELD_FOR_DRAFTS = 'Save or discard the unsaved changes first';
 
-export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRoutesTabProps = {}) {
+export function ProviderRoutesTab() {
   const router = useRouter();
   const money = useMoney();
   const toast = useAccountToast();
@@ -1965,19 +1960,15 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const weightsChanged = weightChanges.length > 0;
   const strategyChanged = draftStrategy !== null && draftStrategy !== strategy;
   const inlineChanged = weightsChanged || strategyChanged || limitsChanged;
-  // The offload and RouteWise panels keep drafts for the selected model too, and
-  // drop them when it changes; they report whether a draft is unsaved, a
+  // The offload panel keeps drafts for the selected model too, and drops
+  // them when it changes; it reports whether a draft is unsaved, a
   // confirmation open or a write running.
-  const [panelEditing, setPanelEditing] = useState({ offload: false, routewise: false });
+  const [panelEditing, setPanelEditing] = useState({ offload: false });
   const onOffloadEditingChange = useCallback(
     (active: boolean) => setPanelEditing((prev) => ({ ...prev, offload: active })),
     [],
   );
-  const onRoutewiseEditingChange = useCallback(
-    (active: boolean) => setPanelEditing((prev) => ({ ...prev, routewise: active })),
-    [],
-  );
-  const panelOpen = panelEditing.offload || panelEditing.routewise;
+  const panelOpen = panelEditing.offload;
   // Switching model, directly or by creating one, would drop any unsaved draft.
   // The route and create dialogs are modal, but their drafts belong
   // to this model too, as do an open confirmation and a write still running.
@@ -1989,9 +1980,8 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     createFormOpen ||
     confirmation.open ||
     confirmation.busy;
-  // So would switching the routing policy: it unmounts the panel of the current
-  // policy (Queue offload for fixed, RouteWise parameters for routewise) and
-  // swaps the table's weights for limits or back.
+  // So would switching the routing policy: it unmounts the offload panel of
+  // the current policy and swaps the table's weights for limits or back.
   const policyHeld = weightsChanged || limitsChanged || panelOpen;
 
   // Reset config and Delete discard what the route had, so they ask first. Each
@@ -2326,7 +2316,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
             searchable
             searchPlaceholder="Search models…"
             emptyText="No models match"
-            // Unsaved weight, policy, limit, capability, offload or RouteWise drafts
+            // Unsaved weight, policy, limit, capability or offload drafts
             // belong to this model; save or discard them before switching.
             disabled={modelLocked}
             title={modelLocked ? HELD_FOR_DRAFTS : undefined}
@@ -2419,21 +2409,6 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           }
           onChange={onOffloadChange}
           onEditingChange={onOffloadEditingChange}
-        />
-      )}
-
-      {showRoutewiseSettings && isRoutewise && (
-        <RoutewiseSettingsPanel
-          modelId={selectedModel}
-          endpoints={selectedRoutes.map((route) => ({
-            endpointId: route.endpoint_id,
-            label: `${route.route_type} · ${routeTargetLabel(
-              route,
-              providerSelectBaseOptions,
-              openRouterSelectOptions,
-            )}`,
-          }))}
-          onEditingChange={onRoutewiseEditingChange}
         />
       )}
 

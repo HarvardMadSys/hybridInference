@@ -31,6 +31,7 @@ vi.mock('@/lib/api/admin', async () => {
     listSignupAllowedDomains: vi.fn(async () => ({ domains: [] })),
     listModelVisibility: vi.fn(async () => ({ models: [] })),
     listModelConcurrency: vi.fn(async () => ({ models: [] })),
+    listProviderRoutes: vi.fn(async () => ({ provider_options: [], routes: [] })),
     listBatchModelLimits: vi.fn(async () => ({
       default_concurrency: 4,
       models: [

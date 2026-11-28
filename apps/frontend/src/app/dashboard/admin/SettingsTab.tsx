@@ -36,6 +36,7 @@ import { AlertMutesSection } from './AlertMutesSection';
 import { AlertSnoozeSection } from './AlertSnoozeSection';
 import { UsageInsightsSettingsSection } from './UsageInsightsSettingsSection';
 import { BatchConcurrencySection } from './BatchConcurrencySection';
+import { RoutewiseSettingsSection } from './RoutewiseSettingsSection';
 import { RuntimeSettingsSection } from './RuntimeSettingsSection';
 import { SignupPolicySection } from './SignupPolicySection';
 import { useLeaveGuard } from './useLeaveGuard';
@@ -370,6 +371,8 @@ export function SettingsTab({
         );
       case 'batch-concurrency':
         return <BatchConcurrencySection onToast={flashToast} onUnsavedChange={onUnsavedChange} />;
+      case 'routewise':
+        return <RoutewiseSettingsSection onUnsavedChange={onUnsavedChange} />;
       case 'alert-snooze':
         return <AlertSnoozeSection onToast={flashToast} />;
       case 'alert-mutes':
