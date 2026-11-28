@@ -2434,8 +2434,9 @@ async def test_item_contents_pages_requests_with_their_answers(store):
     (first,) = await _claim(store, model, limit=1)
     assert await _complete(store, first)
 
-    page = await store.item_contents(batch["id"], limit=2)
+    page, more = await store.item_contents(batch["id"], limit=2, max_bytes=1 << 20)
 
+    assert more
     assert [item["custom_id"] for item in page] == ["req-0", "req-1"]
     answered, waiting = page
     assert answered["request"]["messages"][0]["content"] == "q0 ✓"
@@ -2443,8 +2444,34 @@ async def test_item_contents_pages_requests_with_their_answers(store):
     assert (answered["status"], answered["status_code"]) == ("completed", 200)
     assert answered["completed_at"] is not None
     assert (waiting["status"], waiting["response"], waiting["error"]) == ("queued", None, None)
-    rest = await store.item_contents(batch["id"], after=page[-1]["id"])
+    rest, more = await store.item_contents(batch["id"], after=page[-1]["id"], max_bytes=1 << 20)
     assert [item["custom_id"] for item in rest] == ["req-2"]
+    assert not more
+
+
+async def test_item_contents_pages_by_the_size_of_requests_and_answers(pool, store):
+    """By count alone a page could hold a hundred megabyte-sized requests and answers."""
+    model = _model()
+    items = _items(model, 3)
+    for item in items:
+        item["request"]["messages"][0]["content"] = "x" * 3000
+    batch = await _create(store, items)
+    (first,) = await _claim(store, model, limit=1)
+    assert await _complete(store, first)
+    async with pool.acquire() as conn:
+        sizes = await conn.fetch(
+            "SELECT octet_length(request::text) + COALESCE(octet_length(response::text), 0) "
+            "AS bytes FROM batch_items WHERE batch_id = $1 ORDER BY id",
+            batch["id"],
+        )
+    one, two = int(sizes[0]["bytes"]), int(sizes[1]["bytes"])
+
+    page, more = await store.item_contents(batch["id"], limit=50, max_bytes=one + two)
+    assert [item["custom_id"] for item in page] == ["req-0", "req-1"] and more
+    assert page[0]["response"] == {"id": f"chatcmpl-{first['id']}", "choices": []}
+    # One item at least, however large.
+    page, more = await store.item_contents(batch["id"], after=page[-1]["id"], limit=50, max_bytes=1)
+    assert [item["custom_id"] for item in page] == ["req-2"] and not more
 
 
 async def test_batch_summary_and_labels_name_each_owner(pool, store):

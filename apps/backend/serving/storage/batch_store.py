@@ -425,6 +425,46 @@ _REQUEST_PAGE_SQL = """
     WHERE page.running <= $3 OR page.position = 1
     ORDER BY page.id
 """
+# A page of items with what was sent and answered, for administrators, bounded
+# the same way over the request, the response and the error together.
+_CONTENT_SIZES_SQL = """
+    SELECT id,
+           COALESCE(pg_column_size(request), 0) + COALESCE(pg_column_size(response), 0)
+           + COALESCE(pg_column_size(error), 0) AS stored
+    FROM batch_items
+    WHERE batch_id = $1 AND id > $2 AND ($3::text[] IS NULL OR status = ANY($3::text[]))
+    ORDER BY id
+    LIMIT $4
+"""
+_CONTENT_PAGE_SQL = """
+    SELECT page.id, page.custom_id, page.model_id, page.status, page.status_code,
+           page.attempts, page.request, page.response, page.error, page.prompt_tokens,
+           page.completion_tokens, page.completed_at, page.bytes
+    FROM (
+        SELECT sized.*,
+               sum(sized.bytes) OVER (ORDER BY sized.id) AS running,
+               row_number() OVER (ORDER BY sized.id) AS position
+        FROM (
+            SELECT rendered.*,
+                   COALESCE(octet_length(rendered.request), 0)
+                   + COALESCE(octet_length(rendered.response), 0)
+                   + COALESCE(octet_length(rendered.error), 0) AS bytes
+            FROM (
+                SELECT id, custom_id, model_id, status, status_code, attempts,
+                       request::text AS request, response::text AS response,
+                       error::text AS error, prompt_tokens, completion_tokens, completed_at
+                FROM batch_items
+                WHERE batch_id = $1 AND id = ANY($2::bigint[])
+                ORDER BY id
+                LIMIT $4
+            ) AS rendered
+        ) AS sized
+    ) AS page
+    WHERE page.running <= $3 OR page.position = 1
+    ORDER BY page.id
+"""
+# Stored JSON an administrator's page decodes between two yields to the loop.
+_CONTENT_YIELD_BYTES = 1024 * 1024
 # Filled by COPY in this order; every other column takes its default, and
 # ``id`` follows the order the rows arrive in.
 _ITEM_COPY_COLUMNS = ("batch_id", "custom_id", "model_id", "request", "line_no")
@@ -1415,41 +1455,49 @@ class BatchStore:
         return rows, len(rows) < len(sizes)
 
     async def item_contents(
-        self, batch_id: str, *, after: int = 0, limit: int = 50
-    ) -> list[dict[str, Any]]:
+        self, batch_id: str, *, max_bytes: int, after: int = 0, limit: int = 50
+    ) -> tuple[list[dict[str, Any]], bool]:
         """A page of a batch's items with what was sent and answered (administrators).
 
         In submission order: ``id, custom_id, model_id, status, status_code,
         attempts, request, response, error, prompt_tokens, completion_tokens,
         completed_at``. ``response`` and ``error`` are None until the item
-        has an outcome.
+        has an outcome. Bounded by count and by size, as :meth:`result_page`
+        is: no more items than fit in *max_bytes* of their stored request,
+        response and error (always one at least), since a request and a
+        response may each be megabytes.
+
+        Returns:
+            ``(rows, more)``: the rows, and whether the batch has items after
+            the last one returned.
         """
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT id, custom_id, model_id, status, status_code, attempts, request, "
-                "response, error, prompt_tokens, completion_tokens, completed_at "
-                "FROM batch_items WHERE batch_id = $1 AND id > $2 ORDER BY id LIMIT $3",
-                batch_id,
-                after,
-                limit,
+        rows, more = await self._sized_page(
+            _CONTENT_SIZES_SQL, _CONTENT_PAGE_SQL, batch_id, after, None, limit, max_bytes
+        )
+        page: list[dict[str, Any]] = []
+        decoded = 0
+        for row in rows:
+            page.append(
+                {
+                    "id": row["id"],
+                    "custom_id": row["custom_id"],
+                    "model_id": row["model_id"],
+                    "status": row["status"],
+                    "status_code": row["status_code"],
+                    "attempts": row["attempts"],
+                    "request": _load_json(row["request"]),
+                    "response": _load_json(row["response"]),
+                    "error": _load_json(row["error"]),
+                    "prompt_tokens": row["prompt_tokens"],
+                    "completion_tokens": row["completion_tokens"],
+                    "completed_at": row["completed_at"],
+                }
             )
-        return [
-            {
-                "id": row["id"],
-                "custom_id": row["custom_id"],
-                "model_id": row["model_id"],
-                "status": row["status"],
-                "status_code": row["status_code"],
-                "attempts": row["attempts"],
-                "request": _load_json(row["request"]),
-                "response": _load_json(row["response"]),
-                "error": _load_json(row["error"]),
-                "prompt_tokens": row["prompt_tokens"],
-                "completion_tokens": row["completion_tokens"],
-                "completed_at": row["completed_at"],
-            }
-            for row in rows
-        ]
+            decoded += int(row["bytes"] or 0)
+            if decoded >= _CONTENT_YIELD_BYTES:
+                decoded = 0
+                await asyncio.sleep(0)
+        return page, more
 
     async def _pin_input(self, conn: Any, file_id: str, user_id: str) -> None:
         """Hold a file batch's input for the batch being created, or refuse it.
