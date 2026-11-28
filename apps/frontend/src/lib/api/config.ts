@@ -314,6 +314,37 @@ export async function testAlertNotification(
   return readJson<AlertNotificationTestResponse>(resp);
 }
 
+export interface EmailTestRequest {
+  /** Where to send the test; omitted, it goes to your own account's address. */
+  to?: string;
+}
+
+export interface EmailTestResponse {
+  sent: true;
+  /** The address the test went to. */
+  to: string;
+  /** The transport that carried it: `smtp`, `cloudflare` or an extension's name. */
+  provider: string;
+}
+
+/**
+ * Send the gateway's fixed test email through the saved email settings.
+ *
+ * A refusal's message is the backend's own sentence: the settings still
+ * needed, or why the transport did not send (a rejected password, a token
+ * without permission). None of them carries a credential.
+ */
+export async function testEmailDelivery(
+  request: EmailTestRequest = {},
+): Promise<EmailTestResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/email/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return readJson<EmailTestResponse>(resp);
+}
+
 interface RestartResponse {
   restarting: boolean;
   /** The process that is exiting; `/health` names a different one once it is back. */

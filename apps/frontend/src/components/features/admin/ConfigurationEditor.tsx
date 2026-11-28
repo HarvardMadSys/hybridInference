@@ -49,6 +49,14 @@ import {
   selectedWebhookEntry,
   type AlertChannelChoice,
 } from '@/components/features/configuration/alertNotificationDrafts';
+import { EmailDeliveryFields } from '@/components/features/configuration/EmailDeliveryFields';
+import {
+  EMAIL_CATEGORY,
+  emailFieldMatches,
+  emailProviderEntry,
+  emailTestFailureMessage,
+  type EmailTestResult,
+} from '@/components/features/configuration/emailDeliveryDrafts';
 import { KeyList } from '@/components/features/configuration/KeyList';
 import { LiveConfigStatus } from '@/components/features/configuration/LiveConfigStatus';
 import {
@@ -86,6 +94,7 @@ import {
   resetConfigKey,
   restoreConfigBackup,
   testAlertNotification,
+  testEmailDelivery,
   type ConfigBackupPayload,
   type ConfigRestorePreview,
   type ConfigEntry,
@@ -260,6 +269,9 @@ export function useConfigurationEditor({
   const [testingAlert, setTestingAlert] = useState(false);
   const alertTestInFlight = useRef(false);
   const [alertTestResult, setAlertTestResult] = useState<AlertTestResult | null>(null);
+  const [testingEmail, setTestingEmail] = useState(false);
+  const emailTestInFlight = useRef(false);
+  const [emailTestResult, setEmailTestResult] = useState<EmailTestResult | null>(null);
   // Restoring a backup overwrites everything, so it is confirmed; so is a
   // download with secret values, which asks for the password. A plain one is not.
   const backupConfirmation = useConfirmAction();
@@ -327,6 +339,9 @@ export function useConfigurationEditor({
       setPendingResets((prev) => withoutKeys(prev, writtenKeys));
       setPendingSecrets((prev) => withoutKeys(prev, writtenKeys));
       if (writtenKeys.some(isAlertWebhook)) setAlertTestResult(null);
+      if (writtenKeys.some((key) => categoryOf.current.get(key) === EMAIL_CATEGORY)) {
+        setEmailTestResult(null);
+      }
       // Re-render the server components: the banner reads site-config there.
       router.refresh();
     },
@@ -344,6 +359,7 @@ export function useConfigurationEditor({
       });
       setEntryErrors((prev) => withoutKeys(prev, [key]));
       if (isAlertWebhook(key)) setAlertTestResult(null);
+      if (categoryOf.current.get(key) === EMAIL_CATEGORY) setEmailTestResult(null);
     },
     [noteEdits],
   );
@@ -387,6 +403,25 @@ export function useConfigurationEditor({
     } finally {
       alertTestInFlight.current = false;
       setTestingAlert(false);
+    }
+  };
+
+  // Like the alert test, a test email changes no setting, so it goes on the
+  // click. It uses the saved settings: the card holds it while the category
+  // has unsaved changes.
+  const sendEmailTest = async (to: string) => {
+    if (emailTestInFlight.current) return;
+    emailTestInFlight.current = true;
+    setTestingEmail(true);
+    setEmailTestResult(null);
+    try {
+      const result = await testEmailDelivery(to ? { to } : {});
+      setEmailTestResult({ sent: true, to: result.to, provider: result.provider });
+    } catch (e) {
+      setEmailTestResult({ sent: false, message: emailTestFailureMessage(e) });
+    } finally {
+      emailTestInFlight.current = false;
+      setTestingEmail(false);
     }
   };
 
@@ -442,6 +477,7 @@ export function useConfigurationEditor({
           (entry) =>
             (!missingOnly || entry.missing) &&
             (matchesQuery(entry, query, group.label) ||
+              emailFieldMatches(entry, query) ||
               (isAlertWebhook(entry.key) &&
                 'notification channel'.includes(query.trim().toLowerCase()))),
         );
@@ -693,6 +729,8 @@ export function useConfigurationEditor({
   /** Discard: every draft and staged action of the category goes, and its saved values are back. */
   const discardGroup = (group: ConfigGroup) => {
     if (saveInFlight.current) return;
+    // A test in flight holds its category, as a save does.
+    if (group.id === EMAIL_CATEGORY && emailTestInFlight.current) return;
     if (alertWebhookEntries(group.entries)) {
       if (alertTestInFlight.current) return;
       setAlertChannelDraft(null);
@@ -960,6 +998,7 @@ export function useConfigurationEditor({
         setPendingSecrets({});
         setAlertChannelDraft(null);
         setAlertTestResult(null);
+        setEmailTestResult(null);
         router.refresh();
         if (res.immutable_keys_preserved.length > 0) {
           toast.success(
@@ -1003,9 +1042,12 @@ export function useConfigurationEditor({
     alertChannel,
     testingAlert,
     alertTestResult,
+    testingEmail,
+    emailTestResult,
     onDraftChange,
     changeAlertChannel,
     sendAlertTest,
+    sendEmailTest,
     saveGroup,
     discardGroup,
     toggleReset,
@@ -1199,10 +1241,20 @@ export function ConfigCategorySection({
   // The whole category, including entries a filter is hiding.
   const group = editor.groups.find((candidate) => candidate.id === visible.id) ?? visible;
   const channelEntries = alertWebhookEntries(group.entries);
+  // The Email category is one card, shown whole whenever a filter leaves any
+  // of it: Missing only then shows the service choice beside what is missing.
+  const categoryEntries = (editor.config?.entries ?? []).filter(
+    (entry) => entry.category === group.id,
+  );
+  const emailCard =
+    group.id === EMAIL_CATEGORY &&
+    emailProviderEntry(categoryEntries) !== null &&
+    visible.entries.length > 0;
   const dirty = editor.dirtyCount(group);
-  const hidden = group.entries.length - visible.entries.length;
+  const hidden = emailCard ? 0 : group.entries.length - visible.entries.length;
   const saving = savingGroup === group.id;
-  const busy = saving || Boolean(channelEntries && testingAlert);
+  const busy =
+    saving || Boolean(channelEntries && testingAlert) || (emailCard && editor.testingEmail);
   // One save at a time: while any category saves, every bar waits.
   const barHeld = busy || savingGroup !== null;
   const groupError = editor.groupErrors[group.id];
@@ -1308,13 +1360,37 @@ export function ConfigCategorySection({
         ))}
         <div className={`${PANEL} ${dirty > 0 ? 'border-gray-400 shadow-sm' : ''}`}>
           <div className="divide-y divide-gray-100 px-4">
-            {channelFirst ? channel : null}
-            {everyday.map(field)}
-            {oneTimeHeading ? (
-              <h3 className={`-mx-4 bg-gray-50 px-4 py-1.5 ${FIELD_LABEL}`}>Usually set once</h3>
-            ) : null}
-            {channelFirst ? null : channel}
-            {oneTime.map(field)}
+            {emailCard ? (
+              <EmailDeliveryFields
+                entries={categoryEntries}
+                drafts={drafts}
+                onDraftChange={onDraftChange}
+                errors={entryErrors}
+                disabled={busy}
+                test={{
+                  testing: editor.testingEmail,
+                  result: editor.emailTestResult,
+                  unsaved: dirty > 0,
+                  onTest: (to) => void editor.sendEmailTest(to),
+                }}
+                onReset={toggleReset}
+                onMarkSecret={toggleMarkSecret}
+                pendingResets={new Set(Object.keys(pendingResets))}
+                pendingSecrets={new Set(Object.keys(pendingSecrets))}
+              />
+            ) : (
+              <>
+                {channelFirst ? channel : null}
+                {everyday.map(field)}
+                {oneTimeHeading ? (
+                  <h3 className={`-mx-4 bg-gray-50 px-4 py-1.5 ${FIELD_LABEL}`}>
+                    Usually set once
+                  </h3>
+                ) : null}
+                {channelFirst ? null : channel}
+                {oneTime.map(field)}
+              </>
+            )}
           </div>
 
           {/* Appears with the first change, or a reason to show, and stays

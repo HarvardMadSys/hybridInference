@@ -583,23 +583,24 @@ describe('step 2: configure', () => {
     await reachConfigureStep();
 
     const email = within(screen.getByRole('region', { name: 'Email (SMTP)' }));
-    const transport = email.getByRole('combobox', { name: 'EMAIL_PROVIDER' });
-    expect(transport).toHaveTextContent('smtp');
-    expect(email.getByLabelText('SMTP_HOST')).toBeInTheDocument();
-    expect(email.queryByLabelText('CLOUDFLARE_ACCOUNT_ID')).not.toBeInTheDocument();
+    expect(email.getByRole('radio', { name: /^SMTP server/ })).toBeChecked();
+    expect(email.getByLabelText('SMTP host')).toBeInTheDocument();
+    expect(email.queryByLabelText('Account ID')).not.toBeInTheDocument();
+    // Setup saves nothing until the end, so it neither judges nor tests the settings.
+    expect(email.queryByRole('button', { name: 'Send test email' })).not.toBeInTheDocument();
+    expect(email.queryByText(/Email is not set up yet/)).not.toBeInTheDocument();
 
     // An SMTP edit, then Cloudflare after all: the edit is for a transport not chosen.
-    fireEvent.change(email.getByLabelText('SMTP_HOST'), { target: { value: 'smtp.x.test' } });
-    fireEvent.click(transport);
-    fireEvent.click(screen.getByRole('option', { name: 'cloudflare' }));
+    fireEvent.change(email.getByLabelText('SMTP host'), { target: { value: 'smtp.x.test' } });
+    fireEvent.click(email.getByRole('radio', { name: /^Cloudflare Email Sending/ }));
 
-    expect(email.queryByLabelText('SMTP_HOST')).not.toBeInTheDocument();
-    expect(email.queryByLabelText('SMTP_PASSWORD')).not.toBeInTheDocument();
-    expect(email.getByLabelText('SMTP_FROM_EMAIL')).toBeInTheDocument();
-    fireEvent.change(email.getByLabelText('CLOUDFLARE_ACCOUNT_ID'), {
+    expect(email.queryByLabelText('SMTP host')).not.toBeInTheDocument();
+    expect(email.queryByLabelText('Password')).not.toBeInTheDocument();
+    expect(email.getByLabelText('Sender address')).toBeInTheDocument();
+    fireEvent.change(email.getByLabelText('Account ID'), {
       target: { value: '0123456789abcdef0123456789abcdef' },
     });
-    fireEvent.change(email.getByLabelText('CLOUDFLARE_EMAIL_API_TOKEN'), {
+    fireEvent.change(email.getByLabelText('API token'), {
       target: { value: 'cf-token' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Save and continue' }));
