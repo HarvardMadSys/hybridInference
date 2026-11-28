@@ -113,9 +113,12 @@ What each source needs:
   key, point `url` at `/metrics`: the reporter sends no key.
 - **vLLM.** It has no `/v1/loads`: point `url` at `/metrics` and set
   `"engine": "vllm"`.
-- **Recent requests** come from the engine's container logs, read once a
-  minute. This needs `docker` (the docker group, or `sudo -n docker`); without
-  it, everything else is still reported.
+- **Recent requests** come only from the engine's container logs, read once a
+  minute, whatever counters the engine has. This needs `docker` (the docker
+  group, or `sudo -n docker`); the unit's install commands add `openinfra` to
+  the docker group. Without it, everything else is still reported, the page's
+  recent requests stay empty, and the reporter says why once in its log
+  (`journalctl -u openinfra-reporter | grep 'engine logs'`).
 - **DCGM (optional).** Tensor-core, DRAM and NVLink charts need NVIDIA's
   dcgm-exporter, installed with the field list and override in
   `ops/openinfra/dcgm/`. The reporter reads `http://127.0.0.1:9400/metrics`
