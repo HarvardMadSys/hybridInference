@@ -18,7 +18,6 @@ from serving.analytics import duplicate_accounts as dup
 from serving.analytics.duplicate_accounts import (
     AccountRecord,
     DuplicateAccountScan,
-    address_key,
     cosine_similarity,
     weekly_profile,
 )
@@ -61,34 +60,6 @@ def _hours(user_id: str, address: str | None, *offsets: int) -> list[tuple[Any, 
 
 
 # --- addresses ----------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("raw", "key"),
-    [
-        ("198.51.100.7", "198.51.100.7"),
-        (" 198.51.100.7 ", "198.51.100.7"),
-        ("::ffff:198.51.100.7", "198.51.100.7"),
-        ("198.51.100.7, 10.0.0.1", "198.51.100.7"),
-        ("2a00:1450:4001:81c::200e", "2a00:1450:4001:81c::/64"),
-        ("2a00:1450:4001:81c:aaaa:bbbb:cccc:dddd", "2a00:1450:4001:81c::/64"),
-        # Recorded only for an authorized direct client network, so it counts.
-        ("10.20.30.40", "10.20.30.40"),
-        ("unknown", None),
-        ("", None),
-        (None, None),
-        (42, None),
-        ("127.0.0.1", None),
-        ("::1", None),
-        ("169.254.10.1", None),
-        ("fe80::1%eth0", None),
-        ("0.0.0.0", None),
-        ("224.0.0.1", None),
-        ("240.0.0.1", None),
-    ],
-)
-def test_address_key(raw: object, key: str | None) -> None:
-    assert address_key(raw) == key
 
 
 def test_a_hosts_rotating_ipv6_addresses_are_one_address() -> None:

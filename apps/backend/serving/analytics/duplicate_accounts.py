@@ -8,10 +8,11 @@ result is a report for an administrator to read before deciding anything.
 **Evidence.** Two accounts are linked by what they share in the scan window:
 
 * an address -- an IPv4 address, or an IPv6 /64, inside which a host's
-  temporary privacy addresses rotate -- that both registered from
-  (``signup_ip``), signed in from (``login_ip``) or sent API requests from
-  (``request_ip``), or one's API traffic leaving from where the other registered
-  or signs in (``cross_ip``);
+  temporary privacy addresses rotate
+  (:func:`serving.utils.client_addresses.address_key`) -- that both
+  registered from (``signup_ip``), signed in from (``login_ip``) or sent API
+  requests from (``request_ip``), or one's API traffic leaving from where the
+  other registered or signs in (``cross_ip``);
 * time: registering from one address within an hour of each other
   (``signup_burst``), or sending requests from one address in the same clock
   hours (``co_active``);
@@ -47,7 +48,6 @@ connection and runs it, for the admin endpoint.
 
 from __future__ import annotations
 
-import ipaddress
 import math
 import time
 from collections import defaultdict
@@ -56,7 +56,7 @@ from datetime import UTC, datetime, timedelta
 from itertools import combinations
 from typing import TYPE_CHECKING, Any
 
-from serving.utils.ip_classification import parse_ip
+from serving.utils.client_addresses import address_key
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
@@ -132,10 +132,6 @@ CO_ACTIVE_MIN_HOURS = 2
 PROFILE_MIN_ACTIVE_HOURS = 10
 PROFILE_MIN_SIMILARITY = 0.9
 
-#: An IPv6 address is keyed by this prefix: a host's temporary addresses
-#: rotate inside its /64.
-IPV6_PREFIX_LENGTH = 64
-
 #: Roles whose accounts are never linked: the operator's own.
 EXCLUDED_ROLES = frozenset({"admin", "internal"})
 
@@ -171,34 +167,6 @@ class AccountRecord:
     def linkable(self) -> bool:
         """Whether the scan may link this account: it is not one of the operator's own."""
         return not self.service_account and self.role not in EXCLUDED_ROLES
-
-
-def address_key(raw: object) -> str | None:
-    """The address a link is drawn on, or None for no usable client address.
-
-    An IPv4 address is its own key, an IPv4-mapped IPv6 address included. An
-    IPv6 address is keyed by its /64. ``"unknown"`` (what the gateway records
-    when it could not attribute a request to a client), loopback, link-local,
-    multicast, reserved and unspecified addresses have no key. Private
-    addresses keep theirs: the gateway records one only for a network the
-    operator authorized as direct clients (``TRUSTED_DIRECT_CLIENT_NETWORKS``).
-    """
-    if not isinstance(raw, str):
-        return None
-    text = raw.split(",", 1)[0].strip()
-    if not text:
-        return None
-    try:
-        ip = parse_ip(text)
-    except ValueError:
-        return None
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
-    if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified or ip.is_reserved:
-        return None
-    if isinstance(ip, ipaddress.IPv6Address):
-        return str(ipaddress.IPv6Network((ip, IPV6_PREFIX_LENGTH), strict=False))
-    return str(ip)
 
 
 @dataclass(slots=True)

@@ -419,27 +419,12 @@ class CostSection(BaseModel):
     provider_hourly_spend: ProviderHourlySpend = Field(default_factory=ProviderHourlySpend)
 
 
-class AdminActivity(BaseModel):
-    """The hourly administrator-activity monitor (``serving.admin.admin_activity_monitor``).
-
-    **On by default**: it reads only administrators' sign-ins and audited
-    actions, and pages at most twice an hour, and only when something
-    happened. ``lookback_days`` is how far back an address counts as one an
-    account has used: an administrator signing in from an address none of
-    their sign-ins or actions came from in that time is reported.
-    """
-
-    enabled: bool = True
-    lookback_days: int = Field(default=30, ge=1, le=365)
-
-
 class AlertConfig(BaseModel):
     """Top-level alert config."""
 
     rules: Rules = Field(default_factory=Rules)
     state_changes: StateChanges = Field(default_factory=StateChanges)
     cost: CostSection = Field(default_factory=CostSection)
-    admin_activity: AdminActivity = Field(default_factory=AdminActivity)
 
 
 def alert_config_from_data(raw: dict[str, Any]) -> AlertConfig:

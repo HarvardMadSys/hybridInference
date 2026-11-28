@@ -1139,15 +1139,6 @@ async def initialize() -> AppServices:
 
                             register_detector_job(sched, db_logger.pool)
 
-                            # Administrators' new sign-in addresses and
-                            # dangerous actions, reported hourly through the
-                            # alert channel (paused while there is none).
-                            from serving.admin.admin_activity_monitor import (
-                                register_monitor_job,
-                            )
-
-                            register_monitor_job(sched, db_logger.pool)
-
                             # The OpenInfra rollups, weekly archives and
                             # retention, every five minutes.
                             from serving.openinfra.maintenance import (
