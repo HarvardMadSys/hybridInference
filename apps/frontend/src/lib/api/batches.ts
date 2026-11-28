@@ -434,6 +434,8 @@ export interface PreflightReport {
   };
   params: Partial<Record<'temperature' | 'max_tokens', ParamDistribution>>;
   other_params: Record<string, number>;
+  /** Lines carrying a parameter past the first 50 that `other_params` lists. */
+  other_params_other_rows: number;
   model_resolution: { requested: string; canonical: string } | null;
   valid: boolean;
   request_count: number;

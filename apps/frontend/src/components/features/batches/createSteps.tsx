@@ -358,8 +358,9 @@ export function UploadStep({
           )}
           {detected && (detected.models.length > 0 || detected.model_unset_rows > 0) && (
             <ul className="space-y-0.5 text-xs text-gray-600">
-              {detected.models.map((model) => (
-                <li key={model.name}>
+              {detected.models.map((model, index) => (
+                // By position: the report shortens a long name, so two can match.
+                <li key={index}>
                   {fill(t('batches.create.model_rows', 'Model {model}: {count} lines'), {
                     model: model.name,
                     count: model.rows.toLocaleString(),
