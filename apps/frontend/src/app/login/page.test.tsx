@@ -183,6 +183,57 @@ describe('signup navigation', () => {
     expect(screen.getAllByRole('link', { name: 'Sign Up' })).toHaveLength(1);
   });
 
+  it('carries next to signup, so a new account comes back to it', () => {
+    authState.isAuthenticated = false;
+    const next =
+      '/authorize/key?callback_url=https%3A%2F%2Fagent.example.org%2Fcb&code_challenge=x';
+    query = new URLSearchParams({ next });
+    render(<LoginPage />);
+
+    expect(screen.getByRole('link', { name: 'Sign Up' })).toHaveAttribute(
+      'href',
+      `/signup?next=${encodeURIComponent(next)}`,
+    );
+  });
+
+  it.each([
+    ['no next', {}],
+    ['an off-site next', { next: '//evil.test/phish' }],
+  ])('keeps the signup link bare with %s', (_name, params) => {
+    authState.isAuthenticated = false;
+    query = new URLSearchParams(params as Record<string, string>);
+    render(<LoginPage />);
+
+    expect(screen.getByRole('link', { name: 'Sign Up' })).toHaveAttribute('href', '/signup');
+  });
+
+  it('keeps next for the verification page when the account must verify first', async () => {
+    authState.isAuthenticated = false;
+    window.localStorage.clear();
+    const next = '/authorize/key?callback_url=https%3A%2F%2Fagent.example.org%2Fcb';
+    query = new URLSearchParams({ next });
+    loginMock.mockRejectedValueOnce(
+      new APIError(
+        'EMAIL_NOT_VERIFIED',
+        'Email not verified. Please check your email for the verification link.',
+        403,
+      ),
+    );
+    render(<LoginPage />);
+
+    fireEvent.change(screen.getByLabelText('Email or login name'), {
+      target: { value: 'new@example.test' },
+    });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'password' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Log In' }));
+
+    await screen.findByText("Didn't get the verification email?");
+    expect(JSON.parse(window.localStorage.getItem('hybridinference-auth-next') ?? '{}')).toEqual(
+      expect.objectContaining({ path: next }),
+    );
+    window.localStorage.clear();
+  });
+
   it('does not advertise signup when registration is closed', () => {
     authState.isAuthenticated = false;
     render(

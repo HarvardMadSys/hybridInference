@@ -41,6 +41,7 @@ from .routers import (
     identity,
     internal,
     internal_lookups,
+    key_authorization,
     models,
     openinfra,
     playground,
@@ -200,6 +201,7 @@ def create_app() -> FastAPI:
     app.include_router(playground.router)
     app.include_router(playground_mcp.router)
     app.include_router(identity.router)
+    app.include_router(key_authorization.router)
     app.include_router(agent_grants.router)
     app.include_router(internal_lookups.router)
     app.include_router(alert_history_ingest.router)

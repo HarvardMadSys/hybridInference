@@ -73,6 +73,8 @@ Where to start
      - :doc:`routing`
    * - Let an organization's members sign in with its own accounts
      - :doc:`sso`
+   * - Let an application create an API key on a user's account
+     - :doc:`api-key-authorization`
    * - Send a patch
      - :doc:`contributing`
    * - Identify a version or plan an upgrade
@@ -126,6 +128,7 @@ tracker <https://github.com/HarvardMadSys/hybridInference/issues>`_.
    batches
    rag-chat
    sso
+   api-key-authorization
 
 .. toctree::
    :maxdepth: 2

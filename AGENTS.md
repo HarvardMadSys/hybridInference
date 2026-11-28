@@ -212,6 +212,14 @@ gateway's side of its contracts (backend paths relative to
 `apps/backend/serving/`):
 
 - Identity: `servers/routers/identity.py` (`/v1/identity/*`).
+- API key authorization: the PKCE key flow any listed application may use, not
+  only the cloud agent. The routes are `servers/routers/key_authorization.py`
+  (`/v1/auth/keys`, `/v1/auth/keys/check`, `/v1/auth/keys/code`), the rules
+  are `utils/key_authorization.py`, and the console's consent page is
+  `apps/frontend/src/app/authorize/key/`. `API_KEY_AUTHORIZATION_CALLBACKS`
+  lists the callbacks; the key is an ordinary key on the approving user's own
+  account. See
+  [docs/developer/api-key-authorization.md](docs/developer/api-key-authorization.md).
 - Inference grants: `grants.py`, `grant_auth.py`,
   `servers/routers/agent_grants.py` (`/internal/agent-grants*`), the
   `/internal/*` lookups (`servers/routers/internal_lookups.py`,

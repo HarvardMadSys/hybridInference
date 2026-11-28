@@ -3,7 +3,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  HybridInference\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-09-28 15:43+0800\n"
+"POT-Creation-Date: 2026-11-28 14:27+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -12,29 +12,29 @@ msgstr ""
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=utf-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"Generated-By: Babel 2.18.0\n"
+"Generated-By: Babel 2.19.0\n"
 
-#: ../developer/index.rst:101
+#: ../developer/index.rst:103
 msgid "Getting Started"
 msgstr "入门"
 
-#: ../developer/index.rst:109
+#: ../developer/index.rst:111
 msgid "Concepts"
 msgstr "概念"
 
-#: ../developer/index.rst:118
+#: ../developer/index.rst:120
 msgid "Guides"
 msgstr "指南"
 
-#: ../developer/index.rst:132
+#: ../developer/index.rst:133
 msgid "Customizing a Deployment"
 msgstr "定制部署"
 
-#: ../developer/index.rst:140
+#: ../developer/index.rst:141
 msgid "Operations"
 msgstr "运维"
 
-#: ../developer/index.rst:154
+#: ../developer/index.rst:155
 msgid "Contributing"
 msgstr "参与贡献"
 
@@ -226,34 +226,43 @@ msgid ":doc:`sso`"
 msgstr ":doc:`sso`"
 
 #: ../developer/index.rst:76
-msgid "Send a patch"
-msgstr "提交代码改动"
+msgid "Let an application create an API key on a user's account"
+msgstr ""
+"让某个应用在用户的账号上创建 API key"
 
 #: ../developer/index.rst:77
-msgid ":doc:`contributing`"
+msgid ":doc:`api-key-authorization`"
 msgstr ""
 
 #: ../developer/index.rst:78
-msgid "Identify a version or plan an upgrade"
-msgstr "确认运行的是哪个版本，或规划一次升级"
+msgid "Send a patch"
+msgstr "提交代码改动"
 
 #: ../developer/index.rst:79
-msgid ":doc:`releases`"
+msgid ":doc:`contributing`"
 msgstr ""
 
 #: ../developer/index.rst:80
+msgid "Identify a version or plan an upgrade"
+msgstr "确认运行的是哪个版本，或规划一次升级"
+
+#: ../developer/index.rst:81
+msgid ":doc:`releases`"
+msgstr ""
+
+#: ../developer/index.rst:82
 msgid "Look up a term such as *route*, *endpoint* or *distribution*"
 msgstr "查一个术语，例如\\ *路由*\\ 、\\ *端点*\\ 或\\ *发行版*"
 
-#: ../developer/index.rst:81
+#: ../developer/index.rst:83
 msgid ":doc:`glossary`"
 msgstr ""
 
-#: ../developer/index.rst:84
+#: ../developer/index.rst:86
 msgid "About the project"
 msgstr "关于本项目"
 
-#: ../developer/index.rst:86
+#: ../developer/index.rst:88
 msgid ""
 "HybridInference is developed by the `Harvard MadSys Lab "
 "<https://juncheng.seas.harvard.edu/>`_ at the Harvard John A. Paulson "
@@ -272,7 +281,7 @@ msgstr ""
 "routewise <https://github.com/HarvardMadSys/RouteWise>`_ "
 "库单独发布；本网关是它在生产环境中的参考集成。"
 
-#: ../developer/index.rst:95
+#: ../developer/index.rst:97
 msgid ""
 "The source is at `github.com/HarvardMadSys/hybridInference "
 "<https://github.com/HarvardMadSys/hybridInference>`_, and its "
