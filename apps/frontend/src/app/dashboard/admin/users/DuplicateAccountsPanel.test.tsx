@@ -29,6 +29,7 @@ const scan: DuplicateAccountScan = {
       score: 11,
       user_ids: ['u-ann', 'u-ben'],
       signals: ['signup_burst', 'signup_ip', 'request_ip'],
+      address_only: false,
       members: [
         {
           user_id: 'u-ann',
@@ -128,6 +129,26 @@ describe('DuplicateAccountsPanel', () => {
       within(group).getByText('Registered 4 minutes apart from 198.51.100.7'),
     ).toBeInTheDocument();
     expect(screen.getByText(/1 larger component \(12 accounts\)/)).toBeInTheDocument();
+  });
+
+  it('marks a group whose only evidence is shared addresses', async () => {
+    const [group] = scan.groups;
+    vi.mocked(scanDuplicateAccounts).mockResolvedValue({
+      ...scan,
+      groups: [
+        { ...group, signals: ['login_ip', 'request_ip'], address_only: true },
+        { ...group, user_ids: ['u-cid', 'u-dee'], address_only: false },
+      ],
+      total_groups: 2,
+    });
+    renderPanel();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Scan' }));
+
+    const [shared, other] = await screen.findAllByTestId('duplicate-account-group');
+    const hint = 'Shared addresses only: people in one household or office look like this too.';
+    expect(within(shared).getByText(hint)).toBeInTheDocument();
+    expect(within(other).queryByText(hint)).not.toBeInTheDocument();
   });
 
   it('scans the window chosen', async () => {

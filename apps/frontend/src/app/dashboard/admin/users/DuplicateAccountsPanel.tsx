@@ -93,6 +93,11 @@ function GroupCard({ group }: { group: DuplicateAccountGroup }) {
           </span>
         ))}
       </div>
+      {group.address_only && (
+        <p className="mt-1 text-[12px] text-amber-700">
+          Shared addresses only: people in one household or office look like this too.
+        </p>
+      )}
       <ul className="mt-2 space-y-1">
         {group.members.map((member) => (
           <MemberRow key={member.user_id} member={member} />

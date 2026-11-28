@@ -680,3 +680,57 @@ def test_the_weights_keep_every_address_kind_below_the_merge_threshold() -> None
     assert dup.SIGNAL_WEIGHTS["activity_profile"] + dup.SIGNAL_WEIGHTS["same_client"] < (
         dup.MERGE_THRESHOLD
     ), "behaviour alone must never merge"
+
+
+# --- shared addresses alone ---------------------------------------------------------
+
+
+def test_two_people_behind_one_router_who_sign_in_and_use_the_api_are_a_marked_group() -> None:
+    """Intended: two kinds of use of one address merge, and the group says so.
+
+    Accounts that both sign in and send requests from one address, shared by
+    fewer accounts than the fan-out limit, are grouped at the lowest score.
+    Housemates and coworkers look exactly like this, so the group is marked
+    ``address_only`` for the console to say as much.
+    """
+    scan = DuplicateAccountScan(
+        _accounts("a", "b"),
+        logins=[("a", OFFICE, 1), ("b", OFFICE, 1)],
+        requests=[("a", OFFICE, 9), ("b", OFFICE, 9)],
+    )
+
+    [group] = _report(scan)["groups"]
+
+    assert group["score"] == dup.MERGE_THRESHOLD
+    assert group["signals"] == ["login_ip", "request_ip"]
+    assert group["address_only"] is True
+
+
+def _burst() -> DuplicateAccountScan:
+    return DuplicateAccountScan(
+        _accounts("a", "b"),
+        signups=[("a", HOME, NOW), ("b", HOME, NOW + timedelta(minutes=4))],
+    )
+
+
+def _browser() -> DuplicateAccountScan:
+    return DuplicateAccountScan(
+        _accounts("a", "b"),
+        logins=[("a", OFFICE, 1), ("b", OFFICE, 1)],
+        browsers=[("browser", "a", NOW), ("browser", "b", NOW)],
+    )
+
+
+def _active_together() -> DuplicateAccountScan:
+    scan = DuplicateAccountScan(
+        _accounts("a", "b"), requests=[("a", OFFICE, 30), ("b", OFFICE, 30)]
+    )
+    scan.add_activity(hours=[*_hours("a", OFFICE, 1, 2), *_hours("b", OFFICE, 1, 2)])
+    return scan
+
+
+@pytest.mark.parametrize("build", [_burst, _browser, _active_together])
+def test_timing_identity_or_behaviour_evidence_is_not_address_only(build) -> None:
+    [group] = _report(build())["groups"]
+
+    assert group["address_only"] is False

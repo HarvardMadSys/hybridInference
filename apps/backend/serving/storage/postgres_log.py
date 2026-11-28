@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 from typing import TYPE_CHECKING, Any, Literal
@@ -99,6 +100,10 @@ USER_USAGE_CACHE_TTL_SEC = 30.0
 #: Users whose usage is kept at once; the least recently computed goes first.
 USER_USAGE_CACHE_ENTRIES = 4096
 
+#: How long a duplicate-account scan's result is reused for the same window and
+#: bounds: repeated clicks and a second administrator cost one scan, not two.
+DUPLICATE_SCAN_CACHE_TTL_SEC = 30.0
+
 # What :meth:`PostgresLogStore.log_request` writes to ``api_logs``: the columns,
 # and their values over the statement's parameters, in the same order.
 _LOG_COLUMNS = """
@@ -157,6 +162,12 @@ class PostgresLogStore(LogStore):
         self._user_usage: SingleFlightCache[dict[str, Any]] = SingleFlightCache(
             USER_USAGE_CACHE_TTL_SEC, max_entries=USER_USAGE_CACHE_ENTRIES
         )
+        self._duplicate_scans: SingleFlightCache[dict[str, Any]] = SingleFlightCache(
+            DUPLICATE_SCAN_CACHE_TTL_SEC, max_entries=16
+        )
+        # One duplicate-account scan at a time in this process, whatever its
+        # bounds, so scans never hold more than one general-pool connection.
+        self._duplicate_scan_lock = asyncio.Lock()
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -826,12 +837,19 @@ class PostgresLogStore(LogStore):
 
         See :mod:`serving.analytics.duplicate_accounts`. Besides ``api_logs`` it
         reads the account tables of the same database (``users``,
-        ``admin_audit_log``, ``login_events`` and ``browser_session_accounts``)
-        on one general-pool connection, so each statement is bounded by that
-        pool's timeout.
+        ``admin_audit_log``, ``login_events`` and ``browser_session_accounts``),
+        on one general-pool connection and within one time budget for the
+        whole scan. A process runs one scan at a time, and a scan asked for
+        again with the same bounds within half a minute shares its result.
         """
-        async with self.pool.acquire() as conn:
-            return await scan_duplicate_accounts(conn, days=days, min_score=min_score, limit=limit)
+
+        async def scan() -> dict[str, Any]:
+            async with self._duplicate_scan_lock, self.pool.acquire() as conn:
+                return await scan_duplicate_accounts(
+                    conn, days=days, min_score=min_score, limit=limit
+                )
+
+        return await self._duplicate_scans.get((days, min_score, limit), scan)
 
     async def get_key_detail_usage(self, user_id: str) -> dict[str, Any]:
         """Return usage detail for admin key-detail view."""

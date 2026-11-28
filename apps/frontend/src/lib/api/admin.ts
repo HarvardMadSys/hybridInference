@@ -531,6 +531,8 @@ export interface DuplicateAccountGroup {
   score: number;
   user_ids: string[];
   signals: string[];
+  /** Only shared addresses, with no timing, identity or behaviour: as often a household or an office. */
+  address_only: boolean;
   members: DuplicateAccountMember[];
   links: DuplicateAccountLink[];
 }

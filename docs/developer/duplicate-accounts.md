@@ -8,7 +8,7 @@ The scan only reports. It changes no account, and each group it lists comes with
 
 Choose a window (the last day up to the last 90 days, 14 by default) and press **Scan**. The result lists groups of accounts, highest score first. Each group shows its members, oldest account first, with their status, role, requests in the window and sign-up date; a member's name opens the account below. **Why these accounts** lists every linked pair and what links it.
 
-A scan reads every request the window holds, so it runs only when you ask, and a long window on a busy gateway takes longer. If it cannot finish within the database's statement timeout, it stops and asks for a shorter window.
+A scan reads every request the window holds, so it runs only when you ask, and a long window on a busy gateway takes longer. If it cannot finish within 50 seconds, it stops and asks for a shorter window. A gateway process runs one scan at a time, and the same scan asked for again within half a minute gets the same result.
 
 ## The evidence
 
@@ -35,9 +35,9 @@ Email addresses reach one mailbox when they match after dropping everything from
 
 ## From links to groups
 
-Each kind of evidence counts once per pair, however many addresses carry it: sharing six addresses of one provider's pool is one fact about the pair, not six. Two accounts join one group when the evidence between that pair reaches 5. Every kind drawn on an address weighs less than that, so an address alone links nobody. It takes a second kind of evidence: registering close together, being active in the same hours, signing in from the address as well, or the same weekly rhythm.
+Each kind of evidence counts once per pair, however many addresses carry it: sharing six addresses of one provider's pool is one fact about the pair, not six. Two accounts join one group when the evidence between that pair reaches 5. Every kind drawn on an address weighs less than that, so no single kind of address evidence links two accounts. Two kinds do, even on one address: registering close together, being active in the same hours, or both signing in and sending requests from it. Two people behind one home or office router who both sign in and use the API therefore form a group, at the lowest score. A group whose only evidence is where its accounts were, with no timing, identity or behaviour, is marked **Shared addresses only** in the console and `address_only` in the API.
 
-Because each merge needs strong evidence between a pair, a chain of weak links cannot pull strangers into one group. A group's score is the sum of the weights of every linked pair in it, so larger and more tightly linked groups score higher.
+Because each merge needs strong evidence between a pair, a chain of weak links cannot pull strangers into one group. A group's score is the sum of the weights of every linked pair in it, so larger and more tightly linked groups score higher. The score and **Why these accounts** cover every linked pair in the group, including pairs too weak to have merged on their own.
 
 A group of more than 10 accounts is usually a shared network rather than one person. The scan raises the bar inside such a group until its parts are plausible and reports the parts that remain. Whatever stays that large is listed apart, under the components linked too loosely to be one person's, so that the limit is visible rather than silent. A group that same-mailbox or same-browser evidence holds together is reported whole, however large: that is one person with many accounts.
 
@@ -69,4 +69,4 @@ Registrations, sign-ins and requests count only inside the window. A browser or 
 | `min_score` | 5 | Leave out groups scoring below this, 1 to 100 |
 | `limit` | 100 | List at most this many groups, 1 to 500 |
 
-The response has `accounts_scanned` (the accounts active in the window, the operator's own aside), `shared_addresses` and `shared_browsers` (how many were set aside as shared), `total_groups`, `groups` and `oversized`. Each group has its `score`, `user_ids`, `signals` (the kinds of evidence found, strongest first), `members` and `links`. Each link names two accounts and lists its `evidence`: the `kind`, its `weight`, the `addresses` it was seen on (empty for identity and behaviour evidence) and a one-sentence `detail`. A scan that runs out of time is answered with 504.
+The response has `accounts_scanned` (the accounts active in the window, the operator's own aside), `shared_addresses` and `shared_browsers` (how many were set aside as shared), `total_groups`, `groups` and `oversized`. Each group has its `score`, `user_ids`, `signals` (the kinds of evidence found, strongest first), `address_only`, `members` and `links`. Each link names two accounts and lists its `evidence`: the `kind`, its `weight`, the `addresses` it was seen on (empty for identity and behaviour evidence) and a one-sentence `detail`. A scan that runs out of time is answered with 504.

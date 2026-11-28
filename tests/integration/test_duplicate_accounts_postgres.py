@@ -13,10 +13,12 @@ import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import asyncpg
 import pytest
 import pytest_asyncio
 
 from migrations.baseline.api_logs import ensure_api_logs_schema
+from serving.analytics import duplicate_accounts
 from serving.analytics.duplicate_accounts import scan_duplicate_accounts
 from serving.storage.postgres_log import PostgresLogStore
 from tests.fixtures import postgres
@@ -261,3 +263,31 @@ async def test_the_log_store_runs_the_scan_on_its_pool(pool):
 
     assert report["total_groups"] == 2  # the browser (8) and the shared hours (7)
     assert [group["user_ids"] for group in report["groups"]] == [["browser-a", "browser-b"]]
+
+
+async def test_a_scan_is_one_read_only_snapshot_within_its_budget(pool, monkeypatch):
+    # A statement slower than the whole budget is cancelled by the database.
+    monkeypatch.setattr(
+        duplicate_accounts,
+        "_SIGNUPS_SQL",
+        "SELECT NULL::text AS user_id, NULL::text AS ip, now() AS registered_at "
+        "FROM pg_sleep(3) WHERE $1::timestamptz IS NOT NULL",
+    )
+    async with pool.acquire() as conn:
+        with pytest.raises(asyncpg.QueryCanceledError):
+            await scan_duplicate_accounts(conn, days=14, now=NOW, budget_sec=0.5)
+        # The timeout was local to the scan's transaction.
+        assert await conn.fetchval("SHOW statement_timeout") != "1s"
+
+
+async def test_a_scan_cannot_write(pool, monkeypatch):
+    monkeypatch.setattr(
+        duplicate_accounts,
+        "_SIGNUPS_SQL",
+        "INSERT INTO users (id, email) VALUES ('intruder', 'x@example.org') "
+        "RETURNING id AS user_id, NULL::text AS ip, now() AS registered_at, $1::timestamptz",
+    )
+    async with pool.acquire() as conn:
+        with pytest.raises(asyncpg.ReadOnlySQLTransactionError):
+            await scan_duplicate_accounts(conn, days=14, now=NOW)
+        assert await conn.fetchval("SELECT count(*) FROM users WHERE id = 'intruder'") == 0

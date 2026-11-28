@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import ipaddress
 import math
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -89,6 +90,10 @@ MAX_PAIR_WEIGHT = sum(SIGNAL_WEIGHTS.values())
 ADDRESS_KINDS = frozenset(
     {"signup_ip", "signup_burst", "login_ip", "request_ip", "cross_ip", "co_active"}
 )
+#: The address kinds that say only where two accounts were, not when. A group
+#: with no other evidence is as often one household or office as one person,
+#: and the report marks it ``address_only``.
+PRESENCE_KINDS = ADDRESS_KINDS - {"signup_burst", "co_active"}
 #: The kinds that prove one person on their own; a group they hold together is
 #: never set aside as shared infrastructure, however large.
 IDENTITY_KINDS = frozenset({"same_browser", "email_alias"})
@@ -137,6 +142,10 @@ EXCLUDED_ROLES = frozenset({"admin", "internal"})
 #: How many groups a report lists by default, and at most.
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
+
+#: The time one whole scan may take, in seconds, below the general pool's
+#: per-statement timeout: past it the database cancels the statement running.
+SCAN_BUDGET_SEC = 50.0
 
 _HOURS_PER_WEEK = 7 * 24
 
@@ -599,6 +608,10 @@ class DuplicateAccountScan:
                     "score": score,
                     "user_ids": sorted(members),
                     "signals": [kind for kind in SIGNAL_WEIGHTS if kind in kinds],
+                    # Shared addresses and nothing else, not even timing: a
+                    # household or an office looks like this as often as one
+                    # person does.
+                    "address_only": kinds <= PRESENCE_KINDS,
                     "members": [self._member(user_id) for user_id in self._ordered(members)],
                     "links": [self._link(pair, weights[pair]) for pair in inner],
                 }
@@ -775,8 +788,9 @@ _REQUESTS_SQL = f"""
     )
 """
 
-#: The browsers holding more than one account (not bound to the window: a row
-#: exists while the account is signed in there).
+#: The browsers holding more than one account, one of them active in the window
+#: (``$1``). Not bound to the window otherwise: a row exists while the account
+#: is signed in there.
 _BROWSERS_SQL = """
     SELECT browser_session_id, user_id, added_at
     FROM browser_session_accounts
@@ -784,12 +798,13 @@ _BROWSERS_SQL = """
         SELECT browser_session_id
         FROM browser_session_accounts
         GROUP BY browser_session_id
-        HAVING count(*) > 1
+        HAVING count(*) > 1 AND bool_or(user_id = ANY($1::text[]))
     )
 """
 
-#: Accounts whose addresses reach one mailbox: everything after a ``+`` in the
-#: local part is a tag for every provider, and Gmail also ignores dots.
+#: Accounts whose addresses reach one mailbox, one of them active in the window
+#: (``$1``): everything after a ``+`` in the local part is a tag for every
+#: provider, and Gmail also ignores dots.
 _MAILBOXES_SQL = """
     WITH addresses AS (
         SELECT id,
@@ -809,7 +824,7 @@ _MAILBOXES_SQL = """
     SELECT mailbox, array_agg(id ORDER BY id) AS user_ids
     FROM mailboxes
     GROUP BY mailbox
-    HAVING count(*) > 1
+    HAVING count(*) > 1 AND bool_or(id = ANY($1::text[]))
 """
 
 _USERS_SQL = """
@@ -841,6 +856,7 @@ async def scan_duplicate_accounts(
     min_score: int = MERGE_THRESHOLD,
     limit: int = DEFAULT_LIMIT,
     now: datetime | None = None,
+    budget_sec: float = SCAN_BUDGET_SEC,
 ) -> dict[str, Any]:
     """Scan the last *days* days for accounts that may belong to one person.
 
@@ -849,19 +865,55 @@ async def scan_duplicate_accounts(
     :meth:`DuplicateAccountScan.report`. The window's requests are read in one
     pass; only the accounts a link reaches have their requests read again,
     hour by hour.
+
+    Every statement runs in one read-only, repeatable-read transaction, so the
+    scan sees one snapshot, and the whole scan is held to *budget_sec*: each
+    statement may take only what is left of it. Past it, the database cancels
+    the statement and ``asyncpg.QueryCanceledError`` is raised.
     """
     since = (now or datetime.now(UTC)) - timedelta(days=days)
-    signups = await conn.fetch(_SIGNUPS_SQL, since)
-    logins = await conn.fetch(_LOGINS_SQL, since)
-    requests = await conn.fetch(_REQUESTS_SQL, since)
-    browsers = await conn.fetch(_BROWSERS_SQL)
-    mailboxes = await conn.fetch(_MAILBOXES_SQL)
+    async with conn.transaction(isolation="repeatable_read", readonly=True):
+        fetch = _budgeted(conn, budget_sec)
+        return await _gather_and_scan(
+            fetch, since=since, days=days, min_score=min_score, limit=limit
+        )
+
+
+def _budgeted(conn: asyncpg.Connection, budget_sec: float) -> Callable[..., Any]:
+    """A ``fetch`` that holds every statement to what is left of *budget_sec*.
+
+    ``SET LOCAL`` lasts until the transaction ends, so each statement is given
+    the remainder just before it runs. A statement started with less than a
+    second left gets that second, and the database cancels it if it needs more.
+    """
+    deadline = time.monotonic() + budget_sec
+
+    async def fetch(sql: str, *args: Any) -> list[Any]:
+        remaining_ms = max(1000, int((deadline - time.monotonic()) * 1000))
+        await conn.execute(f"SET LOCAL statement_timeout = {remaining_ms}")
+        return await conn.fetch(sql, *args)
+
+    return fetch
+
+
+async def _gather_and_scan(
+    fetch: Callable[..., Any], *, since: datetime, days: int, min_score: int, limit: int
+) -> dict[str, Any]:
+    signups = await fetch(_SIGNUPS_SQL, since)
+    logins = await fetch(_LOGINS_SQL, since)
+    requests = await fetch(_REQUESTS_SQL, since)
+    # A browser or a mailbox links accounts only when one of them was active
+    # in the window, so only those groups are read, and only their members'
+    # rows are looked up below.
+    active = sorted({row["user_id"] for row in (*signups, *logins, *requests)})
+    browsers = await fetch(_BROWSERS_SQL, active)
+    mailboxes = await fetch(_MAILBOXES_SQL, active)
 
     by_address = [row for row in requests if not row["by_client"]]
     by_client = [row for row in requests if row["by_client"]]
-    user_ids = {row["user_id"] for row in (*signups, *logins, *requests, *browsers)}
+    user_ids = set(active).union(row["user_id"] for row in browsers)
     user_ids.update(user_id for row in mailboxes for user_id in row["user_ids"])
-    rows = await conn.fetch(_USERS_SQL, sorted(user_ids)) if user_ids else []
+    rows = await fetch(_USERS_SQL, sorted(user_ids)) if user_ids else []
     accounts = {
         row["id"]: AccountRecord(
             user_id=row["id"],
@@ -886,7 +938,7 @@ async def scan_duplicate_accounts(
         mailboxes=[(r["mailbox"], list(r["user_ids"])) for r in mailboxes],
     )
     candidates = sorted(scan.candidates)
-    hours = await conn.fetch(_HOURS_SQL, candidates, since) if candidates else []
+    hours = await fetch(_HOURS_SQL, candidates, since) if candidates else []
     scan.add_activity(
         hours=[(r["user_id"], r["ip"], r["hour"], r["requests"]) for r in hours],
         clients=[(r["user_id"], r["client"], r["requests"]) for r in by_client],

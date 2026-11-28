@@ -497,14 +497,18 @@ class DuplicateAccountMember(BaseModel):
 class DuplicateAccountGroup(BaseModel):
     """Accounts that may belong to one person, with every link between them.
 
-    ``score`` is the sum of the links' weights; ``signals`` the kinds of
-    evidence found, strongest first; ``members`` oldest account first, and
-    ``links`` heaviest first.
+    ``score`` is the sum of the weights of every linked pair in the group,
+    including pairs too weak to have merged on their own; ``signals`` the kinds
+    of evidence found, strongest first; ``address_only`` whether all of it is
+    shared addresses, with no timing, identity or behaviour (as often a
+    household or an office as one person);
+    ``members`` oldest account first, and ``links`` heaviest first.
     """
 
     score: int
     user_ids: list[str]
     signals: list[str]
+    address_only: bool = False
     members: list[DuplicateAccountMember]
     links: list[DuplicateAccountLink]
 
