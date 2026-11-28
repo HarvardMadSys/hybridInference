@@ -22,12 +22,14 @@ goes through the same sequence:
    create, and whose key names none of its batches, has nothing to replay: it
    is refused before step 2, without uploading the body.
 4. **Role, daily quota, feature switch** -- only for a request that creates.
+   Without an ``Idempotency-Key``, the active-batch and hourly caps are
+   checked here too, before the body is read (:func:`precheck_caps`).
 5. **Validation** of the requests (:mod:`serving.batch.targets`).
 6. **The create transaction**, under the owner's admission lock: the
    idempotency record checked again, for both input methods (a concurrent
    create with the same key returns the first one's batch, or 409 when the
-   first used the other input method), the active-batch and queued-request caps,
-   and the insert, together (:meth:`BatchStore.create_batch`).
+   first used the other input method), the active-batch, hourly and
+   queued-request caps, and the insert, together (:meth:`BatchStore.create_batch`).
 """
 
 from __future__ import annotations
@@ -200,13 +202,21 @@ def finite_json_float(text: str) -> float:
     return value
 
 
-async def precheck_active(store: Any, owner: str, config: BatchConfig) -> None:
-    """Refuse early (before validating a large body) when the owner is at the active cap."""
+async def precheck_caps(store: Any, owner: str, config: BatchConfig) -> None:
+    """Refuse early (before reading a large body) when the owner is at a batch cap.
+
+    The cap on unfinished batches and the hourly one; the create transaction
+    enforces both again, atomically.
+    """
     active = await store.count_active_batches(owner)
     if active >= config.max_active_per_user:
         raise limit_error(
             BatchLimitExceeded("active_batches", limit=config.max_active_per_user, current=active)
         )
+    try:
+        await store.precheck_creates_per_hour(owner, config.max_creates_per_hour)
+    except BatchLimitExceeded as exc:
+        raise limit_error(exc) from None
 
 
 def limit_error(exc: BatchLimitExceeded) -> HTTPException:
@@ -216,6 +226,15 @@ def limit_error(exc: BatchLimitExceeded) -> HTTPException:
             429,
             f"Too many unfinished batches: at most {exc.limit} may be queued or running at "
             "once; wait for one to finish or cancel one",
+        )
+    if exc.kind == "batches_per_hour":
+        # The cap frees a slot at a known time, so the answer says when.
+        wait = None if exc.retry_after is None else max(1, math.ceil(exc.retry_after))
+        return HTTPException(
+            429,
+            f"Too many batches created: at most {exc.limit} may be created in an hour; "
+            + ("wait and try again" if wait is None else f"try again in {wait} seconds"),
+            headers=None if wait is None else {"Retry-After": str(wait)},
         )
     return HTTPException(
         429,

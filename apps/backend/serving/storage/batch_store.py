@@ -121,15 +121,26 @@ class BatchInputUnavailable(RuntimeError):
 class BatchLimitExceeded(RuntimeError):
     """Admission refused: a per-user cap would be exceeded.
 
-    ``kind`` is ``active_batches`` or ``queued_requests``; ``limit`` the cap and
-    ``current`` what the user already holds.
+    ``kind`` is ``active_batches``, ``queued_requests`` or ``batches_per_hour``;
+    ``limit`` the cap and ``current`` what the user already holds.
+    ``retry_after`` is the seconds until the cap admits another, where that is
+    known (``batches_per_hour``), else None.
     """
 
-    def __init__(self, kind: str, *, limit: int, current: int, requested: int = 0) -> None:
+    def __init__(
+        self,
+        kind: str,
+        *,
+        limit: int,
+        current: int,
+        requested: int = 0,
+        retry_after: float | None = None,
+    ) -> None:
         self.kind = kind
         self.limit = limit
         self.current = current
         self.requested = requested
+        self.retry_after = retry_after
         super().__init__(f"{kind}: {current} + {requested} exceeds {limit}")
 
 
@@ -218,6 +229,16 @@ IDEMPOTENCY_RETENTION_SECONDS = 24 * 3600
 _CLAIM_LOCK_CLASS = 0x42415443  # ASCII "BATC"
 _USER_ADMISSION_LOCK_CLASS = 0x42415541  # "BAUA"
 _CLAIM_LOCK_SQL = "SELECT pg_advisory_xact_lock($1, hashtext($2))"
+# The batches a user ($1) created in the last hour, over the (user_id,
+# created_at) index, and the seconds until fewer than the cap ($2) remain:
+# until the batch whose aging out brings the count under the cap is an hour old.
+_CREATED_LAST_HOUR_SQL = """
+    SELECT count(*) AS created,
+           EXTRACT(EPOCH FROM (array_agg(created_at ORDER BY created_at))
+                   [GREATEST(count(*) - $2 + 1, 1)] + interval '1 hour' - now()) AS wait
+    FROM batch_jobs
+    WHERE user_id = $1 AND created_at > now() - interval '1 hour'
+"""
 
 # Retention purges at most this many batches per sweep, one per statement: a
 # batch can hold tens of thousands of items, and the next sweep continues.
@@ -903,6 +924,7 @@ class BatchStore:
         idempotency: dict[str, str] | None = None,
         max_active: int | None = None,
         max_queued: int | None = None,
+        max_per_hour: int | None = None,
     ) -> dict[str, Any]:
         """Store a new batch and all of its items in one transaction.
 
@@ -936,6 +958,8 @@ class BatchStore:
                 ``Idempotency-Key``; checked again under the user's lock.
             max_active: The user's cap on unfinished batches, or None.
             max_queued: The user's cap on unfinished requests, or None.
+            max_per_hour: The user's cap on batches created in the last
+                hour, or None.
 
         Returns:
             The batch row. With ``idempotency``, when another create with the
@@ -992,6 +1016,7 @@ class BatchStore:
                 max_active=max_active,
                 max_queued=max_queued,
                 requested=len(queued_records),
+                max_per_hour=max_per_hour,
             )
             if input_file_id is not None:
                 await self._pin_input(conn, input_file_id, user_id)
@@ -1150,6 +1175,7 @@ class BatchStore:
         max_active: int | None,
         max_queued: int | None,
         console: dict[str, Any],
+        max_per_hour: int | None = None,
     ) -> dict[str, Any]:
         """Store a console batch over its source file, adopting its stored-request copy.
 
@@ -1202,7 +1228,12 @@ class BatchStore:
             if replay is not None:
                 return replay
             await self._check_user_caps(
-                conn, user_id, max_active=max_active, max_queued=max_queued, requested=0
+                conn,
+                user_id,
+                max_active=max_active,
+                max_queued=max_queued,
+                requested=0,
+                max_per_hour=max_per_hour,
             )
             # Lock first, then judge the row in a statement of its own. A
             # ``FOR UPDATE`` that waited for another holder returns the row as
@@ -1567,8 +1598,11 @@ class BatchStore:
         max_active: int | None,
         max_queued: int | None,
         requested: int,
+        max_per_hour: int | None = None,
     ) -> None:
         """Refuse admission past the user's caps; call under the admission lock."""
+        if max_per_hour is not None:
+            await _check_creates_per_hour(conn, user_id, max_per_hour)
         if max_active is None and max_queued is None:
             return
         usage = await conn.fetchrow(
@@ -1597,6 +1631,18 @@ class BatchStore:
                 current=int(usage["queued"]),
                 requested=requested,
             )
+
+    async def precheck_creates_per_hour(self, user_id: str, max_per_hour: int) -> None:
+        """Refuse early when the user already created *max_per_hour* batches in the last hour.
+
+        Without the admission lock, so before a create reads its body: the
+        create transaction checks again, atomically.
+
+        Raises:
+            BatchLimitExceeded: ``batches_per_hour``, with ``retry_after``.
+        """
+        async with self._pool.acquire() as conn:
+            await _check_creates_per_hour(conn, user_id, max_per_hour)
 
     async def count_active_batches(self, user_id: str) -> int:
         """Count a user's unfinished batches (validating, running, cancelling or sealing)."""
@@ -3811,6 +3857,27 @@ def _load_plain_json(value: Any) -> Any:
     except (json.JSONDecodeError, ValueError):
         logger.warning("Failed to decode a batch JSON column", exc_info=True)
         return None
+
+
+async def _check_creates_per_hour(conn: Any, user_id: str, max_per_hour: int) -> None:
+    """Refuse a create past the user's hourly cap.
+
+    It counts every batch the user created in the last hour, whatever its
+    status: a finished or cancelled batch no longer counts as unfinished, but
+    its requests and results stay stored until its retention ends. A deleted
+    batch no longer holds them, and counts only until it is purged.
+
+    Raises:
+        BatchLimitExceeded: ``batches_per_hour``, with ``retry_after``.
+    """
+    row = await conn.fetchrow(_CREATED_LAST_HOUR_SQL, user_id, max_per_hour)
+    if row["created"] >= max_per_hour:
+        raise BatchLimitExceeded(
+            "batches_per_hour",
+            limit=max_per_hour,
+            current=int(row["created"]),
+            retry_after=float(row["wait"]),
+        )
 
 
 def _dump_json(value: Any) -> str | None:

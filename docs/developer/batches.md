@@ -462,6 +462,7 @@ Defaults; the operator may change any of them on the admin **Settings** tab. Spl
 | Requests per batch | 50,000 | `BATCH_MAX_REQUESTS` |
 | Unfinished batches per user (`validating`, `in_progress`, `finalizing` or `cancelling`) | 10 (`429` above it) | `BATCH_MAX_ACTIVE_PER_USER` |
 | Unfinished requests per user, across batches | 100,000 (`429` above it) | `BATCH_MAX_QUEUED_REQUESTS_PER_USER` |
+| Batches a user may create in any hour, finished and cancelled ones included | 60 (`429` above it) | `BATCH_MAX_CREATES_PER_HOUR` |
 | One line of an input file | 4 MiB | `BATCH_MAX_LINE_KB` |
 | Input files a user may keep | 512 MiB | `BATCH_FILES_MAX_TOTAL_MB_PER_USER` |
 | Uploads per user per hour, failed ones included (counted in each gateway process) | 60 | `BATCH_FILE_UPLOADS_PER_HOUR` |
@@ -484,7 +485,7 @@ A batch keeps the window and retention it was created with.
 | `409` | The `Idempotency-Key` was already used with a different request |
 | `410` | The `Idempotency-Key`'s batch has been deleted |
 | `413` | The body is larger than the size limit |
-| `429` | You have the most unfinished batches allowed, the batch would take your unfinished requests over their limit, your daily or monthly quota is used up, or the key has spent its own budget |
+| `429` | You have the most unfinished batches allowed, you created the most batches allowed in the last hour (`Retry-After` then gives the seconds until you may create another), the batch would take your unfinished requests over their limit, your daily or monthly quota is used up, or the key has spent its own budget |
 
 A file batch is counted against the limit on unfinished requests while its file is read, after the create call has answered; over the limit, it is `failed` with `queued_request_limit` in `errors`.
 

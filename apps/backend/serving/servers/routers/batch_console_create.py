@@ -833,6 +833,7 @@ async def create_console_batch(
                 idempotency={"key": key, "digest": digest},
                 max_active=config.max_active_per_user,
                 max_queued=config.max_queued_per_user,
+                max_per_hour=config.max_creates_per_hour,
                 console={
                     "display_name": body.name.strip(),
                     "description": body.description.strip() or None,

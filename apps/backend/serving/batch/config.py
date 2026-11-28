@@ -51,6 +51,8 @@ MAX_BODY_MB_KEY = "BATCH_MAX_BODY_MB"
 MAX_ACTIVE_KEY = "BATCH_MAX_ACTIVE_PER_USER"
 #: Unfinished requests one user may have, across every batch.
 MAX_QUEUED_KEY = "BATCH_MAX_QUEUED_REQUESTS_PER_USER"
+#: Batches one user may create per rolling hour, finished ones included.
+MAX_CREATES_PER_HOUR_KEY = "BATCH_MAX_CREATES_PER_HOUR"
 #: Hours a new batch has to start its requests before the unstarted ones
 #: expire; 0 means no limit, for inline and file batches alike.
 WINDOW_HOURS_KEY = "BATCH_COMPLETION_WINDOW_HOURS"
@@ -88,6 +90,7 @@ DEFAULT_MAX_REQUESTS = 50_000
 DEFAULT_MAX_BODY_MB = 32
 DEFAULT_MAX_ACTIVE_PER_USER = 10
 DEFAULT_MAX_QUEUED_PER_USER = 100_000
+DEFAULT_MAX_CREATES_PER_HOUR = 60
 DEFAULT_WINDOW_HOURS = 24
 MAX_WINDOW_HOURS = 168
 DEFAULT_RETENTION_DAYS = 7
@@ -128,6 +131,7 @@ class BatchConfig:
     max_body_bytes: int = DEFAULT_MAX_BODY_MB * 1024 * 1024
     max_active_per_user: int = DEFAULT_MAX_ACTIVE_PER_USER
     max_queued_per_user: int = DEFAULT_MAX_QUEUED_PER_USER
+    max_creates_per_hour: int = DEFAULT_MAX_CREATES_PER_HOUR
     completion_window_hours: int = DEFAULT_WINDOW_HOURS
     retention_days: int = DEFAULT_RETENTION_DAYS
     max_line_bytes: int = DEFAULT_MAX_LINE_KB * 1024
@@ -208,6 +212,9 @@ def batch_config() -> BatchConfig:
         max_body_bytes=_int(MAX_BODY_MB_KEY, DEFAULT_MAX_BODY_MB, minimum=1) * 1024 * 1024,
         max_active_per_user=_int(MAX_ACTIVE_KEY, DEFAULT_MAX_ACTIVE_PER_USER, minimum=1),
         max_queued_per_user=_int(MAX_QUEUED_KEY, DEFAULT_MAX_QUEUED_PER_USER, minimum=1),
+        max_creates_per_hour=_int(
+            MAX_CREATES_PER_HOUR_KEY, DEFAULT_MAX_CREATES_PER_HOUR, minimum=1
+        ),
         completion_window_hours=_int(
             WINDOW_HOURS_KEY, DEFAULT_WINDOW_HOURS, minimum=0, maximum=MAX_WINDOW_HOURS
         ),
