@@ -1720,7 +1720,182 @@ async def test_a_batch_another_sweep_holds_is_skipped_for_the_next_one(pool, sto
     assert not await store.batch_exists(third)
 
 
+async def _finished_with(store: BatchStore, pool: Any, count: int, *, days_ago: int) -> str:
+    """A completed batch of *count* items, each with an attempt, ended *days_ago* days ago."""
+    model = _model()
+    created = await _create(store, _items(model, count))
+    for item in await _claim(store, model, limit=count):
+        assert await _complete(store, item)
+    await _execute(
+        pool,
+        "UPDATE batch_jobs SET completed_at = now() - make_interval(days => $2), "
+        "sealed_at = now() - make_interval(days => $2) WHERE id = $1",
+        created["id"],
+        days_ago,
+    )
+    return created["id"]
+
+
+async def _attempts(pool: Any, batch_id: str) -> int:
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT count(*) FROM batch_attempts WHERE batch_id = $1", batch_id
+        )
+
+
+async def test_a_purge_takes_a_large_batch_apart_a_slice_at_a_time(pool, store, monkeypatch):
+    """One statement cascading to every item could outlast the statement timeout."""
+    monkeypatch.setattr(batch_store, "_ERASE_ITEMS_PER_STATEMENT", 2)
+    big = await _finished_with(store, pool, 7, days_ago=30)
+    sent: list[str] = []
+
+    def _record(query: Any) -> None:
+        sent.append(" ".join(query.query.split()))
+
+    async with pool.acquire() as conn:
+        conn.add_query_logger(_record)
+        try:
+            await BatchStore(_OneConnection(conn)).sweep(retention_days=7)
+            await asyncio.sleep(0)
+        finally:
+            conn.remove_query_logger(_record)
+
+    assert not await store.batch_exists(big)
+    assert await _rows(pool, big) == []
+    assert await _attempts(pool, big) == 0
+    # Seven items in slices of two; the batch row goes with the last slice.
+    slices = [s for s in sent if s.startswith("DELETE FROM batch_items")]
+    assert len(slices) == 4
+    assert len([s for s in sent if s.startswith("WITH victim AS")]) == 1
+
+
+async def test_a_purge_that_fails_goes_on_with_the_others_and_finishes_later(
+    pool, store, monkeypatch
+):
+    monkeypatch.setattr(batch_store, "_ERASE_ITEMS_PER_STATEMENT", 2)
+    oldest = await _finished_with(store, pool, 5, days_ago=30)
+    newer = await _finished_with(store, pool, 1, days_ago=20)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO batch_read_leases (lease_id, batch_id, file_id, expires_at) "
+            "VALUES ($1, NULL, NULL, now() - interval '1 minute')",
+            f"lease-{uuid.uuid4().hex}",
+        )
+    real = BatchStore._delete_item_slice
+    calls = 0
+
+    async def timing_out(conn: Any, batch_id: str) -> bool:
+        nonlocal calls
+        if batch_id == oldest:
+            calls += 1
+            if calls == 2:
+                raise TimeoutError("canceling statement due to statement timeout")
+        return await real(conn, batch_id)
+
+    monkeypatch.setattr(BatchStore, "_delete_item_slice", staticmethod(timing_out))
+
+    assert (await store.sweep(retention_days=7))["purged"] == 1
+    assert not await store.batch_exists(newer)
+    # The first slice stayed deleted; the batch is hidden and stays purgeable.
+    assert len(await _rows(pool, oldest)) == 3
+    assert await store.get_batch(oldest) is None
+    # The steps after the purge still ran.
+    async with pool.acquire() as conn:
+        assert (
+            await conn.fetchval("SELECT count(*) FROM batch_read_leases WHERE expires_at <= now()")
+            == 0
+        )
+
+    monkeypatch.setattr(BatchStore, "_delete_item_slice", staticmethod(real))
+    assert (await store.sweep(retention_days=7))["purged"] == 1
+    assert not await store.batch_exists(oldest)
+    assert await _rows(pool, oldest) == []
+
+
 # -- deletes ---------------------------------------------------------------------
+
+
+async def test_delete_takes_a_large_batch_apart_outside_the_model_lock(pool, store, monkeypatch):
+    """A model's claims and heartbeats wait on its lock, so the slices must not hold it."""
+    monkeypatch.setattr(batch_store, "_ERASE_ITEMS_PER_STATEMENT", 2)
+    model = _model()
+    created = await _create(store, _items(model, 5))
+    for item in await _claim(store, model, limit=2):
+        assert await _complete(store, item)
+    real = BatchStore._delete_item_slice
+    free: list[bool] = []
+
+    async def checking(conn: Any, batch_id: str) -> bool:
+        async with pool.acquire() as other, other.transaction():
+            free.append(
+                await other.fetchval(
+                    "SELECT pg_try_advisory_xact_lock($1, hashtext($2))",
+                    batch_store._CLAIM_LOCK_CLASS,
+                    model,
+                )
+            )
+        return await real(conn, batch_id)
+
+    monkeypatch.setattr(BatchStore, "_delete_item_slice", staticmethod(checking))
+
+    assert await store.delete_batch(created["id"], user_id="alice")
+
+    assert free == [True, True, True]
+    assert not await store.batch_exists(created["id"])
+    assert await _rows(pool, created["id"]) == []
+    assert await _attempts(pool, created["id"]) == 0
+
+
+async def test_a_delete_cut_short_is_finished_by_the_sweep(pool, store, monkeypatch):
+    monkeypatch.setattr(batch_store, "_ERASE_ITEMS_PER_STATEMENT", 2)
+    model = _model()
+    created = await _create(store, _items(model, 5))
+    real = BatchStore._delete_item_slice
+    calls = 0
+
+    async def timing_out(conn: Any, batch_id: str) -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise TimeoutError("canceling statement due to statement timeout")
+        return await real(conn, batch_id)
+
+    monkeypatch.setattr(BatchStore, "_delete_item_slice", staticmethod(timing_out))
+
+    # The deletion is committed: the batch is gone for its owner at once.
+    assert await store.delete_batch(created["id"], user_id="alice")
+    assert await store.get_batch(created["id"]) is None
+    assert len(await _rows(pool, created["id"])) == 3
+    assert not await store.delete_batch(created["id"], user_id="alice")
+
+    monkeypatch.setattr(BatchStore, "_delete_item_slice", staticmethod(real))
+    assert (await store.sweep(retention_days=7))["purged"] == 1
+    assert not await store.batch_exists(created["id"])
+    assert await _rows(pool, created["id"]) == []
+
+
+async def test_a_delete_answers_in_its_time_and_leaves_the_rest_to_the_sweep(
+    pool, store, monkeypatch
+):
+    """A batch of tens of thousands of items takes too many slices to wait for."""
+    monkeypatch.setattr(batch_store, "_ERASE_ITEMS_PER_STATEMENT", 2)
+    monkeypatch.setattr(batch_store, "_DELETE_INLINE_SECONDS", 0.0)
+    model = _model()
+    created = await _create(store, _items(model, 5))
+    small = await _create(store, _items(model, 1))
+
+    assert await store.delete_batch(created["id"], user_id="alice")
+    # One slice, then the answer: the batch is gone for its owner already.
+    assert await store.get_batch(created["id"]) is None
+    assert len(await _rows(pool, created["id"])) == 3
+    assert not await store.delete_batch(created["id"], user_id="alice")
+    # A batch its first slice takes whole is deleted before the answer.
+    assert await store.delete_batch(small["id"], user_id="alice")
+    assert not await store.batch_exists(small["id"])
+
+    assert (await store.sweep(retention_days=7))["purged"] == 1
+    assert not await store.batch_exists(created["id"])
+    assert await _rows(pool, created["id"]) == []
 
 
 async def test_delete_waits_until_live_items_finish(pool, store):
