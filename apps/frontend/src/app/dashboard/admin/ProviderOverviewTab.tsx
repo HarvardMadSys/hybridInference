@@ -5,6 +5,7 @@ import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import type {
   ProviderDefinitionItem,
   ProbeProviderDefinitionResponse,
+  RoutableProvider,
   UpdateProviderDefinitionPayload,
 } from '@/lib/api/admin';
 import {
@@ -19,6 +20,7 @@ import { diffFields } from '@/components/features/admin/confirm/ChangeList';
 import { EditBar } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { withoutSecret } from '@/components/features/admin/confirm/withoutSecret';
+import { ProviderToggle } from '@/components/features/admin/ProviderToggle';
 
 function slugify(value: string): string {
   return value
@@ -60,6 +62,53 @@ function ProviderUsageCell({ keys, models }: { keys: number; models: number }) {
         <div className="text-[13px] font-semibold tabular-nums text-gray-900">{models}</div>
         <div className="text-[10px] font-medium uppercase tracking-wide text-gray-400">Models</div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * A provider's place in the live routing table: whether routing may use it,
+ * how many endpoints it serves, and the switch that takes it out of routing.
+ */
+function RoutingCell({
+  entry,
+  loaded,
+  busy,
+  onToggle,
+}: {
+  entry: RoutableProvider | undefined;
+  loaded: boolean;
+  busy: boolean;
+  onToggle: (provider: RoutableProvider) => void;
+}) {
+  if (!loaded) return <div className="text-right text-[12px] text-gray-300">—</div>;
+  if (!entry) {
+    return <div className="text-right text-[11px] text-gray-400">No routes</div>;
+  }
+  return (
+    <div className="flex items-center justify-end gap-2.5">
+      <div
+        className="text-right"
+        title={`${formatCount(entry.model_count, 'model')} and ${formatCount(
+          entry.endpoint_count,
+          'endpoint',
+        )} in the live routing table`}
+      >
+        <div
+          className={`text-[12px] font-medium ${entry.disabled ? 'text-gray-500' : 'text-emerald-700'}`}
+        >
+          {entry.disabled ? 'Disabled' : 'Active'}
+        </div>
+        <div className="text-[11px] tabular-nums text-gray-400">
+          {formatCount(entry.endpoint_count, 'endpoint')}
+        </div>
+      </div>
+      <ProviderToggle
+        disabled={entry.disabled}
+        busy={busy}
+        onToggle={() => onToggle(entry)}
+        label={entry.provider}
+      />
     </div>
   );
 }
@@ -637,14 +686,40 @@ function EditProviderModal({ provider, onClose, onUpdated }: EditProviderModalPr
   );
 }
 
-interface ProviderOverviewTabProps {
-  onManageKeys: (provider: string) => void;
+/**
+ * Which providers routing may use, shown in the registry beside each one. A
+ * provider switched off is left out of routing for every model.
+ */
+export interface ProviderRouting {
+  /** The live routing table's providers; null until it has loaded. */
+  providers: RoutableProvider[] | null;
+  /** A switch is in flight: every switch waits for it. */
+  busy: boolean;
+  onToggle: (provider: RoutableProvider) => void;
+  /** Reads the routing table again. */
+  reload: () => void;
 }
 
-export function ProviderOverviewTab({ onManageKeys }: ProviderOverviewTabProps) {
+interface ProviderOverviewTabProps {
+  onManageKeys: (provider: string) => void;
+  /** Adds the Routing column; without it the registry shows none. */
+  routing?: ProviderRouting;
+  /** A change reads the registry again: keys added or deleted below it change its counts. */
+  refreshKey?: number;
+  /** A provider was added, edited or deleted: the keys below list providers too. */
+  onRegistryChange?: () => void;
+}
+
+export function ProviderOverviewTab({
+  onManageKeys,
+  routing,
+  refreshKey = 0,
+  onRegistryChange,
+}: ProviderOverviewTabProps) {
   const toast = useAccountToast();
   const confirmation = useConfirmAction();
   const [providers, setProviders] = useState<ProviderDefinitionItem[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<ProviderDefinitionItem | null>(null);
@@ -666,6 +741,7 @@ export function ProviderOverviewTab({ onManageKeys }: ProviderOverviewTabProps) 
     try {
       const resp = await listProviderDefinitions();
       setProviders(resp.providers);
+      setLoaded(true);
     } catch (err) {
       toast.error(`Failed to load providers: ${getErrorMessage(err)}`);
     } finally {
@@ -675,7 +751,25 @@ export function ProviderOverviewTab({ onManageKeys }: ProviderOverviewTabProps) 
 
   useEffect(() => {
     void loadProviders();
-  }, [loadProviders]);
+  }, [loadProviders, refreshKey]);
+
+  const registryChanged = useCallback(async () => {
+    await loadProviders();
+    onRegistryChange?.();
+  }, [loadProviders, onRegistryChange]);
+
+  const routingProviders = routing?.providers ?? null;
+  const routable = useMemo(
+    () => new Map((routingProviders ?? []).map((entry) => [entry.provider, entry])),
+    [routingProviders],
+  );
+  // In the live routing table but not listed in the registry: still switched
+  // here, so one switched off can always be found and switched back on.
+  const routingOnly = useMemo(() => {
+    if (!loaded || !routingProviders) return [];
+    const registered = new Set(providers.map((provider) => provider.provider));
+    return routingProviders.filter((entry) => !registered.has(entry.provider));
+  }, [loaded, providers, routingProviders]);
 
   const requestDelete = (provider: ProviderDefinitionItem) => {
     confirmation.request({
@@ -702,7 +796,7 @@ export function ProviderOverviewTab({ onManageKeys }: ProviderOverviewTabProps) 
       run: async () => {
         await deleteProviderDefinition(provider.provider);
         toast.success('Provider deleted');
-        await loadProviders();
+        await registryChanged();
       },
     });
   };
@@ -711,10 +805,17 @@ export function ProviderOverviewTab({ onManageKeys }: ProviderOverviewTabProps) 
     <div className="space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h3 className="text-[14px] font-semibold text-gray-900">Provider registry</h3>
+          <h2 className="text-[14px] font-semibold text-gray-900">Provider registry</h2>
           <p className="mt-1 text-[12px] text-gray-500">
             Upstream providers available to keys and routing.
           </p>
+          {routing && (
+            <p className="mt-1 max-w-2xl text-[12px] text-gray-500">
+              Switching a provider off under Routing leaves it out of routing for every model.
+              Requests fall back to the model&apos;s remaining providers; a model with no other
+              route fails until it is switched back on.
+            </p>
+          )}
           {providers.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-2">
               <span className="rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[12px] font-medium tabular-nums text-gray-600">
@@ -729,13 +830,29 @@ export function ProviderOverviewTab({ onManageKeys }: ProviderOverviewTabProps) 
             </div>
           )}
         </div>
-        <button
-          type="button"
-          onClick={() => setAddOpen(true)}
-          className="rounded-lg bg-gray-900 px-4 py-2 text-[13px] font-medium text-white hover:bg-gray-700"
-        >
-          Add Provider
-        </button>
+        <div className="flex items-center gap-2">
+          {loading && providers.length > 0 && (
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              void loadProviders();
+              routing?.reload();
+            }}
+            disabled={loading}
+            className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+          >
+            Refresh
+          </button>
+          <button
+            type="button"
+            onClick={() => setAddOpen(true)}
+            className="rounded-lg bg-gray-900 px-4 py-2 text-[13px] font-medium text-white hover:bg-gray-700"
+          >
+            Add Provider
+          </button>
+        </div>
       </div>
 
       {loading && providers.length === 0 ? (
@@ -749,12 +866,13 @@ export function ProviderOverviewTab({ onManageKeys }: ProviderOverviewTabProps) 
       ) : (
         <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[840px] text-[13px]">
+            <table className={`w-full text-[13px] ${routing ? 'min-w-[980px]' : 'min-w-[840px]'}`}>
               <thead className="border-b border-gray-100 bg-gray-50/80 text-left text-[11px] uppercase tracking-wide text-gray-500">
                 <tr>
                   <th className="px-4 py-2.5">Provider</th>
                   <th className="px-4 py-2.5">Endpoint</th>
                   <th className="px-4 py-2.5 text-right">Resources</th>
+                  {routing && <th className="px-4 py-2.5 text-right">Routing</th>}
                   <th className="px-4 py-2.5 text-right">Actions</th>
                 </tr>
               </thead>
@@ -763,8 +881,14 @@ export function ProviderOverviewTab({ onManageKeys }: ProviderOverviewTabProps) 
                   const custom = provider.source === 'custom';
                   const hasLinkedModels = provider.models_count > 0;
                   const deleteReasonId = `provider-delete-reason-${provider.provider}`;
+                  const route = routable.get(provider.provider);
                   return (
-                    <tr key={provider.provider} className="transition-colors hover:bg-gray-50/70">
+                    <tr
+                      key={provider.provider}
+                      className={`transition-colors hover:bg-gray-50/70 ${
+                        route?.disabled ? 'bg-gray-50' : ''
+                      }`}
+                    >
                       <td className="px-4 py-3.5">
                         <div className="font-medium text-gray-900">{provider.display_name}</div>
                         <div className="mt-1 font-mono text-[12px] text-gray-400">
@@ -790,6 +914,16 @@ export function ProviderOverviewTab({ onManageKeys }: ProviderOverviewTabProps) 
                           models={provider.models_count}
                         />
                       </td>
+                      {routing && (
+                        <td className="px-4 py-3.5">
+                          <RoutingCell
+                            entry={route}
+                            loaded={routing.providers !== null}
+                            busy={routing.busy}
+                            onToggle={routing.onToggle}
+                          />
+                        </td>
+                      )}
                       <td className="px-4 py-3.5 text-right">
                         <div className="flex justify-end gap-2">
                           <button
@@ -837,15 +971,47 @@ export function ProviderOverviewTab({ onManageKeys }: ProviderOverviewTabProps) 
         </div>
       )}
 
+      {routing && routingOnly.length > 0 && (
+        <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
+          <div className="border-b border-gray-100 bg-gray-50/80 px-4 py-2.5">
+            <h3 className="text-[13px] font-medium text-gray-900">
+              In routing, not in the registry
+            </h3>
+            <p className="mt-0.5 text-[12px] text-gray-500">
+              Providers the live routing table knows that the registry does not list, such as one
+              switched off and since removed.
+            </p>
+          </div>
+          <ul className="divide-y divide-gray-100">
+            {routingOnly.map((entry) => (
+              <li
+                key={entry.provider}
+                className="flex items-center justify-between gap-3 px-4 py-2.5 text-[13px]"
+              >
+                <div className="min-w-0">
+                  <span className="font-medium text-gray-900">{entry.display_name}</span>
+                  {entry.display_name !== entry.provider && (
+                    <span className="ml-2 font-mono text-[12px] text-gray-400">
+                      {entry.provider}
+                    </span>
+                  )}
+                </div>
+                <RoutingCell entry={entry} loaded busy={routing.busy} onToggle={routing.onToggle} />
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <AddProviderModal
         open={addOpen}
         onClose={() => setAddOpen(false)}
-        onCreated={loadProviders}
+        onCreated={registryChanged}
       />
       <EditProviderModal
         provider={editTarget}
         onClose={() => setEditTarget(null)}
-        onUpdated={loadProviders}
+        onUpdated={registryChanged}
       />
       {confirmation.dialog}
     </div>

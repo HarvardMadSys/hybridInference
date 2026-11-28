@@ -12,7 +12,7 @@ vi.mock('next/navigation', () => ({ redirect: redirectMock }));
 import Page from './page';
 
 describe('the old Admin → Models address', () => {
-  it('lands on Providers → Models, where the model configuration moved', () => {
-    expect(() => Page()).toThrow('NEXT_REDIRECT /dashboard/admin/providers/models');
+  it('lands on Routing → Models, where the model configuration moved', () => {
+    expect(() => Page()).toThrow('NEXT_REDIRECT /dashboard/admin/routing/models');
   });
 });

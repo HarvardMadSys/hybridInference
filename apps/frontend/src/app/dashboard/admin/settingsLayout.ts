@@ -13,13 +13,13 @@
  *   Site & Setup       what is usually set once at deploy time, the JSON
  *                      documents, and backup & restore at the bottom
  *
- * The model catalog is the exception: it is on Admin → Providers → Models,
+ * The model catalog is the exception: it is on Admin → Routing → Models,
  * and not on this page.
  */
 
 export type SettingsTabKey = 'access' | 'providers' | 'operations' | 'setup';
 
-/** The configuration category of the model catalog, which Admin → Providers → Models edits. */
+/** The configuration category of the model catalog, which Admin → Routing → Models edits. */
 export const MODEL_CATALOG_CATEGORY = 'models';
 
 /** Configuration categories another admin tab edits: Settings neither lists, searches nor counts them. */
@@ -86,7 +86,7 @@ export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
     key: 'providers',
     label: 'Providers & Routing',
     description:
-      'Provider credentials, routing (including RouteWise parameters), and how a request is sent to a model. The model catalog itself is under Providers → Models.',
+      'Provider credentials, routing (including RouteWise parameters), and how a request is sent to a model. The model catalog itself is under Routing → Models.',
     // Added variables are listed under Providers, so the form that adds one follows it.
     blocks: [
       config('providers'),

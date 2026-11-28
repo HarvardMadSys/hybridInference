@@ -100,7 +100,7 @@ describe('settingsLayout', () => {
     ]);
   });
 
-  it('leaves the model catalog to Providers → Models, and names it on no tab', () => {
+  it('leaves the model catalog to Routing → Models, and names it on no tab', () => {
     expect(MODEL_CATALOG_CATEGORY).toBe('models');
     expect([...CATEGORIES_ELSEWHERE]).toEqual(['models']);
     expect(SETTINGS_TABS.map((tab) => tab.key)).not.toContain('models');

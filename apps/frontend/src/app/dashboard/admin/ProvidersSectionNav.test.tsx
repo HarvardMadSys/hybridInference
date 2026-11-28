@@ -28,7 +28,7 @@ describe('ProvidersSectionNav', () => {
     revealMock.mockClear();
   });
 
-  it('links to each section, the models among them, in the order a deployment is set up', () => {
+  it('links to Overview, which holds the registry, keys and quotas, and to Performance', () => {
     render(<ProvidersSectionNav />);
 
     const nav = screen.getByRole('navigation', { name: 'Providers sections' });
@@ -38,10 +38,6 @@ describe('ProvidersSectionNav', () => {
         .map((link) => [link.textContent, link.getAttribute('href')]),
     ).toEqual([
       ['Overview', '/dashboard/admin/providers'],
-      ['Keys', '/dashboard/admin/providers/keys'],
-      ['Models', '/dashboard/admin/providers/models'],
-      ['Availability', '/dashboard/admin/providers/availability'],
-      ['Quotas', '/dashboard/admin/providers/quotas'],
       ['Performance', '/dashboard/admin/providers/performance'],
     ]);
   });
@@ -49,13 +45,9 @@ describe('ProvidersSectionNav', () => {
   it('marks only the page being shown', () => {
     for (const [path, shown] of [
       ['/dashboard/admin/providers', 'Overview'],
-      ['/dashboard/admin/providers/keys', 'Keys'],
-      ['/dashboard/admin/providers/models', 'Models'],
-      // An address below a section is still that section.
-      ['/dashboard/admin/providers/models/anything', 'Models'],
-      ['/dashboard/admin/providers/availability', 'Availability'],
-      ['/dashboard/admin/providers/quotas', 'Quotas'],
       ['/dashboard/admin/providers/performance', 'Performance'],
+      // An address below a section is still that section.
+      ['/dashboard/admin/providers/performance/anything', 'Performance'],
     ]) {
       pathname = path;
       render(<ProvidersSectionNav />);
@@ -64,7 +56,7 @@ describe('ProvidersSectionNav', () => {
     }
   });
 
-  it('brings the section shown into view, as the control is wider than a phone', () => {
+  it('brings the section shown into view on a narrow screen', () => {
     pathname = '/dashboard/admin/providers/performance';
     render(<ProvidersSectionNav />);
 

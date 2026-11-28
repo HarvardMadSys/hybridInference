@@ -60,7 +60,7 @@ function webhook(key: string): ConfigEntry {
 /**
  * One setting or more in each category a sub-tab names, and one in a category
  * none names. Some are usually set once, in a category with others or alone.
- * The model catalog's category is Providers → Models', which this page leaves out.
+ * The model catalog's category is Routing → Models', which this page leaves out.
  */
 const CONFIG: ConfigResponse = {
   categories: [
@@ -432,7 +432,7 @@ describe('Admin → Settings sub-tabs', () => {
     ).toBeInTheDocument();
   });
 
-  it('leaves the model configuration to Providers → Models: not listed, searched or read', async () => {
+  it('leaves the model configuration to Routing → Models: not listed, searched or read', async () => {
     await renderLoaded();
 
     expect(screen.queryByRole('tab', { name: /^Models/ })).not.toBeInTheDocument();
@@ -448,9 +448,7 @@ describe('Admin → Settings sub-tabs', () => {
     await openSettingsTab(/^Site & Setup/);
     expect(rowsOf('Application')).toEqual(['SITE_BRANDING']);
     await openSettingsTab(/^Providers & Routing/);
-    expect(
-      screen.getByText(/The model catalog itself is under Providers → Models\.$/),
-    ).toBeVisible();
+    expect(screen.getByText(/The model catalog itself is under Routing → Models\.$/)).toBeVisible();
 
     // A search looks through this page's categories only.
     fireEvent.change(screen.getByLabelText('Search settings'), { target: { value: 'catalog' } });
@@ -565,7 +563,7 @@ describe('Admin → Settings sub-tabs', () => {
     window.history.replaceState(null, '', '/dashboard/admin/settings');
     // Another admin tab's link, as the tab bar above the page renders it.
     const models = document.body.appendChild(document.createElement('a'));
-    models.href = '/dashboard/admin/providers/models';
+    models.href = '/dashboard/admin/routing/models';
     try {
       await renderLoaded(/^Access/);
       fireEvent.click(models);

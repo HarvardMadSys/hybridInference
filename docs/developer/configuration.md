@@ -14,14 +14,14 @@ configuration paths.
 
 | Configuration | Owner |
 |---|---|
-| Application settings and documents | `app_config`, edited in Admin Settings, the model catalog in Admin Providers → Models |
+| Application settings and documents | `app_config`, edited in Admin Settings, the model catalog in Admin Routing → Models |
 | Providers, credentials, live routes and overrides | Admin Providers and Routing |
 | Database connection, host ports and container networking | `.env` and Compose |
 | Persistent lifecycle options | `.ops.env`, copied from `.ops.env.example` |
 
 ### Application documents
 
-**Admin → Providers → Models** edits `MODEL_CATALOG`, with each model's runtime
+**Admin → Routing → Models** edits `MODEL_CATALOG`, with each model's runtime
 role and concurrency overrides beside it; **Admin → Settings → Application**
 edits the other documents. All of them are validated JSON and use the same conditional
 saves, audit, security confirmation and backup controls as other settings. No
@@ -177,7 +177,7 @@ and the files, once no earlier release will run.
 
 Provider/key changes and ordinary route edits are persisted in the operational
 store. Backend processes observe committed changes and converge on their scoped
-model transitions, normally within ten seconds. **Admin → Providers → Models**
+model transitions, normally within ten seconds. **Admin → Routing → Models**
 shows **Applied in each backend process** beside the model catalog, including failed,
 stale or unsupported processes. A stale process is never counted as successfully
 updated. Compare the registered process count with your deployment inventory.

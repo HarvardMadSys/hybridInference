@@ -1,14 +1,15 @@
 'use client';
 
 /**
- * The sections of Admin → Providers that are written here: Overview and Keys,
- * which share the provider Keys shows, and Availability and Quotas. Each is a
- * page of its own under the tab (see `ProvidersSectionNav`); Models and
- * Performance are pages too.
+ * Admin → Providers → Overview: the provider registry, with each provider's
+ * switch in and out of routing; the keys of the provider chosen there; and what
+ * each key's plan has used of its limits. One page, so "Manage keys" moves down
+ * to the keys rather than away, and a provider switched off in the registry
+ * reads off on its quota cards too. Performance is a page of its own (see
+ * `ProvidersSectionNav`).
  */
 
-import { useCallback, useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import {
   ProviderQuotaResult,
@@ -20,10 +21,17 @@ import {
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
-import { PROVIDER_KEYS_PATH } from '@/components/features/admin/providerRoutes';
+import { ProviderToggle } from '@/components/features/admin/ProviderToggle';
+import {
+  PROVIDER_KEYS_ANCHOR,
+  PROVIDER_QUOTAS_ANCHOR,
+} from '@/components/features/admin/providerRoutes';
 import { useProviderSelection } from '@/components/features/admin/providerSelection';
 import { ProviderKeysTab } from '@/app/dashboard/admin/ProviderKeysTab';
-import { ProviderOverviewTab } from '@/app/dashboard/admin/ProviderOverviewTab';
+import {
+  ProviderOverviewTab,
+  type ProviderRouting,
+} from '@/app/dashboard/admin/ProviderOverviewTab';
 import { UpstreamConcurrencyPanel } from '@/app/dashboard/admin/UpstreamConcurrencyPanel';
 
 function pct(used: number | null, limit: number | null): number | null {
@@ -84,41 +92,6 @@ function availabilityMessage(provider: ProviderQuotaResult): string {
     return 'Unavailable — auth failed.';
   }
   return `Unavailable — ${provider.error ?? 'unknown error'}`;
-}
-
-function ProviderToggle({
-  disabled,
-  busy,
-  onToggle,
-  label,
-  noun = 'Provider',
-}: {
-  disabled: boolean;
-  busy: boolean;
-  onToggle: () => void;
-  label: string;
-  noun?: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      disabled={busy}
-      role="switch"
-      aria-checked={!disabled}
-      aria-label={`${disabled ? 'Enable' : 'Disable'} ${label}`}
-      title={disabled ? `${noun} disabled — click to enable` : `${noun} enabled — click to disable`}
-      className={`relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition disabled:opacity-50 ${
-        disabled ? 'bg-gray-300' : 'bg-emerald-500'
-      }`}
-    >
-      <span
-        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition ${
-          disabled ? 'translate-x-0.5' : 'translate-x-[18px]'
-        }`}
-      />
-    </button>
-  );
 }
 
 function ProviderCard({
@@ -264,8 +237,21 @@ function ProviderCard({
   );
 }
 
+interface ProviderQuotasSectionProps {
+  /**
+   * Whether routing leaves each provider out, as the registry on the same page
+   * shows it: a provider switched there reads switched on its cards too.
+   */
+  routedOff?: ReadonlyMap<string, boolean>;
+  /** A provider switched on a card, for the registry to show. */
+  onProviderSwitched?: (provider: string, disabled: boolean) => void;
+}
+
 /** Quotas: what each key's plan has used of its limits, with a switch for the key and its provider. */
-export function ProviderQuotasSection() {
+export function ProviderQuotasSection({
+  routedOff,
+  onProviderSwitched,
+}: ProviderQuotasSectionProps = {}) {
   const toast = useAccountToast();
   // Deployment docs may describe an operator's service, not backend extensions.
   const quotaDocsUrl =
@@ -299,6 +285,7 @@ export function ProviderQuotasSection() {
           setProviderQuotas((prev) =>
             prev.map((p) => (p.name === provider.name ? { ...p, disabled: next } : p)),
           );
+          onProviderSwitched?.(provider.name, next);
           toast.success(
             `${provider.display_name} ${next ? 'disabled — excluded from routing' : 'enabled'}`,
           );
@@ -306,7 +293,7 @@ export function ProviderQuotasSection() {
       });
       if (failure) toast.error(failure);
     },
-    [perform, toast],
+    [onProviderSwitched, perform, toast],
   );
 
   const handleToggleKey = useCallback(
@@ -336,26 +323,46 @@ export function ProviderQuotasSection() {
     loadProviderQuotas();
   }, [loadProviderQuotas]);
 
+  // A provider switched in the registry since these cards loaded reads as switched.
+  const shown = useMemo(
+    () =>
+      providerQuotas.map((p) => {
+        const off = routedOff?.get(p.name);
+        return off === undefined || off === p.disabled ? p : { ...p, disabled: off };
+      }),
+    [providerQuotas, routedOff],
+  );
+
   return (
     <div>
-      <div className="mb-3 flex items-center justify-end gap-2">
-        {providerQuotasLoading && (
-          <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
-        )}
-        <button
-          type="button"
-          onClick={() => loadProviderQuotas()}
-          disabled={providerQuotasLoading}
-          className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50 disabled:opacity-50"
-        >
-          Refresh
-        </button>
+      <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h2 id="provider-quotas-heading" className="text-[14px] font-semibold text-gray-900">
+            Quotas
+          </h2>
+          <p className="mt-1 text-[12px] text-gray-500">
+            What each key&apos;s plan has used of its limits, where a quota extension reports it.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {providerQuotasLoading && (
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+          )}
+          <button
+            type="button"
+            onClick={() => loadProviderQuotas()}
+            disabled={providerQuotasLoading}
+            className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+          >
+            Refresh
+          </button>
+        </div>
       </div>
-      {providerQuotasLoading && providerQuotas.length === 0 ? (
+      {providerQuotasLoading && shown.length === 0 ? (
         <div className="flex justify-center py-24">
           <span className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
         </div>
-      ) : providerQuotas.length === 0 ? (
+      ) : shown.length === 0 ? (
         <div className="py-24 text-center">
           <p className="text-[13px] text-gray-500">No quota data to display.</p>
           <p className="mt-2 text-[12px] text-gray-500">
@@ -372,7 +379,7 @@ export function ProviderQuotasSection() {
         </div>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2">
-          {providerQuotas.map((p, index) => (
+          {shown.map((p, index) => (
             <ProviderCard
               key={`${p.name}-${p.key_index ?? 'single'}-${p.key_ref ?? p.key_masked ?? index}`}
               provider={p}
@@ -388,36 +395,49 @@ export function ProviderQuotasSection() {
   );
 }
 
-/** Availability: every provider in the routing table, each with the switch that takes it out of routing. */
-export function ProviderAvailabilitySection() {
+/**
+ * Which providers routing may use: the live routing table's providers, each
+ * with the switch that takes it out of routing for every model. The registry
+ * shows it beside each provider; a switch on a quota card is reported here.
+ */
+export function useProviderRouting(): ProviderRouting & {
+  /** Each provider's switch, by provider name, for the quota cards. */
+  routedOff: ReadonlyMap<string, boolean>;
+  /** A provider switched elsewhere on the page. */
+  switched: (provider: string, disabled: boolean) => void;
+} {
   const toast = useAccountToast();
-  const [providers, setProviders] = useState<RoutableProvider[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [providers, setProviders] = useState<RoutableProvider[] | null>(null);
   const writes = useConfirmAction();
   const { perform } = writes;
 
   const load = useCallback(async () => {
-    setLoading(true);
     try {
       const d = await getRoutableProviders();
       setProviders(d.providers);
     } catch (e) {
       toast.error(getErrorMessage(e));
-    } finally {
-      setLoading(false);
     }
   }, [toast]);
 
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const switched = useCallback((provider: string, disabled: boolean) => {
+    setProviders(
+      (prev) => prev?.map((p) => (p.provider === provider ? { ...p, disabled } : p)) ?? prev,
+    );
+  }, []);
+
   // The switch acts on the click: switching it back undoes it.
-  const handleToggle = useCallback(
+  const toggle = useCallback(
     async (provider: RoutableProvider) => {
       const next = !provider.disabled;
       const failure = await perform({
         run: async () => {
           await setProviderDisabled(provider.provider, next);
-          setProviders((prev) =>
-            prev.map((p) => (p.provider === provider.provider ? { ...p, disabled: next } : p)),
-          );
+          switched(provider.provider, next);
           toast.success(
             `${provider.provider} ${next ? 'disabled — excluded from routing' : 'enabled'}`,
           );
@@ -425,135 +445,129 @@ export function ProviderAvailabilitySection() {
       });
       if (failure) toast.error(failure);
     },
-    [perform, toast],
+    [perform, switched, toast],
   );
 
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  return (
-    <div>
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <p className="text-[12px] text-gray-500">
-          Disabling a provider removes it from routing for every model. Requests fall back to the
-          model&apos;s remaining providers; models with no other route will fail until re-enabled.
-        </p>
-        <div className="flex items-center gap-2">
-          {loading && (
-            <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
-          )}
-          <button
-            type="button"
-            onClick={() => load()}
-            disabled={loading}
-            className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50 disabled:opacity-50"
-          >
-            Refresh
-          </button>
-        </div>
-      </div>
-      {loading && providers.length === 0 ? (
-        <div className="flex justify-center py-24">
-          <span className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
-        </div>
-      ) : providers.length === 0 ? (
-        <div className="py-24 text-center">
-          <p className="text-[13px] text-gray-400">No routable providers.</p>
-        </div>
-      ) : (
-        <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
-          <table className="w-full text-[13px]">
-            <thead>
-              <tr className="border-b border-gray-200 text-left text-[11px] uppercase tracking-wide text-gray-500">
-                <th className="px-4 py-2 font-medium">Provider</th>
-                <th className="px-4 py-2 font-medium">Models</th>
-                <th className="px-4 py-2 font-medium">Endpoints</th>
-                <th className="px-4 py-2 font-medium">Status</th>
-                <th className="px-4 py-2 text-right font-medium">Enabled</th>
-              </tr>
-            </thead>
-            <tbody>
-              {providers.map((p) => (
-                <tr
-                  key={p.provider}
-                  className={`border-b border-gray-100 last:border-0 ${
-                    p.disabled ? 'bg-gray-50' : ''
-                  }`}
-                >
-                  <td className="px-4 py-2.5 font-medium text-gray-900">
-                    {p.display_name && p.display_name !== p.provider ? (
-                      <>
-                        {p.display_name}{' '}
-                        <span className="font-normal text-gray-400">{p.provider}</span>
-                      </>
-                    ) : (
-                      p.provider
-                    )}
-                  </td>
-                  <td className="px-4 py-2.5 tabular-nums text-gray-600">{p.model_count}</td>
-                  <td className="px-4 py-2.5 tabular-nums text-gray-600">{p.endpoint_count}</td>
-                  <td className="px-4 py-2.5">
-                    {p.disabled ? (
-                      <span className="rounded-full bg-gray-200 px-2 py-0.5 text-[11px] font-medium text-gray-600">
-                        Disabled
-                      </span>
-                    ) : (
-                      <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
-                        Active
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-2.5">
-                    <div className="flex justify-end">
-                      <ProviderToggle
-                        disabled={p.disabled}
-                        busy={writes.busy}
-                        onToggle={() => void handleToggle(p)}
-                        label={p.provider}
-                      />
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
+  const routedOff = useMemo(
+    () => new Map((providers ?? []).map((p) => [p.provider, p.disabled])),
+    [providers],
   );
+  const onToggle = useCallback((provider: RoutableProvider) => void toggle(provider), [toggle]);
+  const reload = useCallback(() => void load(), [load]);
+
+  return { providers, busy: writes.busy, onToggle, reload, routedOff, switched };
 }
 
-/** Overview: the provider registry. "Manage keys" opens Keys on that provider. */
-export function ProviderOverviewSection() {
-  const router = useRouter();
+/** Scrolls one of the page's sections into view. */
+function revealSection(id: string) {
+  document.getElementById(id)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+}
+
+/** The provider registry. "Manage keys" shows that provider's keys, further down the page. */
+export function ProviderOverviewSection({
+  routing,
+  refreshKey,
+  onRegistryChange,
+}: {
+  routing?: ProviderRouting;
+  refreshKey?: number;
+  onRegistryChange?: () => void;
+}) {
   const { request } = useProviderSelection();
   return (
     <ProviderOverviewTab
+      routing={routing}
+      refreshKey={refreshKey}
+      onRegistryChange={onRegistryChange}
       onManageKeys={(provider) => {
         request(provider);
-        router.push(PROVIDER_KEYS_PATH);
+        revealSection(PROVIDER_KEYS_ANCHOR);
       }}
     />
   );
 }
 
 /** Keys: a provider's keys, and the upstream concurrency of every key the gateway calls. */
-export function ProviderKeysSection() {
-  const { provider, requested, show } = useProviderSelection();
+export function ProviderKeysSection({
+  refreshKey,
+  onKeysChange,
+}: {
+  refreshKey?: number;
+  onKeysChange?: () => void;
+} = {}) {
+  const { provider, requested, lastRequest, show } = useProviderSelection();
   // Read once, as Keys opens: its own report of what it shows must not change
-  // how it opened.
-  const [opening] = useState(() => ({ provider, requested }));
+  // how it opened. A "Manage keys" made after that is passed on as a request.
+  const [opening] = useState(() => ({
+    provider,
+    requested,
+    serial: lastRequest?.serial ?? 0,
+  }));
+  const request = lastRequest && lastRequest.serial > opening.serial ? lastRequest : undefined;
   return (
     <div className="space-y-6">
       <ProviderKeysTab
         initialProvider={opening.provider}
         keepUnlistedProvider={opening.requested}
+        request={request}
+        refreshKey={refreshKey}
         onProviderChange={show}
+        onKeysChange={onKeysChange}
       />
       {/* Not scoped to the selected provider: the limiter buckets by key, so
           this lists every key the gateway is currently calling. */}
       <UpstreamConcurrencyPanel />
+    </div>
+  );
+}
+
+/** Admin → Providers → Overview: the registry and its routing switches, then Keys, then Quotas. */
+export function ProvidersOverviewPage() {
+  const routing = useProviderRouting();
+  // The sections share one page, so each reads again what another changed:
+  // the registry counts keys, and Keys lists the registry's providers. A
+  // provider deleted from the registry leaves routing too.
+  const [registryRefresh, setRegistryRefresh] = useState(0);
+  const [keysRefresh, setKeysRefresh] = useState(0);
+  const { reload: reloadRouting } = routing;
+  const keysChanged = useCallback(() => setRegistryRefresh((n) => n + 1), []);
+  const registryChanged = useCallback(() => {
+    setKeysRefresh((n) => n + 1);
+    reloadRouting();
+  }, [reloadRouting]);
+  return (
+    <div className="space-y-10">
+      <ProviderOverviewSection
+        routing={routing}
+        refreshKey={registryRefresh}
+        onRegistryChange={registryChanged}
+      />
+      <section
+        id={PROVIDER_KEYS_ANCHOR}
+        aria-labelledby="provider-keys-heading"
+        className="scroll-mt-4 border-t border-gray-200 pt-8"
+      >
+        <div className="mb-4">
+          <h2 id="provider-keys-heading" className="text-[14px] font-semibold text-gray-900">
+            Keys
+          </h2>
+          <p className="mt-1 text-[12px] text-gray-500">
+            Each provider&apos;s API keys, and the upstream concurrency of every key the gateway
+            calls.
+          </p>
+        </div>
+        <ProviderKeysSection refreshKey={keysRefresh} onKeysChange={keysChanged} />
+      </section>
+      <section
+        id={PROVIDER_QUOTAS_ANCHOR}
+        aria-labelledby="provider-quotas-heading"
+        className="scroll-mt-4 border-t border-gray-200 pt-8"
+      >
+        <ProviderQuotasSection
+          routedOff={routing.routedOff}
+          onProviderSwitched={routing.switched}
+        />
+      </section>
     </div>
   );
 }
