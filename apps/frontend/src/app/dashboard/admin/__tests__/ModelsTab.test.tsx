@@ -102,7 +102,7 @@ function entry(overrides: Partial<ConfigEntry>): ConfigEntry {
 }
 
 const CATALOG =
-  '{"models": [{"id": "gpt-4o-mini", "name": "GPT-4o mini", "context_length": 128000}]}';
+  '{"models": [{"id": "gpt-4o-mini", "name": "GPT-4o mini", "provider": "openai_compat", "context_length": 128000}]}';
 const v = (revision: number) => ({ epoch: 'e1', revision });
 
 /** The catalog in its category, beside categories Settings shows, one of them missing a value. */
@@ -203,14 +203,11 @@ describe('Admin → Providers → Models', () => {
       'Model Visibility',
       'Model Concurrency Limit',
     ]);
-    // The catalog, one field per value.
+    // The catalog, a card per model with its fields laid out as a form.
     const catalog = within(screen.getByRole('group', { name: 'MODEL_CATALOG' }));
-    expect(
-      catalog.getAllByRole('textbox').map((field) => (field as HTMLInputElement).value),
-    ).toEqual(['gpt-4o-mini', 'GPT-4o mini', '128000']);
-    expect(catalog.getByRole('textbox', { name: 'models[0].context_length' })).toHaveValue(
-      '128000',
-    );
+    expect(catalog.getByRole('textbox', { name: /Model id/ })).toHaveValue('gpt-4o-mini');
+    expect(catalog.getByRole('textbox', { name: 'Display name' })).toHaveValue('GPT-4o mini');
+    expect(catalog.getByRole('textbox', { name: 'Context length' })).toHaveValue('128000');
     // Settings' categories, and its list of missing settings, stay on Settings.
     expect(screen.queryByLabelText('SITE_BRANDING')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('SMTP_HOST')).not.toBeInTheDocument();
@@ -241,12 +238,21 @@ describe('Admin → Providers → Models', () => {
     const catalog = await screen.findByRole('region', { name: 'Model catalog' });
     // The document saved whole, indented, with the field's new value as its type.
     const edited = JSON.stringify(
-      { models: [{ id: 'gpt-4o-mini', name: 'GPT-4o mini', context_length: 64000 }] },
+      {
+        models: [
+          {
+            id: 'gpt-4o-mini',
+            name: 'GPT-4o mini',
+            provider: 'openai_compat',
+            context_length: 64000,
+          },
+        ],
+      },
       null,
       2,
     );
 
-    fireEvent.change(within(catalog).getByRole('textbox', { name: 'models[0].context_length' }), {
+    fireEvent.change(within(catalog).getByRole('textbox', { name: 'Context length' }), {
       target: { value: '64000' },
     });
     fireEvent.click(within(catalog).getByRole('button', { name: 'Save changes to Model catalog' }));
@@ -341,7 +347,7 @@ describe('Admin → Providers → Models', () => {
     fireEvent.click(routing);
     expect(confirm).not.toHaveBeenCalled();
 
-    fireEvent.change(screen.getByRole('textbox', { name: 'models[0].context_length' }), {
+    fireEvent.change(screen.getByRole('textbox', { name: 'Context length' }), {
       target: { value: '64000' },
     });
     expect(fireEvent.click(routing)).toBe(false);
@@ -353,7 +359,7 @@ describe('Admin → Providers → Models', () => {
     keys.remove();
 
     // Back to the saved value, then an override left unsaved.
-    fireEvent.change(screen.getByRole('textbox', { name: 'models[0].context_length' }), {
+    fireEvent.change(screen.getByRole('textbox', { name: 'Context length' }), {
       target: { value: '128000' },
     });
     confirm.mockClear();

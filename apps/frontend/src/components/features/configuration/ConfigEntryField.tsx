@@ -17,6 +17,7 @@ import {
   type ConfigDraft,
 } from './configDrafts';
 import { DocumentEditor } from './DocumentEditor';
+import { ModelCatalogEditor } from './ModelCatalogEditor';
 import { NOT_A_LOGIN_FIELD } from './notALoginField';
 
 // Exported from here too, where the settings' other editors import it.
@@ -269,8 +270,10 @@ export function ConfigEntryField({
       />
     );
     // A JSON document is edited one value at a time; the text is its JSON view.
+    // The model catalog has an editor of its own: models as cards, routes as rows.
+    const Editor = entry.key === 'MODEL_CATALOG' ? ModelCatalogEditor : DocumentEditor;
     control = entry.document ? (
-      <DocumentEditor
+      <Editor
         entry={entry}
         draft={draft}
         onChange={onChange}
