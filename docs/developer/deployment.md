@@ -575,7 +575,9 @@ docker exec -it hybridinference-backend python -m serving.config.manage reset JW
 ```
 
 `list`, `get KEY`, `set KEY VALUE` and `reset KEY` validate like Admin and never
-print secrets; see [Without the console](configuration.md#without-the-console).
+print secrets. Pass a secret with `set KEY --value-file -` on standard input, so
+that it stays out of the process list and shell history; see
+[Without the console](configuration.md#without-the-console).
 The backend picks the change up within about ten seconds, or after a restart for
 a setting marked **Restart required**.
 

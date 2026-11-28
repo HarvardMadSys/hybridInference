@@ -1355,6 +1355,16 @@ async def _import_environment(
     return await store.fetch_all()
 
 
+def _set_command(key: str, *, secret: bool) -> str:
+    """The recovery command that stores *key*: a secret's value on standard input.
+
+    An argument is visible in the process list and kept in shell history.
+    """
+    if secret:
+        return f"printf '%s' \"$VALUE\" | python -m serving.config.manage set {key} --value-file -"
+    return f"python -m serving.config.manage set {key} VALUE"
+
+
 async def _generate_secrets(
     store: AppConfigStore, rows: dict[str, ConfigRow]
 ) -> dict[str, ConfigRow]:
@@ -1378,8 +1388,7 @@ async def _generate_secrets(
                 "API_KEY_SECRET is set neither in the database nor in the environment, but "
                 "API keys issued under an earlier value exist; a new secret would invalidate "
                 "every one of them. Restore the previous API_KEY_SECRET in the environment, or "
-                "with `python -m serving.config.manage set API_KEY_SECRET <value>`, and "
-                "restart."
+                f"with `{_set_command('API_KEY_SECRET', secret=True)}`, and restart."
             )
         generated.append(
             ConfigRow(
@@ -1495,7 +1504,9 @@ def require_valid_environment() -> None:
     # (USER_AUTH_ENABLED, say) belongs to the Settings tab instead.
     storable = [key for key in unresolved if key in _STATE.entries]
     if _STATE.database_enabled and storable:
-        remedy += f", or store a valid value with `python -m serving.config.manage set {storable[0]} VALUE`"
+        first = storable[0]
+        command = _set_command(first, secret=_STATE.entries[first].secret)
+        remedy += f", or store a valid value with `{command}`"
         if not _STATE.loaded:
             remedy += " once the database can be reached"
     raise ConfigBootstrapError(

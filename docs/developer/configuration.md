@@ -342,6 +342,20 @@ python -m serving.config.manage status
 A file passed to `document` is imported once, not read at runtime. The CLI
 never prints a secret value.
 
+Give `set` a secret on standard input with `--value-file -` (or a file with
+`--value-file PATH`), not as an argument: an argument is visible in the process
+list, on the host as well as in the container, and stays in shell history. One
+trailing newline is dropped. `read -rs` keeps the value off the screen, and
+`docker exec` needs `-i`, not `-it`, to pass the pipe through:
+
+```bash
+read -rs VALUE
+printf '%s' "$VALUE" | docker exec -i hybridinference-backend \
+  python -m serving.config.manage set API_KEY_SECRET --value-file -
+```
+
+A secret given as an argument is still stored, with a warning.
+
 ### Missing settings
 
 The console shows **Ask admin to configure**. Administrators can open Settings

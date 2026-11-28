@@ -803,6 +803,24 @@ msgid ""
 msgstr "传给 `document` 的文件只导入一次，运行时不会读取它。CLI 从不打印秘密值。"
 
 #: ../developer/configuration.md:345
+msgid ""
+"Give `set` a secret on standard input with `--value-file -` (or a file "
+"with `--value-file PATH`), not as an argument: an argument is visible in "
+"the process list, on the host as well as in the container, and stays in "
+"shell history. One trailing newline is dropped. `read -rs` keeps the "
+"value off the screen, and `docker exec` needs `-i`, not `-it`, to pass "
+"the pipe through:"
+msgstr ""
+"用 `--value-file -` 从标准输入把秘密值交给 `set`（或用 `--value-file PATH` "
+"从文件读取），不要作为参数传入：参数在进程列表中可见（宿主机和容器中都可见），并且会留在 shell "
+"历史里。末尾的一个换行符会被去掉。`read -rs` 让值不显示在屏幕上；`docker exec` 需要用 `-i` 而不是 "
+"`-it`，管道才能传进去："
+
+#: ../developer/configuration.md:357
+msgid "A secret given as an argument is still stored, with a warning."
+msgstr "以参数形式给出的秘密值仍会被保存，但会显示一条警告。"
+
+#: ../developer/configuration.md:345
 msgid "Missing settings"
 msgstr "缺失的设置项"
 

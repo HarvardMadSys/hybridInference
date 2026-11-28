@@ -47,7 +47,9 @@ API keys and sign administrator tokens, so protect database access and backups.
   single sign-on login (see
   [Configuration](docs/developer/configuration.md#on-the-settings-tab)).
   `ADMIN_TOKEN` cannot confirm, so it can do none of these. On the host,
-  `python -m serving.config.manage` can still change any setting.
+  `python -m serving.config.manage` can still change any setting. Give it a
+  secret on standard input (`set KEY --value-file -`): a value passed as an
+  argument is visible in the process list and stays in shell history.
 - Checking a provider route sends its stored keys only to the provider's own
   host or to a host its routes already use, and the audit log records every
   check.
