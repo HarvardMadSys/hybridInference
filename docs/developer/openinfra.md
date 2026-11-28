@@ -46,8 +46,8 @@ engine does not read these metrics.
    answer. Without the flag they answer `404` and the page says "OpenInfra is
    not published for this site".
 
-The OpenInfra settings are in **Admin → Settings → Site & Setup → Advanced
-settings**, Integrations section, and apply within seconds:
+The OpenInfra settings are in **Admin → Settings → Integrations** and apply
+within seconds:
 
 | Setting | Default | Meaning |
 |---|---|---|

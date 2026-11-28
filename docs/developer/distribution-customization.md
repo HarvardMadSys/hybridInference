@@ -71,8 +71,8 @@ with the deployment's identity, public site and feature policy.
 
 The document accepts no file paths. Use the `MODEL_CATALOG` setting
 (**Admin → Routing → Models**) and the `ROUTING_POLICY`, `ALERT_RULES` and
-`SITE_BRANDING` settings (**Admin → Settings → Site & Setup → Advanced
-settings → Application**) instead. Router
+`SITE_BRANDING` settings (under **Advanced settings** on the **Routing**,
+**Alerts** and **General** tabs of **Admin → Settings**) instead. Router
 selection belongs to each model in the catalog.
 
 ### Activating a manifest

@@ -11,7 +11,7 @@ Connect identity providers; SAML and CAS are not supported.
    `<FRONTEND_URL>/auth/sso/<id>/callback`. `<id>` is the short name you give
    the provider in the next step. Note the client id and secret.
 2. **Describe the provider** in the `SSO_PROVIDERS` setting, under
-   **Admin → Settings → Site & Setup → Advanced settings → Application**:
+   **Admin → Settings → Sign-in & security → Advanced settings**:
 
    ```json
    {
@@ -30,8 +30,8 @@ Connect identity providers; SAML and CAS are not supported.
    `client_secret` names a secret setting, never the secret itself.
 3. **Store the client secret.** Saving the provider adds the setting it names,
    here `SSO_EXAMPLE_UNIV_CLIENT_SECRET`, under
-   **Admin → Settings → Access & Limits**, in the **Security** section. Enter
-   the secret there.
+   **Admin → Settings → Sign-in & security**, in the **Security** section.
+   Enter the secret there.
 4. **Restart the gateway.** It reads the secret at startup.
 5. **Check `FRONTEND_URL`.** It must be the address users open the console at:
    the redirect URI is built from it, and a sign-in completes only through that

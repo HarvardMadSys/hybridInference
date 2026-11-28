@@ -319,12 +319,8 @@ msgstr ""
 "可能把未鉴权的模型服务器暴露给局域网，所以请用主机防火墙限制该端口，或者绑定一个 Docker 能访问到的私有网卡。"
 
 #: ../developer/router-tutorial.md:200
-msgid ""
-"In the Admin Console, open **Settings**, then **Providers & Routing**, "
-"and set these three settings under **Providers**:"
-msgstr ""
-"在管理控制台中打开 **Settings**，再打开 **Providers & Routing**，在 **Providers** "
-"下设置这三个设置项："
+msgid "In the Admin Console, open **Settings**, then **Providers**, and set these three settings under **Providers**:"
+msgstr "在管理控制台中打开 **Settings**，再打开 **Providers**，在 **Providers** 下设置这三个设置项："
 
 #: ../developer/router-tutorial.md
 msgid "Setting"

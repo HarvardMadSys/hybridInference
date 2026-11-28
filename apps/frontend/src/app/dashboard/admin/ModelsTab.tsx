@@ -24,7 +24,7 @@ const LINK = 'font-medium text-gray-700 underline hover:text-gray-900';
  * that apply on top of it without changing it -- the role each model requires,
  * and which models the per-user concurrency limit leaves out. A model's routes
  * and weights are on Routing → Routes; the other application documents under
- * the Advanced of Settings → Site & Setup.
+ * the tabs of Settings they configure.
  *
  * Each section saves on its own. The catalog is edited as on Settings: a save
  * asks for the administrator's password, and the notice above it offers the
@@ -70,11 +70,11 @@ export function ModelsTab() {
         <AdminNotice tone="warning">
           This backend lists the model catalog with the other application documents: edit it on{' '}
           <Link
-            href={`${ADMIN_SETTINGS_PATH}?tab=setup#config-application`}
+            href={`${ADMIN_SETTINGS_PATH}?tab=general#config-application`}
             prefetch={false}
             className={LINK}
           >
-            Settings → Site & Setup → Advanced
+            Settings → General → Advanced settings
           </Link>
           .
         </AdminNotice>

@@ -372,7 +372,7 @@ There is no Prometheus exporter. The gateway reports through:
   three share one store probe for two seconds.
 - **Alerts.** `alert_slack()` and `alert_on_transition()` in
   `apps/backend/serving/observability/alerts.py` post to one Slack or WeCom
-  webhook, set in **Admin → Settings → Operations**. Thresholds come from
+  webhook, set in **Admin → Settings → Alerts**. Thresholds come from
   `ALERT_RULES`. A channel change needs a restart unless the `alerts.runtime`
   live group is active; see
   [Settings that apply without a restart](configuration.md#settings-that-apply-without-a-restart).

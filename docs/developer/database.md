@@ -24,7 +24,7 @@ needs them before it can read anything from the database:
 | `DB_PASSWORD` | *(empty)* | Required by Compose |
 
 Three settings that govern what is kept are stored in the database, under
-**Privacy** in **Admin → Settings → Site & Setup** (the two
+**Privacy** in **Admin → Settings → Logging & privacy** (the two
 `ERASURE_FENCE_*` settings under **Advanced**):
 
 | Setting | Default | Notes |

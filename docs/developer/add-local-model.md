@@ -469,7 +469,7 @@ against the circuit either, so one caller's long generations cannot shut the
 model off for everyone.
 
 To see the queue, have the proxy publish its status and give the gateway the
-address in **Admin → Settings → Providers & Routing → Advanced settings**:
+address in **Admin → Settings → Providers → Advanced settings**:
 
 | Setting | Meaning |
 |---|---|

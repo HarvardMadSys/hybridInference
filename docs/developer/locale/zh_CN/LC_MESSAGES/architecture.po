@@ -889,21 +889,8 @@ msgstr ""
 "503。`/health/deep` 额外给出每个端点的可用性和熔断状态。匿名调用方只能看到 `status`；三者在两秒内共用同一次存储探测。"
 
 #: ../developer/architecture.md:373
-msgid ""
-"**Alerts.** `alert_slack()` and `alert_on_transition()` in "
-"`apps/backend/serving/observability/alerts.py` post to one Slack or WeCom"
-" webhook, set in **Admin → Settings → Operations**. Thresholds come from "
-"`ALERT_RULES`. A channel change needs a restart unless the "
-"`alerts.runtime` live group is active; see [Settings that apply without a"
-" restart](configuration.md#settings-that-apply-without-a-restart). The "
-"circuit breaker pages on `circuit_open` and on rejected upstream "
-"credentials, with a cooldown per endpoint."
-msgstr ""
-"**告警**。`apps/backend/serving/observability/alerts.py` 中的 `alert_slack()` "
-"和 `alert_on_transition()` 把告警发送到一个 Slack 或企业微信 webhook，在 **Admin → "
-"Settings → Operations** 中设置。阈值来自 `ALERT_RULES`。除非 `alerts.runtime` "
-"实时组已激活，更换告警渠道需要重启；见[无需重启即可生效的设置](configuration.md#settings-that-apply-"
-"without-a-restart)。熔断器在 `circuit_open` 和上游凭据被拒时发出告警，每个端点有各自的冷却时间。"
+msgid "**Alerts.** `alert_slack()` and `alert_on_transition()` in `apps/backend/serving/observability/alerts.py` post to one Slack or WeCom webhook, set in **Admin → Settings → Alerts**. Thresholds come from `ALERT_RULES`. A channel change needs a restart unless the `alerts.runtime` live group is active; see [Settings that apply without a restart](configuration.md#settings-that-apply-without-a-restart). The circuit breaker pages on `circuit_open` and on rejected upstream credentials, with a cooldown per endpoint."
+msgstr "**告警**。`apps/backend/serving/observability/alerts.py` 中的 `alert_slack()` 和 `alert_on_transition()` 把告警发送到一个 Slack 或企业微信 webhook，在 **Admin → Settings → Alerts** 中设置。阈值来自 `ALERT_RULES`。除非 `alerts.runtime` 实时组已激活，更换告警渠道需要重启；见[无需重启即可生效的设置](configuration.md#settings-that-apply-without-a-restart)。熔断器在 `circuit_open` 和上游凭据被拒时发出告警，每个端点有各自的冷却时间。"
 
 #: ../developer/architecture.md:381
 msgid ""

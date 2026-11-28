@@ -47,26 +47,16 @@ msgstr ""
 "id 和 secret。"
 
 #: ../developer/sso.md:13
-msgid ""
-"**Describe the provider** in the `SSO_PROVIDERS` setting, under **Admin →"
-" Settings → Site & Setup → Advanced settings → Application**:"
-msgstr ""
-"**描述这个身份提供方**：在 **Admin → Settings → Site & Setup → Advanced settings → "
-"Application** 中，填写 `SSO_PROVIDERS` 设置："
+msgid "**Describe the provider** in the `SSO_PROVIDERS` setting, under **Admin → Settings → Sign-in & security → Advanced settings**:"
+msgstr "**描述这个身份提供方**：在 **Admin → Settings → Sign-in & security → Advanced settings** 中，填写 `SSO_PROVIDERS` 设置："
 
 #: ../developer/sso.md:30
 msgid "`client_secret` names a secret setting, never the secret itself."
 msgstr "`client_secret` 写的是一个秘密设置项的名字，而不是 secret 本身。"
 
 #: ../developer/sso.md:31
-msgid ""
-"**Store the client secret.** Saving the provider adds the setting it "
-"names, here `SSO_EXAMPLE_UNIV_CLIENT_SECRET`, under **Admin → Settings → "
-"Access & Limits**, in the **Security** section. Enter the secret there."
-msgstr ""
-"**保存 client secret**。保存身份提供方之后，它引用的那个设置（这里是 "
-"`SSO_EXAMPLE_UNIV_CLIENT_SECRET`）会出现在 **Admin → Settings → Access & "
-"Limits** 的 **Security** 部分。在那里填入密钥。"
+msgid "**Store the client secret.** Saving the provider adds the setting it names, here `SSO_EXAMPLE_UNIV_CLIENT_SECRET`, under **Admin → Settings → Sign-in & security**, in the **Security** section. Enter the secret there."
+msgstr "**保存 client secret**。保存身份提供方之后，它引用的那个设置（这里是 `SSO_EXAMPLE_UNIV_CLIENT_SECRET`）会出现在 **Admin → Settings → Sign-in & security** 的 **Security** 部分。在那里填入密钥。"
 
 #: ../developer/sso.md:35
 msgid "**Restart the gateway.** It reads the secret at startup."

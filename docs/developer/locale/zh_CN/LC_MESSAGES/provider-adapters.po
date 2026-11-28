@@ -115,16 +115,8 @@ msgid "Step 4: set the variables"
 msgstr "第 4 步：设置变量"
 
 #: ../developer/provider-adapters.md:262
-msgid ""
-"Add both variables in **Admin → Settings → Providers & Routing** with "
-"**Add variable**, mark the key **Secret**, and restart the backend. A "
-"gateway without a database reads them from `.env`; a gateway with one "
-"also copies them from `.env` into the database at startup unless it "
-"already stores that name:"
-msgstr ""
-"在 **Admin → Settings → Providers & Routing** 中用 **Add variable** "
-"添加这两个变量，把 key 标记为 **Secret**，然后重启后端。没有数据库的网关从 `.env` "
-"读取它们；有数据库的网关也会在启动时把它们从 `.env` 复制到数据库，除非数据库中已有同名的值："
+msgid "Add both variables in **Admin → Settings → Providers** with **Add variable**, mark the key **Secret**, and restart the backend. A gateway without a database reads them from `.env`; a gateway with one also copies them from `.env` into the database at startup unless it already stores that name:"
+msgstr "在 **Admin → Settings → Providers** 中用 **Add variable** 添加这两个变量，把 key 标记为 **Secret**，然后重启后端。没有数据库的网关从 `.env` 读取它们；有数据库的网关也会在启动时把它们从 `.env` 复制到数据库，除非数据库中已有同名的值："
 
 #: ../developer/provider-adapters.md:272
 #, python-brace-format

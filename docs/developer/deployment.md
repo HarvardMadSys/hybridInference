@@ -438,7 +438,7 @@ requests anyway, turn on the `log_synthetic_probes` runtime setting.
 
 ## Alerting
 
-The backend sends alerts to one Slack or WeCom (企业微信) group webhook. In the **Alerts** section of **Admin → Settings → Operations**, choose
+The backend sends alerts to one Slack or WeCom (企业微信) group webhook. In the **Alerts** section of **Admin → Settings → Alerts**, choose
 a **Notification channel** and enter its webhook URL; saved URLs are
 write-only. Choose **None** to turn notifications
 off.
@@ -462,7 +462,7 @@ server call an arbitrary address. A saved HTTPS URL may point elsewhere, such as
 a Slack-compatible Mattermost.
 
 Rules and thresholds are the `ALERT_RULES` document, under **Advanced** in
-**Admin → Settings → Site & Setup** (empty means built-in thresholds; changes
+**Admin → Settings → Alerts** (empty means built-in thresholds; changes
 need a restart). Two auth rules have deliberate defaults:
 `rules.auth_failure_spike` is off, because bad keys are background noise, and
 `rules.auth_ip_blocked` is on, because the source the blocklist refuses is
@@ -482,7 +482,7 @@ arrived on. Counts marked `(capped)` are lower bounds.
 
 ### Silencing alerts from the dashboard
 
-**Admin → Settings → Operations** has two controls, neither of which changes
+**Admin → Settings → Alerts** has two controls, neither of which changes
 `ALERT_RULES`. **Alert Notifications** snoozes every alert for up to 24 hours
 (the admin API accepts up to seven days). **Alert Types** mutes one type, such
 as `auth_ip_blocked`, for an hour, a day, a week or until unmuted. Mutes are
@@ -581,7 +581,7 @@ a setting marked **Restart required**.
 
 ### Promoting accounts with `ADMIN_EMAILS`
 
-`ADMIN_EMAILS` (under **Security** in **Admin → Settings → Access & Limits**)
+`ADMIN_EMAILS` (under **Security** in **Admin → Settings → Sign-in & security**)
 makes a listed address an administrator when that account signs in. You do not need it
 for the first administrator.
 

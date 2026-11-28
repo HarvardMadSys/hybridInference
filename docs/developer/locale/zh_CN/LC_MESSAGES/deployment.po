@@ -1158,15 +1158,8 @@ msgid "Alerting"
 msgstr "告警"
 
 #: ../developer/deployment.md:441
-msgid ""
-"The backend sends alerts to one Slack or WeCom (企业微信) group webhook. In "
-"the **Alerts** section of **Admin → Settings → Operations**, choose a "
-"**Notification channel** and enter its webhook URL; saved URLs are write-"
-"only. Choose **None** to turn notifications off."
-msgstr ""
-"后端把告警发送到一个 Slack 或企业微信群 webhook。在 **Admin → Settings → Operations** 的 "
-"**Alerts** 部分选择 **Notification channel** 并填写其 webhook URL；已保存的 URL "
-"只能写入。选择 **None** 可以关闭通知。"
+msgid "The backend sends alerts to one Slack or WeCom (企业微信) group webhook. In the **Alerts** section of **Admin → Settings → Alerts**, choose a **Notification channel** and enter its webhook URL; saved URLs are write-only. Choose **None** to turn notifications off."
+msgstr "后端把告警发送到一个 Slack 或企业微信群 webhook。在 **Admin → Settings → Alerts** 的 **Alerts** 部分选择 **Notification channel** 并填写其 webhook URL；已保存的 URL 只能写入。选择 **None** 可以关闭通知。"
 
 #: ../developer/deployment.md
 msgid "Setting"
@@ -1230,19 +1223,8 @@ msgstr ""
 "的 Mattermost。"
 
 #: ../developer/deployment.md:464
-msgid ""
-"Rules and thresholds are the `ALERT_RULES` document, under **Advanced** "
-"in **Admin → Settings → Site & Setup** (empty means built-in thresholds; "
-"changes need a restart). Two auth rules have deliberate defaults: "
-"`rules.auth_failure_spike` is off, because bad keys are background noise,"
-" and `rules.auth_ip_blocked` is on, because the source the blocklist "
-"refuses is sometimes the deployment's own monitor."
-msgstr ""
-"规则和阈值是 `ALERT_RULES` 文档，位于 **Admin → Settings → Site & Setup** 的 "
-"**Advanced** "
-"下（为空表示使用内置阈值；修改后需要重启）。两条认证规则的默认值是有意为之：`rules.auth_failure_spike` "
-"默认关闭，因为错误的 key 是互联网背景噪声；`rules.auth_ip_blocked` "
-"默认开启，因为被封禁的来源有时正是本部署自己的监控程序。"
+msgid "Rules and thresholds are the `ALERT_RULES` document, under **Advanced** in **Admin → Settings → Alerts** (empty means built-in thresholds; changes need a restart). Two auth rules have deliberate defaults: `rules.auth_failure_spike` is off, because bad keys are background noise, and `rules.auth_ip_blocked` is on, because the source the blocklist refuses is sometimes the deployment's own monitor."
+msgstr "规则和阈值是 `ALERT_RULES` 文档，位于 **Admin → Settings → Alerts** 的 **Advanced** 下（为空表示使用内置阈值；修改后需要重启）。两条认证规则的默认值是有意为之：`rules.auth_failure_spike` 默认关闭，因为错误的 key 是互联网背景噪声；`rules.auth_ip_blocked` 默认开启，因为被封禁的来源有时正是本部署自己的监控程序。"
 
 #: ../developer/deployment.md:471
 msgid "What an auth alert tells you"
@@ -1273,19 +1255,8 @@ msgid "Silencing alerts from the dashboard"
 msgstr "在仪表盘中静音告警"
 
 #: ../developer/deployment.md:485
-msgid ""
-"**Admin → Settings → Operations** has two controls, neither of which "
-"changes `ALERT_RULES`. **Alert Notifications** snoozes every alert for up"
-" to 24 hours (the admin API accepts up to seven days). **Alert Types** "
-"mutes one type, such as `auth_ip_blocked`, for an hour, a day, a week or "
-"until unmuted. Mutes are stored in the database and reach every process "
-"within seconds. An incident that opens while muted or snoozed closes "
-"without a recovery message; one posted before still gets its recovery."
-msgstr ""
-"**Admin → Settings → Operations** 中有两个控件，都不会修改 `ALERT_RULES`。**Alert "
-"Notifications** 可以把所有告警暂停最多 24 小时（管理 API 最多接受七天）。**Alert Types** "
-"可以把某一类告警（例如 "
-"`auth_ip_blocked`）静音一小时、一天、一周或直到取消静音。静音保存在数据库中，几秒内就会到达每个进程。在静音或暂停期间开始的事件结束时不会发送恢复消息；之前已发出的事件仍会收到恢复消息。"
+msgid "**Admin → Settings → Alerts** has two controls, neither of which changes `ALERT_RULES`. **Alert Notifications** snoozes every alert for up to 24 hours (the admin API accepts up to seven days). **Alert Types** mutes one type, such as `auth_ip_blocked`, for an hour, a day, a week or until unmuted. Mutes are stored in the database and reach every process within seconds. An incident that opens while muted or snoozed closes without a recovery message; one posted before still gets its recovery."
+msgstr "**Admin → Settings → Alerts** 中有两个控件，都不会修改 `ALERT_RULES`。**Alert Notifications** 可以把所有告警暂停最多 24 小时（管理 API 最多接受七天）。**Alert Types** 可以把某一类告警（例如 `auth_ip_blocked`）静音一小时、一天、一周或直到取消静音。静音保存在数据库中，几秒内就会到达每个进程。在静音或暂停期间开始的事件结束时不会发送恢复消息；之前已发出的事件仍会收到恢复消息。"
 
 #: ../developer/deployment.md:493
 msgid "The first admin account"
@@ -1474,13 +1445,8 @@ msgid "Promoting accounts with `ADMIN_EMAILS`"
 msgstr "用 `ADMIN_EMAILS` 提升账号"
 
 #: ../developer/deployment.md:584
-msgid ""
-"`ADMIN_EMAILS` (under **Security** in **Admin → Settings → Access & "
-"Limits**) makes a listed address an administrator when that account signs"
-" in. You do not need it for the first administrator."
-msgstr ""
-"`ADMIN_EMAILS`（位于 **Admin → Settings → Access & Limits** 的 **Security** "
-"下）会在列出的邮箱对应的账号登录时把它设为管理员。创建第一个管理员不需要它。"
+msgid "`ADMIN_EMAILS` (under **Security** in **Admin → Settings → Sign-in & security**) makes a listed address an administrator when that account signs in. You do not need it for the first administrator."
+msgstr "`ADMIN_EMAILS`（位于 **Admin → Settings → Sign-in & security** 的 **Security** 下）会在列出的邮箱对应的账号登录时把它设为管理员。创建第一个管理员不需要它。"
 
 #: ../developer/deployment.md:589
 msgid ""

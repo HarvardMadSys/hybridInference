@@ -294,13 +294,8 @@ msgid "`USER_AUTH_ENABLED`"
 msgstr ""
 
 #: ../developer/installation.md:71
-msgid ""
-"`1` (default) requires an API key for inference; `0` allows anonymous "
-"inference but keeps account and admin sign-in. A runtime switch in "
-"**Admin → Settings → Access & Limits**"
-msgstr ""
-"`1`（默认）要求推理请求携带 API key；`0` 允许匿名推理，但账号登录和管理员认证照常。这是 **Admin → Settings → "
-"Access & Limits** 中的运行时开关"
+msgid "`1` (default) requires an API key for inference; `0` allows anonymous inference but keeps account and admin sign-in. A runtime switch in **Admin → Settings → Sign-in & security**"
+msgstr "`1`（默认）要求推理请求携带 API key；`0` 允许匿名推理，但账号登录和管理员认证照常。这是 **Admin → Settings → Sign-in & security** 中的运行时开关"
 
 #: ../developer/installation.md:71
 msgid "`DB_STORE_FULL_CONTENT`"
@@ -372,21 +367,8 @@ msgstr ""
 "`${VAR}` 都保持原样。"
 
 #: ../developer/installation.md:182
-msgid ""
-"**Admin → Settings → Providers & Routing** lists every variable the model"
-" catalog names, marks the ones a model needs, and stores their values; "
-"**Add variable** adds a name it does not list yet. Restart the backend "
-"after changing one. A provider key whose description mentions numbered "
-"extras, such as `OPENROUTER_API_KEY`, also accepts `OPENROUTER_API_KEY1` "
-"to `OPENROUTER_API_KEY20`; every one with a value joins the provider's "
-"key pool. Keys added in the **Keys** section of **Admin → Providers** "
-"join the same pool without a restart."
-msgstr ""
-"**Admin → Settings → Providers & Routing** "
-"列出模型目录引用的每个变量，标出模型必需的变量，并存储它们的值；**Add variable** "
-"可以添加尚未列出的名字。修改后要重启后端。说明中提到编号扩展的 provider key（例如 `OPENROUTER_API_KEY`）还接受 "
-"`OPENROUTER_API_KEY1` 到 `OPENROUTER_API_KEY20`；每个有值的 key 都加入该 provider 的 "
-"key 池。在 **Admin → Providers** 的 **Keys** 部分添加的 key 也加入同一个池，无需重启。"
+msgid "**Admin → Settings → Providers** lists every variable the model catalog names, marks the ones a model needs, and stores their values; **Add variable** adds a name it does not list yet. Restart the backend after changing one. A provider key whose description mentions numbered extras, such as `OPENROUTER_API_KEY`, also accepts `OPENROUTER_API_KEY1` to `OPENROUTER_API_KEY20`; every one with a value joins the provider's key pool. Keys added in the **Keys** section of **Admin → Providers** join the same pool without a restart."
+msgstr "**Admin → Settings → Providers** 列出模型目录引用的每个变量，标出模型必需的变量，并存储它们的值；**Add variable** 可以添加尚未列出的名字。修改后要重启后端。说明中提到编号扩展的 provider key（例如 `OPENROUTER_API_KEY`）还接受 `OPENROUTER_API_KEY1` 到 `OPENROUTER_API_KEY20`；每个有值的 key 都加入该 provider 的 key 池。在 **Admin → Providers** 的 **Keys** 部分添加的 key 也加入同一个池，无需重启。"
 
 #: ../developer/installation.md:190
 msgid "Verifying the install"

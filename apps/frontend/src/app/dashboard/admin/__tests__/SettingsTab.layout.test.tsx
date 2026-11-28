@@ -58,12 +58,13 @@ function webhook(key: string): ConfigEntry {
 }
 
 /**
- * One setting or more in each category a tab names, and one in a category
- * none names. Where a category is split, it has a setting at the top and one
- * under Advanced (`ADVANCED_SETTINGS`), and some are usually set once. The
+ * One setting or more in most categories a tab names, and one in a category
+ * none names; nothing for Integrations, whose tab is then not listed. Where a
+ * category is split, it has a setting at the top and one in a part of it
+ * (`ADVANCED_SETTINGS`, `TOPIC_SECTIONS`), and some are usually set once. The
  * keys the layout does not name (`SESSION_HOURS`, `FUTURE_KNOB`) stay at the
- * top. The model catalog's category is Routing → Models', which this page
- * leaves out.
+ * top, under their variable's name. The model catalog's category is Routing →
+ * Models', which this page leaves out.
  */
 const CONFIG: ConfigResponse = {
   categories: [
@@ -242,14 +243,38 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+/** The tabs listed with this configuration, in order, named as a screen reader hears them. */
+const ALL_TABS = [
+  'Overview',
+  'Sign-up',
+  'Sign-in & security',
+  'Usage limits',
+  'Providers, 1 missing',
+  'Routing',
+  'Batches',
+  'Alerts',
+  'Logging & privacy',
+  'Analytics',
+  'General',
+  'Email, 1 missing',
+  'Network',
+  'Backup & restore',
+  'Other',
+];
+
 /** The sub-tabs are these, in this order, named as a screen reader hears them. */
 function expectTabs(names: string[]) {
   const tablist = screen.getByRole('tablist', { name: 'Settings sections' });
   const tabs = within(tablist).getAllByRole('tab');
-  expect(tabs).toHaveLength(names.length);
+  expect(tabs.map((tab) => tab.textContent)).toHaveLength(names.length);
   names.forEach((name, index) =>
     expect(within(tablist).getByRole('tab', { name })).toBe(tabs[index]),
   );
+}
+
+/** The tab chosen now, by the name it is shown under. */
+function expectSelected(name: string | RegExp) {
+  expect(screen.getByRole('tab', { name })).toHaveAttribute('aria-selected', 'true');
 }
 
 /** The sections of the sub-tab on screen, top to bottom. */
@@ -260,7 +285,7 @@ function sectionsShown() {
     .map((id) => document.getElementById(id!)?.textContent);
 }
 
-/** A category's rows, top to bottom: each setting by its name, and the heading of those set once. */
+/** A category's rows, top to bottom: each setting by its variable, and the heading of those set once. */
 function rowsOf(category: string) {
   return Array.from(
     screen
@@ -320,7 +345,7 @@ describe('Settings section links', () => {
       window.history.replaceState(
         null,
         '',
-        '/dashboard/admin/settings?tab=operations#settings-analytics',
+        '/dashboard/admin/settings?tab=analytics#settings-analytics',
       );
       let resolveConfig!: (value: ConfigResponse) => void;
       let resolveRuntime!: (value: { settings: RuntimeSettingItem[] }) => void;
@@ -349,10 +374,11 @@ describe('Settings section links', () => {
         (first === 'configuration' ? finishRuntime : finishConfig)();
       });
 
-      // Analytics is under the Advanced of Operations: the link opened both.
+      // Analytics has a tab of its own: the link opened it.
       const section = screen.getByRole('region', { name: 'Analytics' });
       expect(scrollIntoView).toHaveBeenCalledExactlyOnceWith({ block: 'start' });
       expect(scrollIntoView.mock.contexts[0]).toBe(section);
+      expectSelected('Analytics');
 
       vi.mocked(updateRuntimeSetting).mockResolvedValueOnce(
         runtime('analytics_growth_rate_enabled', true),
@@ -379,51 +405,56 @@ describe('Settings section links', () => {
   });
 
   it('opens the tab that holds a linked section, and its Advanced, then scrolls to it', async () => {
-    window.history.replaceState(null, '', '/dashboard/admin/settings#settings-analytics');
+    window.history.replaceState(null, '', '/dashboard/admin/settings#config-general-logging');
     await renderLoaded();
 
-    await expectScrolledTo(() => screen.getByRole('region', { name: 'Analytics' }));
-    expect(screen.getByRole('tab', { name: 'Operations' })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
+    // The server log settings are under the Advanced of Logging & privacy.
+    await expectScrolledTo(() => screen.getByRole('region', { name: 'Server log' }));
+    expectSelected('Logging & privacy');
     expect(advancedToggle()).toHaveAttribute('aria-expanded', 'true');
+    expect(replaceMock).toHaveBeenCalledWith(
+      '/dashboard/admin/settings?tab=logging#config-general-logging',
+      { scroll: false },
+    );
   });
 
   it('keeps the hash when the linked section is on the default tab', async () => {
-    window.history.replaceState(null, '', '/dashboard/admin/settings#settings-quotas');
-    await renderLoaded(undefined, { initialTab: 'operations' });
+    window.history.replaceState(null, '', '/dashboard/admin/settings#settings-all-tabs');
+    await renderLoaded(undefined, { initialTab: 'alerts' });
 
-    await expectScrolledTo(() => screen.getByRole('region', { name: 'Daily Quotas' }));
-    expect(screen.getByRole('tab', { name: 'Access & Limits' })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
-    // A section at the top opens nothing more.
-    expect(advancedToggle()).toHaveAttribute('aria-expanded', 'false');
+    await expectScrolledTo(() => screen.getByRole('region', { name: 'All settings' }));
+    expectSelected('Overview');
+    expect(replaceMock).toHaveBeenCalledWith('/dashboard/admin/settings#settings-all-tabs', {
+      scroll: false,
+    });
   });
 
   it.each([
-    // A setting by its key, the configuration's and a runtime one's.
-    [
-      'REQUEST_TIMEOUT_SECONDS',
-      'Providers & Routing',
-      '[data-config-key="REQUEST_TIMEOUT_SECONDS"]',
-    ],
-    ['log_full_payload', 'Operations', '[data-runtime-key="log_full_payload"]'],
-    // A whole category's section, by its anchor.
-    ['config-application', 'Site & Setup', '#config-application'],
+    // A setting by its key, a category's tuning and a part of another category.
+    ['REQUEST_TIMEOUT_SECONDS', 'Routing', '[data-config-key="REQUEST_TIMEOUT_SECONDS"]'],
+    ['LOG_LEVEL', 'Logging & privacy', '[data-config-key="LOG_LEVEL"]'],
+    // A whole section, by its anchor: a document on the tab it configures.
+    ['config-application-branding', 'General', '#config-application-branding'],
   ])('opens Advanced for a link to %s under it, and scrolls there', async (hash, tab, selector) => {
     window.history.replaceState(null, '', `/dashboard/admin/settings#${hash}`);
     await renderLoaded();
 
     await expectScrolledTo(() => document.querySelector<HTMLElement>(selector)!);
-    expect(screen.getByRole('tab', { name: new RegExp(`^${tab}`) })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
+    expectSelected(tab);
     expect(advancedToggle()).toHaveAttribute('aria-expanded', 'true');
     expect(document.querySelector(selector)).toBeVisible();
+  });
+
+  it('opens a tab with no Advanced for a link to a runtime setting on it', async () => {
+    window.history.replaceState(null, '', '/dashboard/admin/settings#log_full_payload');
+    await renderLoaded();
+
+    await expectScrolledTo(
+      () => document.querySelector<HTMLElement>('[data-runtime-key="log_full_payload"]')!,
+    );
+    expectSelected('Logging & privacy');
+    // At the top of the tab: Advanced stays as it was.
+    expect(advancedToggle()).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('follows a link to a section under Advanced once the page is open', async () => {
@@ -432,92 +463,93 @@ describe('Settings section links', () => {
     expect(scrollIntoView).not.toHaveBeenCalled();
 
     act(() => {
-      window.history.replaceState(null, '', '/dashboard/admin/settings#settings-logging');
+      window.history.replaceState(null, '', '/dashboard/admin/settings#config-routing-advanced');
       window.dispatchEvent(new HashChangeEvent('hashchange'));
     });
 
-    await expectScrolledTo(() => screen.getByRole('region', { name: 'Request Logging' }));
-    expect(screen.getByRole('tab', { name: 'Operations' })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
+    await expectScrolledTo(() => screen.getByRole('region', { name: 'Routing (advanced)' }));
+    expectSelected('Routing');
     expect(advancedToggle()).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('opens the tab an Overview line names, at its section', async () => {
+    await renderLoaded();
+
+    // Alerts run, but no channel is chosen: the line says so, and opens the
+    // tab at the section where the channel is chosen, below the snooze.
+    const alerts = document.querySelector<HTMLElement>('[data-overview-item="alerts"]')!;
+    expect(alerts).toHaveTextContent('No channel');
+    fireEvent.click(within(alerts).getByRole('button', { name: 'Open Alerts' }));
+
+    await expectScrolledTo(() => screen.getByRole('region', { name: 'Alerts' }));
+    expectSelected('Alerts');
+    // The address says where, as the link's would: a reload or a share lands there too.
+    expect(replaceMock).toHaveBeenLastCalledWith(
+      '/dashboard/admin/settings?tab=alerts#config-alerts',
+      { scroll: false },
+    );
   });
 });
 
 describe('Admin → Settings sub-tabs', () => {
-  it('opens on Access & Limits, with one tab per task and backup last on Site & Setup', async () => {
+  it('opens on the Overview, with every tab that has something to show under its heading', async () => {
     await renderLoaded();
 
-    expectTabs([
-      'Access & Limits',
-      'Providers & Routing, 1 missing',
-
-      'Operations',
-      'Site & Setup, 1 missing',
-    ]);
-    expect(screen.getByRole('tab', { name: 'Access & Limits' })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
-    expect(screen.getByText(/^Who may sign up or sign in/)).toBeVisible();
+    // Integrations has nothing on this gateway, so it is not listed.
+    expectTabs(ALL_TABS);
+    expectSelected('Overview');
+    // The headings group the tabs for the eye; a screen reader hears the tabs alone.
+    const tablist = screen.getByRole('tablist', { name: 'Settings sections' });
+    for (const heading of ['Access', 'Inference', 'Monitoring', 'Deployment']) {
+      expect(within(tablist).getByText(heading)).toHaveAttribute('aria-hidden', 'true');
+    }
+    expect(screen.getByText(/^What is set up, what still needs a value/)).toBeVisible();
     // The page says at a glance that two required settings are missing and nothing is unsaved.
     expect(screen.getByText('2 required settings missing')).toBeVisible();
     expect(screen.getByText('No unsaved changes')).toBeVisible();
+    expect(sectionsShown()).toEqual(['Setup status', 'All settings']);
+  });
 
-    // Each runtime setting is in its topic's group.
-    expect(
-      within(screen.getByRole('region', { name: 'Daily Quotas' })).getByRole('button', {
-        name: 'Apply to existing users',
-      }),
-    ).toBeInTheDocument();
-    expect(
-      within(screen.getByRole('region', { name: 'Per-User Concurrency' })).getByLabelText(
-        'user_concurrency_free value',
-      ),
-    ).toBeInTheDocument();
+  it('says on the Overview how each thing stands, and opens the tab that changes it', async () => {
+    await renderLoaded();
+
+    const lines = Array.from(document.querySelectorAll<HTMLElement>('[data-overview-item]'));
+    expect(lines.map((line) => line.dataset.overviewItem)).toEqual(['site', 'signup', 'alerts']);
+    expect(lines[0]).toHaveTextContent('The site is named Gateway.');
+    expect(lines[1]).toHaveTextContent('New users may sign up.');
+    expect(screen.getByText('1 thing needs a look.')).toBeVisible();
+
+    // Every other tab is listed with what it holds, and opens on a click.
+    const all = within(screen.getByRole('region', { name: 'All settings' }));
+    expect(all.getAllByRole('button')).toHaveLength(ALL_TABS.length - 1);
+    fireEvent.click(all.getByRole('button', { name: /^Batches/ }));
+    expectSelected('Batches');
+    expect(replaceMock).toHaveBeenLastCalledWith('/dashboard/admin/settings?tab=batches', {
+      scroll: false,
+    });
   });
 
   it.each([
     [
-      // The switches changed most often sit with the sign-up configuration of
-      // the same topic: one tab answers who may use the gateway, and how much.
-      'Access & Limits',
-      [
-        'Access Controls',
-        'Per-User Concurrency',
-        'Daily Quotas',
-        'Signup Policy',
-        'Sign-up',
-        'Security',
-      ],
-      ['Sign-up (advanced)', 'Security (advanced)'],
+      'Sign-up',
+      // The switches sit with the sign-up configuration of the same topic.
+      ['Sign-up Controls', 'Signup Policy', 'Sign-up'],
+      ['Sign-up (advanced)'],
     ],
+    ['Sign-in & security', ['Security'], ['Security (advanced)']],
+    ['Providers', ['Providers'], ['Providers (advanced)']],
+    // RouteWise, with no RouteWise model, shows its empty state: no section of its own.
+    ['Routing', ['Routing', 'Request Handling'], ['Routing (advanced)']],
+    ['Batches', ['Batch inference', 'Batch Concurrency'], ['Batch inference (advanced)']],
     [
-      'Providers & Routing',
-      ['Providers', 'Routing', 'Request Handling'],
-      // RouteWise, with no RouteWise model, shows its empty state: no section of its own.
-      ['Providers (advanced)', 'Routing (advanced)'],
+      'Alerts',
+      // Snoozing first; the channel next; the long list of types to mute last.
+      ['Alert Notifications', 'Alerts', 'Alert Types'],
+      ['Alerts (advanced)'],
     ],
-    [
-      'Operations',
-      [
-        'Alert Notifications',
-        'Alert Types',
-        'Alerts',
-        'Batch inference',
-        'Batch Concurrency',
-        'Other Runtime Settings',
-      ],
-      ['Alerts (advanced)', 'Batch inference (advanced)', 'Request Logging', 'Analytics'],
-    ],
-    [
-      // A category no tab names still has a place, at the top; the catalog's
-      // is not one. Backup & restore closes the everyday part of the tab.
-      'Site & Setup',
-      ['General', 'Email', 'Future things', 'Backup & Restore'],
-      ['General (advanced)', 'Network', 'Application', 'Usage Insights'],
-    ],
+    ['Logging & privacy', ['Request Logging'], ['Server log']],
+    // A document is shown on the tab it configures, under its own name.
+    ['General', ['General'], ['Branding']],
   ])(
     'opens %s on what is commonly changed, and keeps the rest under Advanced, collapsed',
     async (tab, top, advanced) => {
@@ -530,12 +562,154 @@ describe('Admin → Settings sub-tabs', () => {
     },
   );
 
+  it.each([
+    ['Usage limits', ['Per-User Concurrency', 'Daily Quotas']],
+    ['Analytics', ['Analytics', 'Usage Insights']],
+    ['Email', ['Email']],
+    ['Network', ['Network']],
+    ['Backup & restore', ['Backup & Restore']],
+    // A category no tab names, and a runtime setting no group takes.
+    ['Other', ['Future things', 'Other Runtime Settings']],
+  ])('shows all of %s at once, with nothing under Advanced', async (tab, sections) => {
+    await renderLoaded(new RegExp(`^${tab}`));
+
+    expect(sectionsShown()).toEqual(sections);
+    expect(screen.queryByRole('button', { name: 'Advanced settings' })).not.toBeInTheDocument();
+  });
+
+  it('opens the Overview, and says so in the address, for a tab this gateway does not list', async () => {
+    // Nothing for Other: no category no tab names, and no runtime setting no group takes.
+    vi.mocked(getConfig).mockResolvedValueOnce({
+      ...CONFIG,
+      entries: CONFIG.entries.filter((item) => item.category !== 'future'),
+    });
+    let finishRuntime!: (value: { settings: RuntimeSettingItem[] }) => void;
+    vi.mocked(listRuntimeSettings).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishRuntime = resolve;
+      }),
+    );
+    await renderSettings(undefined, { initialTab: 'other' });
+
+    // Its runtime settings may be on their way: the tab it names waits, listed.
+    await screen.findByRole('tab', { name: 'Other' });
+    expectSelected('Other');
+    expect(replaceMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      finishRuntime({ settings: [runtime('log_full_payload', false)] });
+    });
+    expect(screen.queryByRole('tab', { name: 'Other' })).not.toBeInTheDocument();
+    expectSelected('Overview');
+    expect(replaceMock).toHaveBeenLastCalledWith('/dashboard/admin/settings', { scroll: false });
+  });
+
+  it('keeps the tab the address names once its runtime settings arrive', async () => {
+    let finishRuntime!: (value: { settings: RuntimeSettingItem[] }) => void;
+    vi.mocked(getConfig).mockResolvedValueOnce({
+      ...CONFIG,
+      entries: CONFIG.entries.filter((item) => item.category !== 'future'),
+    });
+    vi.mocked(listRuntimeSettings).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishRuntime = resolve;
+      }),
+    );
+    await renderSettings(undefined, { initialTab: 'other' });
+    await screen.findByRole('tab', { name: 'Other' });
+
+    await act(async () => {
+      finishRuntime({ settings: [runtime('mystery_knob', 5)] });
+    });
+    expectSelected('Other');
+    expect(screen.getByLabelText('mystery_knob value')).toBeVisible();
+    expect(replaceMock).not.toHaveBeenCalled();
+  });
+
+  it('moves between tabs with the keyboard, and opens one on Enter or a click', async () => {
+    await renderLoaded();
+    const tablist = screen.getByRole('tablist', { name: 'Settings sections' });
+    const tabs = within(tablist).getAllByRole('tab');
+    // One stop in the tab order: the chosen tab.
+    expect(tabs.map((tab) => tab.tabIndex)).toEqual(tabs.map((_, index) => (index === 0 ? 0 : -1)));
+
+    tabs[0].focus();
+    fireEvent.keyDown(tabs[0], { key: 'ArrowDown' });
+    expect(tabs[1]).toHaveFocus();
+    fireEvent.keyDown(tabs[1], { key: 'ArrowRight' });
+    expect(tabs[2]).toHaveFocus();
+    fireEvent.keyDown(tabs[2], { key: 'End' });
+    expect(tabs[tabs.length - 1]).toHaveFocus();
+    // Past either end, around to the other.
+    fireEvent.keyDown(tabs[tabs.length - 1], { key: 'ArrowDown' });
+    expect(tabs[0]).toHaveFocus();
+    fireEvent.keyDown(tabs[0], { key: 'ArrowUp' });
+    expect(tabs[tabs.length - 1]).toHaveFocus();
+    fireEvent.keyDown(tabs[tabs.length - 1], { key: 'Home' });
+    expect(tabs[0]).toHaveFocus();
+
+    // Moving opens nothing; the tab with focus opens as a button does.
+    fireEvent.keyDown(tabs[0], { key: 'ArrowLeft' });
+    expectSelected('Overview');
+    expect(replaceMock).not.toHaveBeenCalled();
+    fireEvent.click(tabs[tabs.length - 1]);
+    expectSelected('Other');
+    expect(tabs[tabs.length - 1].tabIndex).toBe(0);
+    expect(tabs[0].tabIndex).toBe(-1);
+  });
+
+  it('shows a note beside a tab only while it has something to note', async () => {
+    await renderLoaded('Routing');
+    const routing = screen.getByRole('tab', { name: 'Routing' });
+    expect(routing.querySelector('[aria-hidden="true"]')).toBeNull();
+
+    openAdvanced();
+    fireEvent.change(screen.getByLabelText('Request timeout (seconds)'), {
+      target: { value: '90' },
+    });
+    const changed = screen.getByRole('tab', { name: 'Routing, unsaved changes' });
+    expect(changed.querySelector('[aria-hidden="true"]')).not.toBeNull();
+  });
+
+  it('heads each tab with its name and what it holds', async () => {
+    await renderLoaded('Usage limits');
+    const panel = screen.getByRole('tabpanel', { name: 'Usage limits' });
+    expect(within(panel).getByText('Usage limits')).toBeVisible();
+    expect(
+      within(panel).getByText(/^How many requests one user may have in flight, and how much/),
+    ).toBeVisible();
+  });
+
+  it('describes a section by what this page shows of it', async () => {
+    await renderLoaded('General');
+    // The category speaks of logging too, which this page shows on Logging & privacy.
+    expect(
+      within(screen.getByRole('region', { name: 'General' })).getByText(
+        'Public addresses and site identity.',
+      ),
+    ).toBeVisible();
+  });
+
+  it('shows a built-in setting under a plain name, with its variable beside it', async () => {
+    await renderLoaded('Sign-up');
+
+    const row = document.querySelector<HTMLElement>('[data-config-key="SIGNUP_NOTIFY_EMAILS"]')!;
+    expect(within(row).getByLabelText('New-account notification emails')).toHaveValue(
+      'ops@example.test',
+    );
+    expect(within(row).getByText('SIGNUP_NOTIFY_EMAILS')).toBeVisible();
+
+    // A setting this console has no name for keeps its variable's.
+    await openSettingsTab('Other');
+    expect(screen.getByLabelText('FUTURE_KNOB')).toHaveValue('x');
+  });
+
   it('keeps Advanced collapsed until it is opened, says what it holds, and loads RouteWise only then', async () => {
-    await renderLoaded('Providers & Routing, 1 missing');
+    await renderLoaded('Routing');
 
     const toggle = advancedToggle();
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.getByText(/^The defaults offered for new routes/)).toBeVisible();
+    expect(screen.getByText(/^Timeouts and the largest request/)).toBeVisible();
     expect(screen.queryByRole('region', { name: 'Routing (advanced)' })).not.toBeInTheDocument();
     // Concealed, not removed: the browser's find in page still looks in it.
     const timeout = document.querySelector('[data-config-key="REQUEST_TIMEOUT_SECONDS"]');
@@ -548,7 +722,7 @@ describe('Admin → Settings sub-tabs', () => {
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
     expect(
       within(screen.getByRole('region', { name: 'Routing (advanced)' })).getByLabelText(
-        'REQUEST_TIMEOUT_SECONDS',
+        'Request timeout (seconds)',
       ),
     ).toHaveValue(120);
     expect(await screen.findByText('No RouteWise models available.')).toBeVisible();
@@ -560,53 +734,49 @@ describe('Admin → Settings sub-tabs', () => {
     expect(screen.getByText('No RouteWise models available.')).not.toBeVisible();
 
     // Each tab has its own Advanced, collapsed until it is opened.
-    await openSettingsTab('Operations');
+    await openSettingsTab('Alerts');
     expect(advancedToggle()).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('keeps a section with an unsaved change on screen under a collapsed Advanced, with its change', async () => {
-    await renderLoaded('Providers & Routing, 1 missing');
+    await renderLoaded('Routing');
     openAdvanced();
-    fireEvent.change(screen.getByLabelText('REQUEST_TIMEOUT_SECONDS'), {
+    fireEvent.change(screen.getByLabelText('Request timeout (seconds)'), {
       target: { value: '90' },
     });
 
     fireEvent.click(advancedToggle());
     expect(advancedToggle()).toHaveAttribute('aria-expanded', 'false');
     const routing = screen.getByRole('region', { name: 'Routing (advanced)' });
-    expect(within(routing).getByLabelText('REQUEST_TIMEOUT_SECONDS')).toHaveValue(90);
+    expect(within(routing).getByLabelText('Request timeout (seconds)')).toHaveValue(90);
     expect(within(routing).getByText('1 unsaved change')).toBeVisible();
     expect(screen.getByText(/stays on screen\.$/)).toBeVisible();
-    // The sections with nothing to do are concealed again.
-    expect(screen.queryByRole('region', { name: 'Providers (advanced)' })).not.toBeInTheDocument();
-    expect(
-      screen.getByRole('tab', { name: 'Providers & Routing, unsaved changes, 1 missing' }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Routing, unsaved changes' })).toBeInTheDocument();
 
     // Another tab and back: the change is still there, and so is its section.
-    await openSettingsTab('Operations');
-    await openSettingsTab(/^Providers & Routing/);
-    expect(screen.getByLabelText('REQUEST_TIMEOUT_SECONDS')).toHaveValue(90);
+    await openSettingsTab('Alerts');
+    await openSettingsTab(/^Routing/);
+    expect(screen.getByLabelText('Request timeout (seconds)')).toHaveValue(90);
 
     fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Routing (advanced)' }));
     expect(screen.queryByRole('region', { name: 'Routing (advanced)' })).not.toBeInTheDocument();
     expect(screen.queryByText(/stays on screen\.$/)).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Routing' })).toBeInTheDocument();
     expect(patchConfig).not.toHaveBeenCalled();
   });
 
-  it('keeps a runtime group with an unsaved change on screen under a collapsed Advanced', async () => {
-    await renderLoaded('Operations');
+  it('counts a change to a part of a category on the tab that shows the part', async () => {
+    await renderLoaded('Logging & privacy');
     openAdvanced();
-    fireEvent.click(screen.getByRole('switch', { name: 'Toggle log full payload' }));
-    fireEvent.click(advancedToggle());
-    expect(screen.getByRole('switch', { name: 'Toggle log full payload' })).toHaveAttribute(
-      'aria-checked',
-      'true',
-    );
-    expect(screen.getByRole('region', { name: 'Request Logging' })).toBeVisible();
-    expect(screen.queryByRole('region', { name: 'Analytics' })).not.toBeInTheDocument();
-    expect(patchConfig).not.toHaveBeenCalled();
-    expect(updateRuntimeSetting).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('Log level'), { target: { value: 'DEBUG' } });
+
+    // LOG_LEVEL is a General setting, shown on Logging & privacy: that tab has the change.
+    expect(
+      screen.getByRole('tab', { name: 'Logging & privacy, unsaved changes' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'General' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Server log' }));
+    expect(screen.getByRole('tab', { name: 'Logging & privacy' })).toBeInTheDocument();
   });
 
   it('keeps a section under Advanced on screen while a required value is missing', async () => {
@@ -622,30 +792,29 @@ describe('Admin → Settings sub-tabs', () => {
     });
     await renderLoaded();
 
-    expect(screen.getByRole('tab', { name: 'Access & Limits, 1 missing' })).toBeInTheDocument();
+    await openSettingsTab('Sign-in & security, 1 missing');
     expect(advancedToggle()).toHaveAttribute('aria-expanded', 'false');
     expect(rowsOf('Security (advanced)')).toEqual([
       'LOGIN_RATE_LIMIT_PER_15MIN',
       'Usually set once',
       'COOKIE_DOMAIN',
     ]);
-    expect(screen.queryByRole('region', { name: 'Sign-up (advanced)' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Security (advanced)' })).toBeVisible();
   });
 
   it('keeps a section under Advanced on screen while a stored value is refused', async () => {
     vi.mocked(getConfig).mockResolvedValueOnce(
       configWith('BATCH_MAX_REQUESTS', { invalid: 'must be at least 1' }),
     );
-    await renderLoaded('Operations');
+    await renderLoaded('Batches');
 
     expect(advancedToggle()).toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByRole('region', { name: 'Batch inference (advanced)' })).toBeVisible();
-    expect(screen.queryByRole('region', { name: 'Alerts (advanced)' })).not.toBeInTheDocument();
   });
 
   it('opens Advanced when the browser finds a match in it', async () => {
-    await renderLoaded('Operations');
-    const concealed = document.getElementById('settings-analytics')!.closest('[hidden]')!;
+    await renderLoaded('Routing');
+    const concealed = document.getElementById('config-routing-advanced')!.closest('[hidden]')!;
     expect(concealed).toHaveAttribute('hidden', 'until-found');
 
     act(() => {
@@ -653,7 +822,7 @@ describe('Admin → Settings sub-tabs', () => {
     });
 
     expect(advancedToggle()).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByRole('region', { name: 'Analytics' })).toBeVisible();
+    expect(screen.getByRole('region', { name: 'Routing (advanced)' })).toBeVisible();
     expect(concealed).not.toHaveAttribute('hidden');
   });
 
@@ -669,13 +838,17 @@ describe('Admin → Settings sub-tabs', () => {
     expect(listModelVisibility).not.toHaveBeenCalled();
     expect(listModelConcurrency).not.toHaveBeenCalled();
 
-    // Site & Setup keeps the other documents, under Advanced; Providers &
-    // Routing says where the catalog went.
-    await openSettingsTab(/^Site & Setup/);
+    // General keeps the site's documents, under Advanced; Providers says
+    // where the catalog went.
+    await openSettingsTab(/^General/);
     openAdvanced();
-    expect(rowsOf('Application')).toEqual(['SITE_BRANDING']);
-    await openSettingsTab(/^Providers & Routing/);
-    expect(screen.getByText(/The model catalog itself is under Routing → Models\.$/)).toBeVisible();
+    expect(rowsOf('Branding')).toEqual(['SITE_BRANDING']);
+    await openSettingsTab(/^Providers/);
+    expect(
+      within(screen.getByRole('tabpanel')).getByText(
+        /The model catalog itself is under Routing → Models\.$/,
+      ),
+    ).toBeVisible();
 
     // A search looks through this page's categories only.
     fireEvent.change(screen.getByLabelText('Search settings'), { target: { value: 'catalog' } });
@@ -688,53 +861,49 @@ describe('Admin → Settings sub-tabs', () => {
     ['analytics_users_and_requests_enabled', 'Users and Requests', true],
     ['analytics_performance_metrics_enabled', 'Performance Metrics', true],
     ['analytics_growth_rate_enabled', 'Growth Rate', false],
-  ] as const)(
-    'saves the independent %s switch from the Advanced of Operations',
-    async (key, label, initial) => {
-      await renderLoaded();
-      await openSettingsTab('Operations');
-      openAdvanced();
-      const analytics = within(screen.getByRole('region', { name: 'Analytics' }));
-      const toggle = analytics.getByRole('switch', { name: `Toggle ${label}` });
-      expect(analytics.getByText(label)).toBeVisible();
-      expect(analytics.getAllByRole('switch')).toHaveLength(4);
-      expect(toggle).toHaveAttribute('aria-checked', String(initial));
+  ] as const)('saves the independent %s switch from Analytics', async (key, label, initial) => {
+    await renderLoaded();
+    await openSettingsTab('Analytics');
+    const analytics = within(screen.getByRole('region', { name: 'Analytics' }));
+    const toggle = analytics.getByRole('switch', { name: `Toggle ${label}` });
+    expect(analytics.getByText(label)).toBeVisible();
+    expect(analytics.getAllByRole('switch')).toHaveLength(4);
+    expect(toggle).toHaveAttribute('aria-checked', String(initial));
 
-      vi.mocked(updateRuntimeSetting).mockImplementation(async (settingKey, value) => ({
-        ...runtime(settingKey, value as boolean),
-        default_value: initial,
-      }));
-      for (const [index, enabled] of [!initial, initial].entries()) {
-        fireEvent.click(toggle);
-        expect(updateRuntimeSetting).toHaveBeenCalledTimes(index);
-        fireEvent.click(analytics.getByRole('button', { name: 'Save changes to Analytics' }));
-        await waitFor(() => expect(updateRuntimeSetting).toHaveBeenLastCalledWith(key, enabled));
-        await waitFor(() =>
-          expect(
-            analytics.queryByRole('button', { name: 'Save changes to Analytics' }),
-          ).not.toBeInTheDocument(),
-        );
-        expect(toggle).toHaveAttribute('aria-checked', String(enabled));
-      }
-    },
-  );
+    vi.mocked(updateRuntimeSetting).mockImplementation(async (settingKey, value) => ({
+      ...runtime(settingKey, value as boolean),
+      default_value: initial,
+    }));
+    for (const [index, enabled] of [!initial, initial].entries()) {
+      fireEvent.click(toggle);
+      expect(updateRuntimeSetting).toHaveBeenCalledTimes(index);
+      fireEvent.click(analytics.getByRole('button', { name: 'Save changes to Analytics' }));
+      await waitFor(() => expect(updateRuntimeSetting).toHaveBeenLastCalledWith(key, enabled));
+      await waitFor(() =>
+        expect(
+          analytics.queryByRole('button', { name: 'Save changes to Analytics' }),
+        ).not.toBeInTheDocument(),
+      );
+      expect(toggle).toHaveAttribute('aria-checked', String(enabled));
+    }
+  });
 
   it.each([
     [
-      'Site & Setup',
+      'General',
       // A section of nothing else needs no heading for them.
-      { General: ['SITE_NAME'], Email: ['SMTP_HOST'] },
-      { 'General (advanced)': ['LOG_LEVEL'], Network: ['TRUST_PROXY_HEADERS'] },
+      { General: ['SITE_NAME'] },
+      { Branding: ['SITE_BRANDING'] },
     ],
     [
-      'Access & Limits',
-      { Security: ['SESSION_HOURS'], 'Sign-up': ['SIGNUP_NOTIFY_EMAILS'] },
+      'Sign-in & security',
+      { Security: ['SESSION_HOURS'] },
       {
         'Security (advanced)': ['LOGIN_RATE_LIMIT_PER_15MIN', 'Usually set once', 'COOKIE_DOMAIN'],
       },
     ],
     [
-      'Operations',
+      'Alerts',
       // The alert channel goes with its webhooks, which are set once, at the top.
       { Alerts: ['ALERTS_ENABLED', 'Usually set once'] },
       {
@@ -760,7 +929,7 @@ describe('Admin → Settings sub-tabs', () => {
   );
 
   it('puts the alert channel under the heading of what is set once', async () => {
-    await renderLoaded('Operations');
+    await renderLoaded('Alerts');
     const alerts = screen.getByRole('region', { name: 'Alerts' });
     const heading = within(alerts).getByRole('heading', { name: 'Usually set once' });
     expect(heading.compareDocumentPosition(within(alerts).getByText('Notification channel'))).toBe(
@@ -776,43 +945,33 @@ describe('Admin → Settings sub-tabs', () => {
         return rest;
       }),
     });
-    await renderLoaded('Operations');
+    await renderLoaded('Alerts');
 
     const alerts = screen.getByRole('region', { name: 'Alerts' });
     expect(
       within(alerts)
         .getByText('Notification channel')
-        .compareDocumentPosition(within(alerts).getByLabelText('ALERTS_ENABLED')),
+        .compareDocumentPosition(within(alerts).getByLabelText('Alert engine')),
     ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     openAdvanced();
     expect(rowsOf('Alerts (advanced)')).toEqual([
       'DEPLOYMENT_ENV',
       'FAILED_REQUEST_ALERT_THRESHOLD',
     ]);
-    await openSettingsTab(/^Access/);
+    await openSettingsTab(/^Sign-in/);
     openAdvanced();
     expect(rowsOf('Security (advanced)')).toEqual(['COOKIE_DOMAIN', 'LOGIN_RATE_LIMIT_PER_15MIN']);
   });
 
   it('opens the sub-tab a link names, and puts the one chosen in the address', async () => {
-    await renderLoaded(undefined, { initialTab: 'operations' });
-    expect(screen.getByRole('tab', { name: 'Operations' })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
-    expect(sectionsShown()).toEqual([
-      'Alert Notifications',
-      'Alert Types',
-      'Alerts',
-      'Batch inference',
-      'Batch Concurrency',
-      'Other Runtime Settings',
-    ]);
+    await renderLoaded(undefined, { initialTab: 'alerts' });
+    expectSelected('Alerts');
+    expect(sectionsShown()).toEqual(['Alert Notifications', 'Alerts', 'Alert Types']);
 
-    await openSettingsTab(/^Access/);
+    await openSettingsTab('Overview');
     expect(replaceMock).toHaveBeenLastCalledWith('/dashboard/admin/settings', { scroll: false });
-    await openSettingsTab('Operations');
-    expect(replaceMock).toHaveBeenLastCalledWith('/dashboard/admin/settings?tab=operations', {
+    await openSettingsTab('Alerts');
+    expect(replaceMock).toHaveBeenLastCalledWith('/dashboard/admin/settings?tab=alerts', {
       scroll: false,
     });
   });
@@ -824,19 +983,19 @@ describe('Admin → Settings sub-tabs', () => {
     const models = document.body.appendChild(document.createElement('a'));
     models.href = '/dashboard/admin/routing/models';
     try {
-      await renderLoaded(/^Access/);
+      await renderLoaded(/^Sign-up/);
       fireEvent.click(models);
       expect(confirm).not.toHaveBeenCalled();
 
-      fireEvent.change(screen.getByLabelText('SIGNUP_NOTIFY_EMAILS'), {
+      fireEvent.change(screen.getByLabelText('New-account notification emails'), {
         target: { value: 'admins@example.test' },
       });
       // Shown or not, the sub-tab's change would be lost with the page.
-      await openSettingsTab('Operations');
+      await openSettingsTab('Alerts');
       expect(fireEvent.click(models)).toBe(false);
       expect(confirm).toHaveBeenCalledTimes(1);
 
-      await openSettingsTab(/^Access/);
+      await openSettingsTab(/^Sign-up/);
       fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Sign-up' }));
       fireEvent.click(models);
       expect(confirm).toHaveBeenCalledTimes(1);
@@ -847,44 +1006,40 @@ describe('Admin → Settings sub-tabs', () => {
   });
 
   it('keeps unsaved changes while another sub-tab is open, and says where they are', async () => {
-    await renderLoaded(/^Access/);
-    expect(screen.getByRole('tab', { name: 'Access & Limits' })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
+    await renderLoaded(/^Sign-up/);
+    expectSelected('Sign-up');
 
-    fireEvent.change(screen.getByLabelText('SIGNUP_NOTIFY_EMAILS'), {
+    fireEvent.change(screen.getByLabelText('New-account notification emails'), {
       target: { value: 'admins@example.test' },
     });
-    expect(
-      screen.getByRole('tab', { name: 'Access & Limits, unsaved changes' }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Sign-up, unsaved changes' })).toBeInTheDocument();
     expect(screen.getByText('1 unsaved change across all tabs')).toBeVisible();
 
-    await openSettingsTab(/^Providers & Routing/);
-    expect(screen.queryByLabelText('SIGNUP_NOTIFY_EMAILS')).not.toBeVisible();
+    await openSettingsTab(/^Routing/);
+    expect(screen.queryByLabelText('New-account notification emails')).not.toBeVisible();
     fireEvent.click(screen.getByRole('switch', { name: 'Toggle auto mode enabled' }));
-    expect(
-      screen.getByRole('tab', { name: /Providers & Routing.*unsaved changes/ }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Routing, unsaved changes' })).toBeInTheDocument();
 
-    await openSettingsTab('Operations');
-    // Still said on the tabs that are not on screen.
-    expect(screen.getByRole('tab', { name: /^Access/ })).toHaveTextContent('unsaved changes');
-    expect(screen.getByRole('tab', { name: /^Providers/ })).toHaveTextContent('unsaved changes');
+    await openSettingsTab('Alerts');
+    // Still said on the tabs that are not on screen: a dot for the eye, words in the name.
+    for (const name of ['Sign-up, unsaved changes', 'Routing, unsaved changes']) {
+      expect(screen.getByRole('tab', { name })).toHaveAttribute('aria-selected', 'false');
+    }
 
-    await openSettingsTab(/^Access/);
-    expect(screen.getByLabelText('SIGNUP_NOTIFY_EMAILS')).toHaveValue('admins@example.test');
+    await openSettingsTab(/^Sign-up/);
+    expect(screen.getByLabelText('New-account notification emails')).toHaveValue(
+      'admins@example.test',
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Sign-up' }));
-    expect(screen.getByRole('tab', { name: 'Access & Limits' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Sign-up' })).toBeInTheDocument();
 
-    await openSettingsTab(/^Providers & Routing/);
+    await openSettingsTab(/^Routing/);
     expect(screen.getByRole('switch', { name: 'Toggle auto mode enabled' })).toHaveAttribute(
       'aria-checked',
       'true',
     );
     fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Request Handling' }));
-    expect(screen.getByRole('tab', { name: 'Providers & Routing, 1 missing' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Routing' })).toBeInTheDocument();
     expect(patchConfig).not.toHaveBeenCalled();
     expect(updateRuntimeSetting).not.toHaveBeenCalled();
   });
@@ -897,19 +1052,16 @@ describe('Admin → Settings sub-tabs', () => {
     expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
     expect(screen.getByText(/1 setting matches, from every tab/)).toBeInTheDocument();
     const providers = screen.getByRole('region', { name: 'Providers' });
-    expect(providers).toHaveTextContent('Providers & Routing');
-    expect(within(providers).getByLabelText('ZAI_API_KEY')).toBeInTheDocument();
+    expect(providers).toHaveTextContent('Providers');
+    expect(within(providers).getByLabelText('Z.ai API key')).toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'General' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('region', { name: 'Access Controls' })).not.toBeInTheDocument();
-    expect(screen.queryByText(/^Who may sign up or sign in/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Setup status' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/^What is set up, what still needs a value/)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
     expect(screen.getByLabelText('Search settings')).toHaveValue('');
-    expect(screen.getByRole('tab', { name: 'Access & Limits' })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
-    expect(sectionsShown()).toContain('Access Controls');
+    expectSelected('Overview');
+    expect(sectionsShown()).toContain('Setup status');
 
     // A runtime setting is found by its words too, not only by its key.
     fireEvent.change(screen.getByLabelText('Search settings'), {
@@ -918,7 +1070,18 @@ describe('Admin → Settings sub-tabs', () => {
     expect(screen.getByText(/1 setting matches, from every tab/)).toBeInTheDocument();
     const concurrency = screen.getByRole('region', { name: 'Per-User Concurrency' });
     expect(within(concurrency).getByLabelText('user_concurrency_free value')).toBeInTheDocument();
-    expect(concurrency).toHaveTextContent('Access & Limits');
+    expect(concurrency).toHaveTextContent('Usage limits');
+
+    // And a setting by the plain name it is shown under.
+    fireEvent.change(screen.getByLabelText('Search settings'), {
+      target: { value: 'notification emails' },
+    });
+    expect(screen.getByText(/1 setting matches, from every tab/)).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('region', { name: 'Sign-up' })).getByLabelText(
+        'New-account notification emails',
+      ),
+    ).toBeInTheDocument();
   });
 
   it('finds settings under Advanced with a search, says where they live, and keeps a change made there', async () => {
@@ -929,28 +1092,29 @@ describe('Admin → Settings sub-tabs', () => {
     // No toggle while a filter lists every tab: what matches under Advanced is listed with the rest.
     expect(screen.queryByRole('button', { name: 'Advanced settings' })).not.toBeInTheDocument();
     const routing = screen.getByRole('region', { name: 'Routing (advanced)' });
-    expect(routing).toHaveTextContent('Providers & Routing · Advanced');
+    expect(routing).toHaveTextContent('Routing · Advanced');
     expect(screen.queryByRole('region', { name: 'Routing' })).not.toBeInTheDocument();
-    fireEvent.change(within(routing).getByLabelText('REQUEST_TIMEOUT_SECONDS'), {
+    fireEvent.change(within(routing).getByLabelText('Request timeout (seconds)'), {
       target: { value: '90' },
     });
 
-    // A runtime setting under Advanced is found, and tagged, the same way.
-    fireEvent.change(screen.getByLabelText('Search settings'), { target: { value: 'payload' } });
-    const logging = screen.getByRole('region', { name: 'Request Logging' });
-    expect(logging).toHaveTextContent('Operations · Advanced');
-    expect(within(logging).getByRole('switch', { name: 'Toggle log full payload' })).toBeVisible();
+    // A part of a category, shown on another tab, is tagged with that tab.
+    fireEvent.change(screen.getByLabelText('Search settings'), {
+      target: { value: 'log level' },
+    });
+    const serverLog = screen.getByRole('region', { name: 'Server log' });
+    expect(serverLog).toHaveTextContent('Logging & privacy · Advanced');
+    expect(within(serverLog).getByLabelText('Log level')).toBeVisible();
 
     // Cleared, the change waits under the collapsed Advanced, on screen.
     fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
-    await openSettingsTab(/^Providers & Routing/);
+    await openSettingsTab(/^Routing/);
     expect(advancedToggle()).toHaveAttribute('aria-expanded', 'false');
     expect(
       within(screen.getByRole('region', { name: 'Routing (advanced)' })).getByLabelText(
-        'REQUEST_TIMEOUT_SECONDS',
+        'Request timeout (seconds)',
       ),
     ).toHaveValue(90);
-    expect(screen.queryByRole('region', { name: 'Providers (advanced)' })).not.toBeInTheDocument();
   });
 
   it('opens on what is missing, from every sub-tab, when linked that way', async () => {
@@ -958,10 +1122,10 @@ describe('Admin → Settings sub-tabs', () => {
 
     expect(screen.getByRole('checkbox', { name: 'Missing only' })).toBeChecked();
     const email = screen.getByRole('region', { name: 'Email' });
-    expect(email).toHaveTextContent('Site & Setup');
-    expect(within(email).getByLabelText('SMTP_HOST')).toBeInTheDocument();
+    expect(email).toHaveTextContent('Email');
+    expect(within(email).getByLabelText('SMTP host')).toBeInTheDocument();
     expect(
-      within(screen.getByRole('region', { name: 'Providers' })).getByLabelText('ZAI_API_KEY'),
+      within(screen.getByRole('region', { name: 'Providers' })).getByLabelText('Z.ai API key'),
     ).toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Security' })).not.toBeInTheDocument();
 
@@ -978,23 +1142,30 @@ describe('Admin → Settings sub-tabs', () => {
       'does not support database-backed configuration',
     );
 
-    // Every tab still has its runtime settings or its own sections to show.
-    expectTabs(['Access & Limits', 'Providers & Routing', 'Operations', 'Site & Setup']);
-    expect(sectionsShown()).toEqual([
-      'Access Controls',
-      'Per-User Concurrency',
-      'Daily Quotas',
-      'Signup Policy',
+    // Only the tabs with runtime settings or sections of their own are listed.
+    expectTabs([
+      'Overview',
+      'Sign-up',
+      'Usage limits',
+      'Routing',
+      'Batches',
+      'Alerts',
+      'Logging & privacy',
+      'Analytics',
+      'Other',
     ]);
-    // Its Advanced holds only configuration: there is nothing to open.
-    expect(screen.queryByRole('button', { name: 'Advanced settings' })).not.toBeInTheDocument();
+    // The Overview says what the runtime settings tell it.
+    expect(
+      Array.from(document.querySelectorAll<HTMLElement>('[data-overview-item]')).map(
+        (line) => line.dataset.overviewItem,
+      ),
+    ).toEqual(['signup']);
     expect(screen.queryByLabelText('Search settings')).not.toBeInTheDocument();
     await waitFor(() => expect(listRuntimeSettings).toHaveBeenCalledTimes(1));
 
-    // Site & Setup keeps its backup at the top, and Usage Insights under its Advanced.
-    await openSettingsTab('Site & Setup');
-    expect(sectionsShown()).toEqual(['Backup & Restore']);
-    openAdvanced();
-    expect(sectionsShown()).toEqual(['Backup & Restore', 'Usage Insights']);
+    // A tab whose Advanced holds only configuration has nothing to open.
+    await openSettingsTab('Sign-up');
+    expect(sectionsShown()).toEqual(['Sign-up Controls', 'Signup Policy']);
+    expect(screen.queryByRole('button', { name: 'Advanced settings' })).not.toBeInTheDocument();
   });
 });

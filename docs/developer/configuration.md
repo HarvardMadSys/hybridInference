@@ -34,8 +34,11 @@ audit, security confirmation and backup as every other setting:
 | `SITE_BRANDING` | Public branding | On settings refresh |
 | `SSO_PROVIDERS` | Identity providers for [single sign-on](sso.md) | On settings refresh |
 
-**Admin → Routing → Models** edits `MODEL_CATALOG`; **Admin → Settings → Site &
-Setup → Advanced settings → Application** edits the rest. Admin shows a document as one plain-string field
+**Admin → Routing → Models** edits `MODEL_CATALOG`; **Admin → Settings** edits
+each of the rest under the **Advanced settings** of the tab it configures:
+`ROUTING_POLICY` on **Routing**, `ALERT_RULES` on **Alerts**, `SSO_PROVIDERS` on
+**Sign-in & security**, and `SITE_CONFIGURATION` and `SITE_BRANDING` on
+**General**. Admin shows a document as one plain-string field
 per value, named by its path, such as `models[0].route[0].base_url`. Numbers
 and `true`/`false` keep their type, and a list of strings is one
 comma-separated field. To add or remove a key or a list item, switch to
@@ -208,9 +211,8 @@ probe shows the upstream's error message only when it is in the OpenAI error
 format.
 
 To keep Admin off the gateway's own network, set
-`ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0` (**Admin → Settings → Site & Setup →
-Advanced settings**, Network section). Base URLs saved or probed in Admin, and the model queue status
-address, must then resolve to public addresses, at validation and at every
+`ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0` (**Admin → Settings → Network**). Base
+URLs saved or probed in Admin, and the model queue status address, must then resolve to public addresses, at validation and at every
 connection. Routes saved earlier keep serving, so restrict the gateway's egress
 at the network layer as well.
 
@@ -232,10 +234,16 @@ keeps the override and `null` clears it. See
 
 ### Settings tab
 
-**Admin → Settings** has four tabs, **Access & Limits**, **Providers &
-Routing**, **Operations** and **Site & Setup**, each with its tuning settings
-under **Advanced settings**. Each setting shows whether it is required and
-whether it needs a restart.
+**Admin → Settings** opens on **Overview**: how the site address, email,
+sign-up, API access and alerts stand, each with a link to the tab that changes
+it. One tab per topic follows, under four headings: **Access** (Sign-up,
+Sign-in & security, Usage limits), **Inference** (Providers, Routing,
+Batches), **Monitoring** (Alerts, Logging & privacy, Analytics) and
+**Deployment** (General, Email, Network, Integrations, Backup & restore). A tab
+with nothing to set on a gateway is not listed. Each keeps its tuning settings
+under **Advanced settings**. A built-in setting is shown under a plain name with
+its variable beside it, and the search finds it by either. Each setting shows
+whether it is required and whether it needs a restart.
 
 ### How the two layers combine
 
@@ -372,7 +380,7 @@ Other providers are [extension modules](#extension-providers); a gateway that
 does not load one neither offers nor lists it. Selecting an unavailable
 provider is a configuration error: delivery never falls back to another.
 
-**Admin → Settings → Site & Setup → Email** sets up mail as one card: choose the
+**Admin → Settings → Email** sets up mail as one card: choose the
 service, then fill in its settings. **Send test email** sends a fixed message
 through the saved settings, to an address you enter or to your own. When mail
 is not sent, the console says why (settings still missing, an SMTP server that

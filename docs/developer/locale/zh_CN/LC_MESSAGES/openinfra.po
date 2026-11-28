@@ -107,12 +107,8 @@ msgstr ""
 "`/openinfra`，页面的数据接口也会正常响应。没有这个标志时，这些接口返回 `404`，页面显示“这个站点没有公开 OpenInfra”。"
 
 #: ../developer/openinfra.md:49
-msgid ""
-"The OpenInfra settings are in **Admin → Settings → Site & Setup → "
-"Advanced settings**, Integrations section, and apply within seconds:"
-msgstr ""
-"OpenInfra 的设置项位于 **Admin → Settings → Site & Setup → Advanced settings** "
-"的 Integrations 部分，修改后几秒内生效："
+msgid "The OpenInfra settings are in **Admin → Settings → Integrations** and apply within seconds:"
+msgstr "OpenInfra 的设置项位于 **Admin → Settings → Integrations**，修改后几秒内生效："
 
 #: ../developer/openinfra.md
 msgid "Setting"

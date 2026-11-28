@@ -168,18 +168,8 @@ msgid "Identity providers for [single sign-on](sso.md)"
 msgstr "[单点登录](sso.md)的身份提供方"
 
 #: ../developer/configuration.md:37
-msgid ""
-"**Admin → Routing → Models** edits `MODEL_CATALOG`; **Admin → Settings → "
-"Site & Setup → Advanced settings → Application** edits the rest. Admin "
-"shows a document as one plain-string field per value, named by its path, "
-"such as `models[0].route[0].base_url`. Numbers and `true`/`false` keep "
-"their type, and a list of strings is one comma-separated field. To add or"
-" remove a key or a list item, switch to **JSON**."
-msgstr ""
-"**Admin → Routing → Models** 编辑 `MODEL_CATALOG`；**Admin → Settings → Site"
-" & Setup → Advanced settings → Application** 编辑其余文档。Admin "
-"把文档的每个值显示为一个纯字符串字段，以其路径命名，例如 `models[0].route[0].base_url`。数字和 "
-"`true`/`false` 保持原有类型，字符串列表是一个逗号分隔的字段。要添加或删除键或列表项，请切换到 **JSON**。"
+msgid "**Admin → Routing → Models** edits `MODEL_CATALOG`; **Admin → Settings** edits each of the rest under the **Advanced settings** of the tab it configures: `ROUTING_POLICY` on **Routing**, `ALERT_RULES` on **Alerts**, `SSO_PROVIDERS` on **Sign-in & security**, and `SITE_CONFIGURATION` and `SITE_BRANDING` on **General**. Admin shows a document as one plain-string field per value, named by its path, such as `models[0].route[0].base_url`. Numbers and `true`/`false` keep their type, and a list of strings is one comma-separated field. To add or remove a key or a list item, switch to **JSON**."
+msgstr "**Admin → Routing → Models** 编辑 `MODEL_CATALOG`；**Admin → Settings** 在每个文档所配置的那个标签页的 **Advanced settings** 中编辑其余文档：`ROUTING_POLICY` 在 **Routing** 中，`ALERT_RULES` 在 **Alerts** 中，`SSO_PROVIDERS` 在 **Sign-in & security** 中，`SITE_CONFIGURATION` 和 `SITE_BRANDING` 在 **General** 中。Admin 把文档的每个值显示为一个纯字符串字段，以其路径命名，例如 `models[0].route[0].base_url`。数字和 `true`/`false` 保持原有类型，字符串列表是一个逗号分隔的字段。要添加或删除键或列表项，请切换到 **JSON**。"
 
 #: ../developer/configuration.md:44
 msgid ""
@@ -518,19 +508,8 @@ msgstr ""
 " OpenAI 错误格式时才会显示。"
 
 #: ../developer/configuration.md:210
-msgid ""
-"To keep Admin off the gateway's own network, set "
-"`ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0` (**Admin → Settings → Site & "
-"Setup → Advanced settings**, Network section). Base URLs saved or probed "
-"in Admin, and the model queue status address, must then resolve to public"
-" addresses, at validation and at every connection. Routes saved earlier "
-"keep serving, so restrict the gateway's egress at the network layer as "
-"well."
-msgstr ""
-"要让 Admin 无法访问网关所在的内部网络，请设置 "
-"`ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0`（**Admin → Settings → Site & "
-"Setup → Advanced settings** 中的 Network 部分）。此后，在 Admin 中保存或探测的 Base URL "
-"以及模型队列状态地址，都必须解析为公网地址，在校验时和每次建立连接时都会检查。之前保存的路由会继续服务，因此也请在网络层限制网关的出站流量。"
+msgid "To keep Admin off the gateway's own network, set `ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0` (**Admin → Settings → Network**). Base URLs saved or probed in Admin, and the model queue status address, must then resolve to public addresses, at validation and at every connection. Routes saved earlier keep serving, so restrict the gateway's egress at the network layer as well."
+msgstr "要让 Admin 无法访问网关所在的内部网络，请设置 `ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0`（**Admin → Settings → Network**）。此后，在 Admin 中保存或探测的 Base URL 以及模型队列状态地址，都必须解析为公网地址，在校验时和每次建立连接时都会检查。之前保存的路由会继续服务，因此也请在网络层限制网关的出站流量。"
 
 #: ../developer/configuration.md:217
 msgid "Routing tab"
@@ -569,15 +548,8 @@ msgid "Settings tab"
 msgstr "Settings 标签页"
 
 #: ../developer/configuration.md:235
-msgid ""
-"**Admin → Settings** has four tabs, **Access & Limits**, **Providers & "
-"Routing**, **Operations** and **Site & Setup**, each with its tuning "
-"settings under **Advanced settings**. Each setting shows whether it is "
-"required and whether it needs a restart."
-msgstr ""
-"**Admin → Settings** 有四个标签页：**Access & Limits**、**Providers & "
-"Routing**、**Operations** 和 **Site & Setup**，各自的调优设置放在 **Advanced "
-"settings** 下。每个设置项都会标明是否必填、是否需要重启。"
+msgid "**Admin → Settings** opens on **Overview**: how the site address, email, sign-up, API access and alerts stand, each with a link to the tab that changes it. One tab per topic follows, under four headings: **Access** (Sign-up, Sign-in & security, Usage limits), **Inference** (Providers, Routing, Batches), **Monitoring** (Alerts, Logging & privacy, Analytics) and **Deployment** (General, Email, Network, Integrations, Backup & restore). A tab with nothing to set on a gateway is not listed. Each keeps its tuning settings under **Advanced settings**. A built-in setting is shown under a plain name with its variable beside it, and the search finds it by either. Each setting shows whether it is required and whether it needs a restart."
+msgstr "**Admin → Settings** 打开时显示 **Overview**：站点地址、邮件、注册、API 访问和告警的当前状态，每项都附有指向修改它的标签页的链接。之后每个主题一个标签页，分在四个标题下：**Access**（Sign-up、Sign-in & security、Usage limits）、**Inference**（Providers、Routing、Batches）、**Monitoring**（Alerts、Logging & privacy、Analytics）和 **Deployment**（General、Email、Network、Integrations、Backup & restore）。在某个网关上没有可设置内容的标签页不会列出。每个标签页的调优设置都放在 **Advanced settings** 下。内置设置以易读的名称显示，旁边注明对应的变量名，搜索时两者都能找到它。每个设置项都会标明是否必填、是否需要重启。"
 
 #: ../developer/configuration.md:240
 msgid "How the two layers combine"
@@ -852,19 +824,8 @@ msgstr ""
 "providers)；没有加载某个服务的网关既不提供它，也不列出它。选择不可用的服务属于配置错误：发送永远不会退回到另一个服务。"
 
 #: ../developer/configuration.md:375
-msgid ""
-"**Admin → Settings → Site & Setup → Email** sets up mail as one card: "
-"choose the service, then fill in its settings. **Send test email** sends "
-"a fixed message through the saved settings, to an address you enter or to"
-" your own. When mail is not sent, the console says why (settings still "
-"missing, an SMTP server that refused the login or TLS, or what a "
-"Cloudflare error code means), never including a credential. Broadcasts "
-"record the same reason for each recipient not reached."
-msgstr ""
-"**Admin → Settings → Site & Setup → Email** "
-"把邮件设置放在一张卡片中：先选择服务，再填写它的设置项。**Send test email** "
-"通过已保存的设置，向你输入的地址或你自己的地址发送一封固定内容的邮件。邮件未发出时，控制台会说明原因（仍缺少的设置项、拒绝登录或 TLS 的 "
-"SMTP 服务器，或某个 Cloudflare 错误码的含义），且绝不包含凭据。群发会为每个未送达的收件人记录同样的原因。"
+msgid "**Admin → Settings → Email** sets up mail as one card: choose the service, then fill in its settings. **Send test email** sends a fixed message through the saved settings, to an address you enter or to your own. When mail is not sent, the console says why (settings still missing, an SMTP server that refused the login or TLS, or what a Cloudflare error code means), never including a credential. Broadcasts record the same reason for each recipient not reached."
+msgstr "**Admin → Settings → Email** 把邮件设置放在一张卡片中：先选择服务，再填写它的设置项。**Send test email** 通过已保存的设置，向你输入的地址或你自己的地址发送一封固定内容的邮件。邮件未发出时，控制台会说明原因（仍缺少的设置项、拒绝登录或 TLS 的 SMTP 服务器，或某个 Cloudflare 错误码的含义），且绝不包含凭据。群发会为每个未送达的收件人记录同样的原因。"
 
 #: ../developer/configuration.md:383
 msgid "SMTP"

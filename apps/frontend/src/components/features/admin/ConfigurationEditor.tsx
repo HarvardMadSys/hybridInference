@@ -243,8 +243,10 @@ const NO_SPLITS: readonly ConfigSectionSplit[] = [];
  *
  * A page may also split some settings of a category into a section of their
  * own (`sections`): Admin → Settings lists a category's tuning settings under
- * Advanced. Such a section is a group like any category's, with its own Save,
- * Discard, unsaved count and version, so a save writes only what it shows.
+ * Advanced, and shows each application document on the tab it configures.
+ * Such a section is a group like any category's, with its own Save, Discard,
+ * unsaved count and version, so a save writes only what it shows. A page may
+ * also give settings plain names (`labelOf`), shown with the variable's name.
  *
  * The components below draw the editor's parts: its notices, its filters, a
  * category, the Add variable form and the backup.
@@ -253,6 +255,7 @@ export function useConfigurationEditor({
   initialMissingOnly = false,
   excludeCategories,
   sections = NO_SPLITS,
+  labelOf,
 }: {
   initialMissingOnly?: boolean;
   /**
@@ -265,6 +268,13 @@ export function useConfigurationEditor({
    * category. A constant, like `excludeCategories`.
    */
   sections?: readonly ConfigSectionSplit[];
+  /**
+   * The plain name a setting is shown under, with its variable's name beside
+   * it, and found by in a search; `undefined` to show the variable's name
+   * alone. A constant, like `excludeCategories`. Without it, every setting is
+   * shown by its variable's name.
+   */
+  labelOf?: (entry: ConfigEntry) => string | undefined;
 } = {}) {
   const toast = useAccountToast();
   const router = useRouter();
@@ -501,19 +511,28 @@ export function useConfigurationEditor({
   const visibleGroups = useMemo(
     () =>
       groups.flatMap((group) => {
-        // A section split from a category is found by the category's name, as the rest of it is.
-        const entries = group.entries.filter(
-          (entry) =>
+        // A section split from a category is found by the category's name, as
+        // the rest of it is: by its own, a search for "advanced" would list
+        // every category's tuning. A setting is found by its plain name too.
+        const entries = group.entries.filter((entry) => {
+          const label = labelOf?.(entry);
+          return (
             (!missingOnly || entry.missing) &&
-            (matchesQuery(entry, query, group.category?.label ?? group.label) ||
+            (matchesQuery(
+              entry,
+              query,
+              group.category?.label ?? group.label,
+              label ? [label] : [],
+            ) ||
               emailFieldMatches(entry, query) ||
               (isAlertWebhook(entry.key) &&
-                'notification channel'.includes(query.trim().toLowerCase()))),
-        );
+                'notification channel'.includes(query.trim().toLowerCase())))
+          );
+        });
         // A category with unsaved changes stays, so its Discard and Save stay reachable.
         return entries.length > 0 || dirtyCount(group) > 0 ? [{ ...group, entries }] : [];
       }),
-    [groups, missingOnly, query, dirtyCount],
+    [groups, missingOnly, query, dirtyCount, labelOf],
   );
 
   const saveGroup = (group: ConfigGroup) => {
@@ -1065,6 +1084,8 @@ export function useConfigurationEditor({
     /** The id of the group a setting is edited in: its category, or a section split from it. */
     groupIdOf: (entry: Pick<ConfigEntry, 'key' | 'category'>) =>
       groupOfKey.get(entry.key) ?? sectionOf(entry, sections),
+    /** The plain name a setting is shown under, when the page gives it one. */
+    labelOf,
     dirtyCount,
     drafts,
     entryErrors,
@@ -1251,12 +1272,15 @@ export function ConfigCategorySection({
   editor,
   categoryId,
   tag,
+  description,
 }: {
   editor: ConfigurationEditor;
   /** The category, or the id of a section split from one. */
   categoryId: string;
   /** Shown beside the title: the sub-tab the category belongs to, while a filter lists every tab's. */
   tag?: ReactNode;
+  /** What the section is for, where the page says it in place of its category's description. */
+  description?: string;
 }) {
   const headingId = `${useId()}-title`;
   const visible = editor.visibleGroups.find((candidate) => candidate.id === categoryId);
@@ -1325,21 +1349,27 @@ export function ConfigCategorySection({
   const channelFirst = channel !== null && !channelOneTime;
   const oneTimeHeading =
     (everyday.length > 0 || channelFirst) && (oneTime.length > 0 || channelOneTime);
-  const field = (entry: ConfigEntry) => (
-    <ConfigEntryField
-      key={entry.key}
-      entry={entry}
-      draft={drafts[entry.key]}
-      onChange={onDraftChange}
-      serverError={entryErrors[entry.key]}
-      onReset={toggleReset}
-      onMarkSecret={toggleMarkSecret}
-      layout="split"
-      resetPending={Boolean(pendingResets[entry.key])}
-      markSecretPending={Boolean(pendingSecrets[entry.key])}
-      disabled={busy}
-    />
-  );
+  const field = (entry: ConfigEntry) => {
+    // A plain name, where the page gives one, with the variable's name beside it.
+    const label = editor.labelOf?.(entry);
+    return (
+      <ConfigEntryField
+        key={entry.key}
+        entry={entry}
+        label={label ?? entry.key}
+        showKey={label !== undefined}
+        draft={drafts[entry.key]}
+        onChange={onDraftChange}
+        serverError={entryErrors[entry.key]}
+        onReset={toggleReset}
+        onMarkSecret={toggleMarkSecret}
+        layout="split"
+        resetPending={Boolean(pendingResets[entry.key])}
+        markSecretPending={Boolean(pendingSecrets[entry.key])}
+        disabled={busy}
+      />
+    );
+  };
 
   return (
     <section
@@ -1358,8 +1388,10 @@ export function ConfigCategorySection({
             </span>
           ) : null}
         </div>
-        {group.description ? (
-          <p className="mt-0.5 max-w-3xl text-[12px] text-gray-500">{group.description}</p>
+        {(description ?? group.description) ? (
+          <p className="mt-0.5 max-w-3xl text-[12px] text-gray-500">
+            {description ?? group.description}
+          </p>
         ) : null}
       </div>
 

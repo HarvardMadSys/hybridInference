@@ -100,21 +100,8 @@ msgid ""
 msgstr "只信任控制台转发的、由你的边缘设置的那个请求头；见[控制台之后](#behind-the-console)"
 
 #: ../developer/trusted-proxies-and-client-ips.md:17
-msgid ""
-"These are settings in the **Network** section, under **Advanced** in "
-"**Admin → Settings → Site & Setup**. A new deployment's first start "
-"copies them from the environment (the `NAME=value` forms on this page); "
-"after that the stored values win, so change them in Admin or with `python"
-" -m serving.config.manage set`, not in `.env`. The bundled Compose file "
-"passes `TRUST_PROXY_HEADERS` and `TRUST_CLOUDFLARE_HEADERS` as `0` unless"
-" `.env` sets them, and the first start stores that. If every client "
-"appears with your proxy's address, check these settings in Admin first."
-msgstr ""
-"这些设置项位于 **Admin → Settings → Site & Setup** 的 **Advanced** 下的 **Network**"
-" 部分。新部署首次启动时从环境变量（即本页的 `NAME=value` 写法）复制它们；此后以存储的值为准，所以请在 Admin 中或用 "
-"`python -m serving.config.manage set` 修改，不要改 `.env`。除非 `.env` 中设置了，自带的 "
-"Compose 文件会把 `TRUST_PROXY_HEADERS` 和 `TRUST_CLOUDFLARE_HEADERS` 作为 `0` "
-"传入，首次启动会存下这个值。如果所有客户端都显示为代理的地址，先去 Admin 检查这些设置项。"
+msgid "These are settings on the **Network** tab of **Admin → Settings**. A new deployment's first start copies them from the environment (the `NAME=value` forms on this page); after that the stored values win, so change them in Admin or with `python -m serving.config.manage set`, not in `.env`. The bundled Compose file passes `TRUST_PROXY_HEADERS` and `TRUST_CLOUDFLARE_HEADERS` as `0` unless `.env` sets them, and the first start stores that. If every client appears with your proxy's address, check these settings in Admin first."
+msgstr "这些设置项位于 **Admin → Settings** 的 **Network** 标签页。新部署首次启动时从环境变量（即本页的 `NAME=value` 写法）复制它们；此后以存储的值为准，所以请在 Admin 中或用 `python -m serving.config.manage set` 修改，不要改 `.env`。除非 `.env` 中设置了，自带的 Compose 文件会把 `TRUST_PROXY_HEADERS` 和 `TRUST_CLOUDFLARE_HEADERS` 作为 `0` 传入，首次启动会存下这个值。如果所有客户端都显示为代理的地址，先去 Admin 检查这些设置项。"
 
 #: ../developer/trusted-proxies-and-client-ips.md:26
 msgid ""
@@ -148,16 +135,8 @@ msgstr ""
 "headers` 是不够的。"
 
 #: ../developer/trusted-proxies-and-client-ips.md:40
-msgid ""
-"Because the server never reads forwarded headers, `peer_ip` is always the"
-" real TCP peer, and `request.url.scheme` is `http` behind a TLS-"
-"terminating proxy. Set `BASE_URL` (under **General** in **Admin → "
-"Settings → Site & Setup**) so the links in signup and password-reset "
-"emails use the right scheme."
-msgstr ""
-"由于服务器从不读取转发请求头，`peer_ip` 始终是真实的 TCP 对端，而在终止 TLS "
-"的代理之后，`request.url.scheme` 是 `http`。请设置 `BASE_URL`（位于 **Admin → Settings "
-"→ Site & Setup** 的 **General** 下），让注册和重置密码邮件中的链接使用正确的 scheme。"
+msgid "Because the server never reads forwarded headers, `peer_ip` is always the real TCP peer, and `request.url.scheme` is `http` behind a TLS-terminating proxy. Set `BASE_URL` (on the **General** tab of **Admin → Settings**) so the links in signup and password-reset emails use the right scheme."
+msgstr "由于服务器从不读取转发请求头，`peer_ip` 始终是真实的 TCP 对端，而在终止 TLS 的代理之后，`request.url.scheme` 是 `http`。请设置 `BASE_URL`（位于 **Admin → Settings** 的 **General** 标签页），让注册和重置密码邮件中的链接使用正确的 scheme。"
 
 #: ../developer/trusted-proxies-and-client-ips.md:45
 msgid "Behind the console"

@@ -239,7 +239,7 @@ function EmailStatus({ entries }: { entries: readonly ConfigEntry[] }) {
         {status.kind === 'incomplete' ? (
           <p className="mt-1">
             {required
-              ? 'Public sign-up requires email verification, so new accounts cannot sign in until email works. To run without email, turn off Require email verification on the Access & Limits tab.'
+              ? 'Public sign-up requires email verification, so new accounts cannot sign in until email works. To run without email, turn off Require email verification on the Sign-up tab.'
               : 'Nothing requires it now, but without email users cannot reset a forgotten password themselves.'}
           </p>
         ) : null}

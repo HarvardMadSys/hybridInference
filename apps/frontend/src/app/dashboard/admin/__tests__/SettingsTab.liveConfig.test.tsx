@@ -84,8 +84,8 @@ function entry(overrides: Partial<ConfigEntry>): ConfigEntry {
 }
 
 /**
- * A setting on Setup, one on Providers & Routing, and the alert threshold in
- * its live group, which is under the Advanced of Operations.
+ * A setting on General, one on Providers, and the alert threshold in its live
+ * group, which is under the Advanced of Alerts.
  */
 function config(overrides: Partial<ConfigResponse> = {}): ConfigResponse {
   return {
@@ -166,7 +166,7 @@ describe('the live configuration on Admin → Settings sub-tabs', () => {
   it('keeps an Add variable draft and its version across sub-tabs, chains it on a save, and adds again after a conflict', async () => {
     vi.mocked(getConfig).mockResolvedValue(config());
     vi.mocked(getLiveConfigStatus).mockResolvedValue(liveStatus(1));
-    await renderSettings('Providers & Routing');
+    await renderSettings(/^Providers/);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Add variable' }));
     const form = screen.getByRole('form', { name: 'Add variable' });
@@ -174,9 +174,9 @@ describe('the live configuration on Admin → Settings sub-tabs', () => {
     fireEvent.change(within(form).getByLabelText('Value'), { target: { value: 'eu-west' } });
 
     // A save of another category, on another sub-tab, while the form is open.
-    await openSettingsTab(/^Site & Setup/);
+    await openSettingsTab(/^General/);
     const general = screen.getByRole('region', { name: 'General' });
-    fireEvent.change(within(general).getByLabelText('SITE_NAME'), { target: { value: 'New' } });
+    fireEvent.change(within(general).getByLabelText('Site name'), { target: { value: 'New' } });
     // Saved as revision 2; revision 3 is someone else's, which the form has not seen.
     vi.mocked(patchConfig).mockResolvedValueOnce(
       config({ source_version: v(3), saved_version: v(2) }),
@@ -194,7 +194,7 @@ describe('the live configuration on Admin → Settings sub-tabs', () => {
     // Back on its sub-tab, the form still holds what was typed. Its add is
     // conditional on what this page's own save committed, and meets a save
     // made elsewhere since.
-    await openSettingsTab('Providers & Routing');
+    await openSettingsTab(/^Providers/);
     expect(within(form).getByLabelText('Name')).toHaveValue('MY_REGION');
     expect(within(form).getByLabelText('Value')).toHaveValue('eu-west');
     vi.mocked(patchConfig).mockRejectedValueOnce(
@@ -220,10 +220,10 @@ describe('the live configuration on Admin → Settings sub-tabs', () => {
     ]);
   });
 
-  it('shows the live group status and badge under the Advanced of Operations, and re-reads it after a save', async () => {
+  it('shows the live group status and badge under the Advanced of Alerts, and re-reads it after a save', async () => {
     vi.mocked(getConfig).mockResolvedValue(config({ source_version: v(7) }));
     vi.mocked(getLiveConfigStatus).mockResolvedValue(liveStatus(7));
-    await renderSettings('Operations');
+    await renderSettings('Alerts');
 
     // The threshold is tuning, so its section is under Advanced; the status
     // goes with the first section that holds a key of its group.
@@ -237,7 +237,7 @@ describe('the live configuration on Admin → Settings sub-tabs', () => {
     ).toBeInTheDocument();
     const reads = vi.mocked(getLiveConfigStatus).mock.calls.length;
 
-    fireEvent.change(within(alerts).getByLabelText('FAILED_REQUEST_ALERT_THRESHOLD'), {
+    fireEvent.change(within(alerts).getByLabelText('Failed requests that page'), {
       target: { value: '300' },
     });
     vi.mocked(getLiveConfigStatus).mockResolvedValue(liveStatus(8));

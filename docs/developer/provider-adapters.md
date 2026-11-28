@@ -259,7 +259,7 @@ Routing → Models**); every field is in the
 
 ## Step 4: set the variables
 
-Add both variables in **Admin → Settings → Providers & Routing** with **Add
+Add both variables in **Admin → Settings → Providers** with **Add
 variable**, mark the key **Secret**, and restart the backend. A gateway without
 a database reads them from `.env`; a gateway with one also copies them from
 `.env` into the database at startup unless it already stores that name:
