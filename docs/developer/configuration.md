@@ -159,6 +159,8 @@ Admin when deployment-wide policy is needed. Per-model `router` and
 `router_params` remain in the catalog; runtime strategy changes belong in Admin
 Routing. Fixed and RouteWise retain their existing selection and accounting.
 
+In the console, **Admin > Settings > Site & Setup > Application** shows `ROUTING_POLICY` as one card, with each value under a readable name and its key beside it. An empty field leaves the key out, so the default applies: the **Router** (`default_router`) for every model that names none, Fixed by default; the **Local share** (`routing_parameter.local_fraction`) and the **Local deployments** and **Remote deployments** it splits between; and the local deployments' **Health checks** (`health_check`, `timeout`). The card says what the policy does, keeps any key it does not edit, and switches to JSON for a policy it cannot show exactly. Two of these values do less than their names suggest. The local/remote split is applied once, at startup, and only on a gateway without a database; with one, route weights come from Admin Routing and the split has no effect. A health check is logged and shown on `GET /routing`, but never changes where a request goes. Every change applies after a backend restart.
+
 ## Settings that currently have no effect
 
 The retired model/routing/alert path variables and distribution active/dark modes
