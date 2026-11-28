@@ -1432,12 +1432,15 @@ msgstr "导致无法登录的设置项既不能在 `.env` 中修复，也不能�
 #: ../developer/deployment.md:577
 msgid ""
 "`list`, `get KEY`, `set KEY VALUE` and `reset KEY` validate like Admin "
-"and never print secrets; see [Without the console](configuration.md"
-"#without-the-console). The backend picks the change up within about ten "
-"seconds, or after a restart for a setting marked **Restart required**."
+"and never print secrets. Pass a secret with `set KEY --value-file -` on "
+"standard input, so that it stays out of the process list and shell "
+"history; see [Without the console](configuration.md#without-the-"
+"console). The backend picks the change up within about ten seconds, or "
+"after a restart for a setting marked **Restart required**."
 msgstr ""
 "`list`、`get KEY`、`set KEY VALUE` 和 `reset KEY` 与 Admin "
-"一样校验，并且从不打印密钥；见[不用控制台](configuration.md#without-the-"
+"一样校验，并且从不打印密钥。请用 `set KEY --value-file -` 从标准输入传入秘密值，使它不出现在进程列表和 "
+"shell 历史中；见[不用控制台](configuration.md#without-the-"
 "console)。后端大约十秒内会读到修改；标有 **Restart required** 的设置项则在重启后生效。"
 
 #: ../developer/deployment.md:582

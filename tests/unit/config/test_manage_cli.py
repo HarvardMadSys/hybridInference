@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import io
 
 import pytest
 
@@ -110,6 +111,140 @@ def test_set_adds_a_custom_variable_secret_on_request(store) -> None:
     assert store.rows["MY_BOX_TOKEN"].secret
 
 
+def test_set_reads_a_secret_from_standard_input(store, monkeypatch, capsys) -> None:
+    """Kept off the command line, the value is in neither the process list nor shell history."""
+    monkeypatch.setattr("sys.stdin", io.StringIO("smtp-hunter2\n"))
+
+    assert manage.main(["set", "SMTP_PASSWORD", "--value-file", "-"]) == 0
+
+    # The newline that ends what echo or a here-string sends is not part of it.
+    assert store.rows["SMTP_PASSWORD"].value == "smtp-hunter2"
+    assert store.rows["SMTP_PASSWORD"].secret
+    captured = capsys.readouterr()
+    assert "smtp-hunter2" not in captured.out + captured.err
+    assert "Warning" not in captured.err
+
+
+def test_set_reads_a_value_from_a_file_less_one_trailing_newline(store, tmp_path) -> None:
+    path = tmp_path / "value"
+    path.write_text("2525\n")
+
+    assert manage.main(["set", "SMTP_PORT", "--value-file", str(path)]) == 0
+    assert store.rows["SMTP_PORT"].value == "2525"
+
+    path.write_text("t0k3n\n\n")
+    assert manage.main(["set", "MY_BOX_TOKEN", "--value-file", str(path)]) == 0
+    assert store.rows["MY_BOX_TOKEN"].value == "t0k3n\n"
+
+
+def test_set_drops_a_crlf_line_ending_too(store, tmp_path, monkeypatch) -> None:
+    """A file saved with Windows line endings stores no carriage return."""
+    path = tmp_path / "value"
+    path.write_bytes(b"t0k3n\r\n")
+
+    assert manage.main(["set", "MY_BOX_TOKEN", "--value-file", str(path)]) == 0
+    assert store.rows["MY_BOX_TOKEN"].value == "t0k3n"
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("smtp-hunter2\r\n"))
+    assert manage.main(["set", "SMTP_PASSWORD", "--value-file", "-"]) == 0
+    assert store.rows["SMTP_PASSWORD"].value == "smtp-hunter2"
+
+
+@pytest.mark.parametrize("text", ["", "\n", "\r\n", " \t\n"], ids=["empty", "lf", "crlf", "blank"])
+@pytest.mark.parametrize("source", ["stdin", "file"])
+def test_an_empty_value_file_is_refused_and_stores_nothing(
+    store, tmp_path, monkeypatch, capsys, text, source
+) -> None:
+    """An unset variable, an empty pipe or the wrong file never stores an empty secret."""
+    if source == "stdin":
+        monkeypatch.setattr("sys.stdin", io.StringIO(text))
+        path = "-"
+    else:
+        path = str(tmp_path / "value")
+        (tmp_path / "value").write_bytes(text.encode())
+
+    assert manage.main(["set", "SMTP_PASSWORD", "--value-file", path]) == 1
+
+    assert "SMTP_PASSWORD" not in store.rows
+    err = capsys.readouterr().err
+    assert "is empty or only whitespace; nothing was stored" in err
+    assert "`reset SMTP_PASSWORD` removes a stored value" in err
+
+
+def test_a_value_typed_at_a_terminal_is_not_shown(store, monkeypatch, capsys) -> None:
+    """Standard input that is a terminal is read without echo, not as an ordinary read."""
+
+    class Terminal(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+        def read(self, *_args) -> str:
+            raise AssertionError("a terminal is not read with echo")
+
+    prompts: list[str] = []
+
+    def typed(prompt: str) -> str:
+        prompts.append(prompt)
+        return "smtp-hunter2"
+
+    monkeypatch.setattr("sys.stdin", Terminal())
+    monkeypatch.setattr(manage.getpass, "getpass", typed)
+
+    assert manage.main(["set", "SMTP_PASSWORD", "--value-file", "-"]) == 0
+
+    assert store.rows["SMTP_PASSWORD"].value == "smtp-hunter2"
+    assert prompts == ["Value for SMTP_PASSWORD (not shown): "]
+    captured = capsys.readouterr()
+    assert "smtp-hunter2" not in captured.out + captured.err
+
+
+def test_an_unreadable_value_file_stores_nothing(store, tmp_path, capsys) -> None:
+    missing = tmp_path / "missing"
+
+    assert manage.main(["set", "SMTP_PASSWORD", "--value-file", str(missing)]) == 1
+
+    assert "Could not read the value" in capsys.readouterr().err
+    assert "SMTP_PASSWORD" not in store.rows
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        # Secret in the registry.
+        ["set", "SMTP_PASSWORD", "smtp-hunter2"],
+        # Marked secret.
+        ["set", "MY_BOX_REGION", "smtp-hunter2", "--secret"],
+        # A custom variable named like a credential.
+        ["set", "MY_BOX_TOKEN", "smtp-hunter2"],
+        # A numbered provider key.
+        ["set", "MINIMAX_API_KEY3", "smtp-hunter2"],
+    ],
+    ids=["registry", "flag", "name", "numbered"],
+)
+def test_a_secret_given_as_an_argument_is_stored_with_a_warning(store, capsys, argv) -> None:
+    key = argv[1]
+
+    assert manage.main(argv) == 0
+
+    assert store.rows[key].value == "smtp-hunter2"
+    assert store.rows[key].secret
+    err = capsys.readouterr().err
+    assert f"Warning: {key} is a secret" in err
+    # Pasted as shown, the command asks for the value rather than sending an unset one.
+    assert (
+        f"read -rs VALUE; printf '%s' \"$VALUE\" | python -m serving.config.manage set {key} "
+        "--value-file -"
+    ) in err
+    assert "smtp-hunter2" not in err
+
+
+def test_an_ordinary_value_given_as_an_argument_is_not_warned_about(store, capsys) -> None:
+    assert manage.main(["set", "SMTP_PORT", "2525"]) == 0
+    assert manage.main(["set", "MY_BOX_REGION", "east"]) == 0
+
+    assert capsys.readouterr().err == ""
+
+
 def test_reset_falls_back_to_the_default(store, capsys) -> None:
     store.rows["JWT_ALGORITHM"] = row("JWT_ALGORITHM", "HS384")
 
@@ -173,7 +308,14 @@ def test_get_explains_a_retired_setting_instead_of_offering_it_as_custom(store, 
 
 @pytest.mark.parametrize(
     "argv",
-    [[], ["set", "SMTP_PORT"], ["get"], ["frobnicate"], ["reset", "A", "B"]],
+    [
+        [],
+        ["set", "SMTP_PORT"],
+        ["set", "SMTP_PORT", "2525", "--value-file", "-"],
+        ["get"],
+        ["frobnicate"],
+        ["reset", "A", "B"],
+    ],
 )
 def test_malformed_commands_are_usage_errors(store, argv) -> None:
     with pytest.raises(SystemExit) as excinfo:

@@ -10,6 +10,7 @@ Usage::
     python -m serving.config.manage list
     python -m serving.config.manage get KEY
     python -m serving.config.manage set KEY VALUE [--secret]
+    python -m serving.config.manage set KEY --value-file PATH [--secret]
     python -m serving.config.manage reset KEY
     python -m serving.config.manage import-legacy [MANIFEST] [--alerts PATH] [--include-dark]
 
@@ -30,6 +31,14 @@ Run it where the backend runs, for example::
 
     docker exec -it hybridinference-backend python -m serving.config.manage reset JWT_ALGORITHM
 
+Pass a secret on standard input with ``--value-file -``, not as an argument,
+which the process list shows and shell history keeps::
+
+    read -rs VALUE; printf '%s' "$VALUE" | docker exec -i hybridinference-backend python -m serving.config.manage set API_KEY_SECRET --value-file -
+
+On a terminal, with no pipe (``docker exec -it ...``), ``--value-file -`` asks
+for the value and does not show it as it is typed. An empty value is refused.
+
 Running backends apply a change within ten seconds; a setting marked
 restart-required waits for the next restart.
 
@@ -42,8 +51,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import getpass
 import json
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
@@ -61,6 +72,14 @@ UPDATED_BY = "cli"
 
 # Failures that mean "the database could not be reached or refused us".
 _DATABASE_ERRORS = (OSError, asyncio.TimeoutError, asyncpg.PostgresError, asyncpg.InterfaceError)
+
+#: What ``set`` warns when a secret's value came as an argument.
+_ARGUMENT_SECRET_WARNING = (
+    "Warning: {key} is a secret, and a value given as an argument is visible in the "
+    "process list and kept in shell history. Pass it on standard input instead: "
+    "read -rs VALUE; printf '%s' \"$VALUE\" | python -m serving.config.manage set {key} "
+    "--value-file -"
+)
 
 
 class ManageError(Exception):
@@ -194,6 +213,49 @@ def _find(key: str) -> dict[str, Any]:
             "earlier version stored."
         )
     raise ManageError(f"{key} is not a known setting; `set` adds it as a custom variable.")
+
+
+def _is_secret(key: str, *, marked: bool) -> bool:
+    """Whether ``set`` stores *key*'s value as a secret: asked to, or the setting is one."""
+    if marked:
+        return True
+    try:
+        return bool(_find(key)["secret"])
+    except ManageError:
+        # Not a known setting yet: a numbered provider key, or a custom
+        # variable, which is secret when its name looks like a credential's.
+        return registry.numbered_key_entry(key) is not None or registry.is_secret_name(key)
+
+
+def _read_value(path: str, key: str) -> str:
+    """Return the value ``set --value-file`` names: the file's, or standard input's for ``-``.
+
+    One trailing line ending (LF, or CRLF from a file saved on Windows), which
+    ``echo`` and editors add, is not part of it. Standard input that is a
+    terminal is asked for without showing what is typed
+    (:func:`getpass.getpass`), one line.
+
+    Raises:
+        OSError: The file cannot be read.
+        UnicodeDecodeError: The file is not UTF-8.
+        ManageError: The value is empty or only whitespace: what an unset
+            variable, an empty pipe or the wrong file gives, and never a value
+            meant to be stored. ``reset`` is how a stored value is removed.
+    """
+    if path != "-":
+        text = Path(path).read_text(encoding="utf-8")
+    elif sys.stdin is not None and sys.stdin.isatty():
+        text = getpass.getpass(f"Value for {key} (not shown): ")
+    else:
+        text = sys.stdin.read() if sys.stdin is not None else ""
+    value = text[:-2] if text.endswith("\r\n") else text.removesuffix("\n")
+    if not value.strip():
+        source = "standard input" if path == "-" else path
+        raise ManageError(
+            f"Refused: the value read from {source} is empty or only whitespace; nothing "
+            f"was stored. `reset {key}` removes a stored value."
+        )
+    return value
 
 
 def _how_it_applies(entry: dict[str, Any]) -> str:
@@ -431,6 +493,10 @@ async def run(args: argparse.Namespace) -> list[str]:
         if args.command == "get":
             return describe_entry(_find(args.key))
         if args.command == "set":
+            if args.value_file is None and _is_secret(args.key, marked=args.secret):
+                # Stored all the same: refusing would break scripts that work
+                # today, and by now the value has been seen anyway.
+                print(_ARGUMENT_SECRET_WARNING.format(key=args.key), file=sys.stderr)
             value = app_config.parse_text_value(args.key, args.value)
             await app_config.update(
                 {args.key: value}, {args.key: args.secret}, updated_by=UPDATED_BY
@@ -494,7 +560,21 @@ def build_parser() -> argparse.ArgumentParser:
     get.add_argument("key", help="the setting's name, e.g. JWT_ALGORITHM")
     store = commands.add_parser("set", help="store a value, validated as the console does")
     store.add_argument("key", help="the setting's name")
-    store.add_argument("value", help="the value: true/false, a number, or text")
+    given = store.add_mutually_exclusive_group(required=True)
+    given.add_argument(
+        "value",
+        nargs="?",
+        help="the value: true/false, a number, or text; pass a secret with --value-file instead",
+    )
+    given.add_argument(
+        "--value-file",
+        metavar="PATH",
+        help=(
+            "read the value from PATH, or from standard input for -, which keeps it out of "
+            "the process list and shell history; one trailing line ending is dropped and an "
+            "empty value is refused. On a terminal, - asks for it without showing it"
+        ),
+    )
     store.add_argument(
         "--secret",
         action="store_true",
@@ -542,6 +622,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         or the database could not be reached.
     """
     args = build_parser().parse_args(argv)
+    if args.command == "set" and args.value_file is not None:
+        try:
+            args.value = _read_value(args.value_file, args.key)
+        except (OSError, UnicodeDecodeError) as exc:
+            print(f"Could not read the value: {exc}", file=sys.stderr)
+            return 1
+        except ManageError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
     # Before anything is resolved, read .env the way the gateway does at startup
     # (bootstrap.initialize): a value only .env holds, as under a systemd unit
     # without EnvironmentFile, is then the environment value this tool shows,

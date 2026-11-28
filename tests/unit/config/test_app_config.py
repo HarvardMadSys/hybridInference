@@ -351,11 +351,16 @@ async def test_boot_keeps_secrets_from_the_environment(config_env, monkeypatch) 
 async def test_api_key_secret_is_not_generated_over_existing_api_keys(config_env) -> None:
     store = FakeAppConfigStore(api_keys_exist=True)
 
-    with pytest.raises(app_config.ConfigBootstrapError, match="API_KEY_SECRET"):
+    with pytest.raises(app_config.ConfigBootstrapError, match="API_KEY_SECRET") as excinfo:
         await app_config.load(store)
 
     # Nothing half-done: not even the JWT secret was written.
     assert "JWT_SECRET_KEY" not in store.rows
+    # The remedy passes the secret on standard input, not on the command line.
+    assert (
+        "`read -rs VALUE; printf '%s' \"$VALUE\" | python -m serving.config.manage set "
+        "API_KEY_SECRET --value-file -`" in str(excinfo.value)
+    )
 
 
 # --- overlay -----------------------------------------------------------------
@@ -2143,6 +2148,40 @@ async def test_invalid_extension_env_is_not_imported(
     assert app_config.config_value("SAMPLE_TEMPLATE") is None
     with pytest.raises(app_config.ConfigBootstrapError, match="SAMPLE_TEMPLATE"):
         app_config.require_valid_environment()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("secret", "command"),
+    [
+        (False, "python -m serving.config.manage set SAMPLE_TEMPLATE VALUE"),
+        (
+            True,
+            "read -rs VALUE; printf '%s' \"$VALUE\" | python -m serving.config.manage set "
+            "SAMPLE_TEMPLATE --value-file -",
+        ),
+    ],
+    ids=["ordinary", "secret"],
+)
+async def test_the_remedy_for_an_invalid_variable_keeps_a_secret_off_the_command_line(
+    config_env, extension_registry, monkeypatch, secret, command
+) -> None:
+    from serving.config import app_config_registry as registry
+
+    registry.register_config_entries(
+        [
+            registry.ConfigEntry(
+                "SAMPLE_TEMPLATE", "email", "Template ID.", type="int", minimum=1, secret=secret
+            ),
+        ]
+    )
+    monkeypatch.setenv("SAMPLE_TEMPLATE", "0")
+    await _boot(FakeAppConfigStore())
+
+    with pytest.raises(app_config.ConfigBootstrapError) as excinfo:
+        app_config.require_valid_environment()
+
+    assert f"store a valid value with `{command}`" in str(excinfo.value)
 
 
 @pytest.mark.parametrize(
