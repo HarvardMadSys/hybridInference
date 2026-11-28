@@ -131,10 +131,9 @@ describe('ModelQueueTab', () => {
 
     expect(await screen.findByText('No model queue is configured')).toBeInTheDocument();
     expect(screen.getByText('MODEL_QUEUE_STATUS_URL')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Settings → Providers' })).toHaveAttribute(
-      'href',
-      '/dashboard/admin/settings',
-    );
+    expect(
+      screen.getByRole('link', { name: 'Settings → Providers & Routing → Advanced' }),
+    ).toHaveAttribute('href', '/dashboard/admin/settings?tab=providers#MODEL_QUEUE_STATUS_URL');
   });
 
   it('lists the waiting models first, with their jobs and waiting batch requests', async () => {

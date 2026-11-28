@@ -40,9 +40,9 @@ browser ──/openinfra──▶ console page ──GET /public-openinfra, /pub
 ## Turning it on
 
 1. **Collecting.** Set `OPENINFRA_INGEST_TOKEN` (Admin, Settings, Site & Setup,
-   Integrations) to a long random string, for example the output of
-   `openssl rand -hex 32`. While it is empty, `POST /internal/openinfra/ingest`
-   answers `404` and nothing is collected.
+   Advanced settings, Integrations) to a long random string, for example the
+   output of `openssl rand -hex 32`. While it is empty,
+   `POST /internal/openinfra/ingest` answers `404` and nothing is collected.
 2. **Publishing.** Add `"openinfra": true` to `features` in the
    `SITE_CONFIGURATION` document. The console then serves `/openinfra` and links
    it from the header and footer, and `GET /public-openinfra` and its history

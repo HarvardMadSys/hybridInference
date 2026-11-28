@@ -226,6 +226,70 @@ export interface ConfigGroup {
   label: string;
   description: string;
   entries: ConfigEntry[];
+  /**
+   * The category the settings come from, when the group is a section split
+   * from it (`splitGroups`); absent for a category's own group.
+   */
+  category?: { id: string; label: string };
+}
+
+/**
+ * Settings of a category that a page edits as a section of their own: listed
+ * apart from the rest of the category, and saved, discarded and counted on
+ * their own. The category keeps every other setting, including any a later
+ * backend adds to it.
+ */
+export interface ConfigSectionSplit {
+  /** The section's id, unlike any category's. */
+  id: string;
+  /** The category the settings are taken from. */
+  category: string;
+  keys: ReadonlySet<string>;
+  /** The section's title, made from its category's. */
+  label: (categoryLabel: string) => string;
+}
+
+/** The category whose settings a group holds: its own id, or the one it was split from. */
+export function categoryOf(group: ConfigGroup): string {
+  return group.category?.id ?? group.id;
+}
+
+/** The id of the group a setting is edited in: the split that takes it, or its category. */
+export function sectionOf(
+  entry: Pick<ConfigEntry, 'key' | 'category'>,
+  splits: readonly ConfigSectionSplit[],
+): string {
+  return (
+    splits.find((split) => split.category === entry.category && split.keys.has(entry.key))?.id ??
+    entry.category
+  );
+}
+
+/**
+ * `groups` with each split's settings in a group of their own, right after
+ * the rest of the category they come from. A group left with no settings is
+ * dropped, like an empty category.
+ */
+export function splitGroups(
+  groups: readonly ConfigGroup[],
+  splits: readonly ConfigSectionSplit[],
+): ConfigGroup[] {
+  return groups.flatMap((group) => {
+    const own = splits.filter((split) => split.category === group.id);
+    if (own.length === 0) return [group];
+    const parts: ConfigGroup[] = own.map((split) => ({
+      id: split.id,
+      label: split.label(group.label),
+      description: group.description,
+      entries: group.entries.filter((entry) => split.keys.has(entry.key)),
+      category: { id: group.id, label: group.label },
+    }));
+    const rest: ConfigGroup = {
+      ...group,
+      entries: group.entries.filter((entry) => !own.some((split) => split.keys.has(entry.key))),
+    };
+    return [rest, ...parts].filter((candidate) => candidate.entries.length > 0);
+  });
 }
 
 function fallbackLabel(id: string): string {
