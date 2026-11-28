@@ -1,20 +1,15 @@
 # Single Sign-On
 
-This page is for an operator who wants the members of an organization, such as
-a university or a company, to sign in to the console with the organization's
-own accounts. After reading it you can connect an identity provider, decide
-what a member's first sign-in does, and know what the gateway does not do when
-someone leaves the organization.
-
-The gateway supports identity providers that speak OpenID Connect. SAML and CAS
-are not supported yet.
+This page is for an operator who wants an organization's members to sign in to
+the console with the organization's own accounts. The gateway supports OpenID
+Connect identity providers; SAML and CAS are not supported.
 
 ## Connect a provider
 
 1. **Register the gateway at the identity provider** as a confidential client
-   that uses the authorization code flow. Set its redirect URI to
-   `<FRONTEND_URL>/auth/sso/<id>/callback`, where `<id>` is the short name you
-   will give the provider below. Note the client id and the client secret.
+   using the authorization code flow, with the redirect URI
+   `<FRONTEND_URL>/auth/sso/<id>/callback`. `<id>` is the short name you give
+   the provider in the next step. Note the client id and secret.
 2. **Describe the provider** in the `SSO_PROVIDERS` setting, under
    **Admin → Settings → Site & Setup → Advanced settings → Application**:
 
@@ -32,36 +27,31 @@ are not supported yet.
    }
    ```
 
-   `client_secret` names a secret setting. It never holds the secret itself.
+   `client_secret` names a secret setting, never the secret itself.
 3. **Store the client secret.** Saving the provider adds the setting it names,
    here `SSO_EXAMPLE_UNIV_CLIENT_SECRET`, under
    **Admin → Settings → Access & Limits**, in the **Security** section. Enter
    the secret there.
-4. **Restart the gateway.** The secret setting is marked **Restart required**:
-   the gateway reads it when it starts.
-5. **Check `FRONTEND_URL`.** It must be the address users open the console at.
-   The redirect URI is built from it, and users must reach the console through
-   that address for a sign-in to complete.
-6. **Check which host the browser calls the gateway on.** The provider sends
-   the browser back to the host of `FRONTEND_URL`, and the cookies of a sign-in
-   must reach that host and the host the console calls the gateway on. A
-   console built with an empty `NEXT_PUBLIC_API_BASE` calls its own host, and
-   nothing more is needed. When `NEXT_PUBLIC_API_BASE` names another host, set
-   `COOKIE_DOMAIN` to a domain that covers both hosts. Two ports on `localhost`
-   are one host for cookies.
+4. **Restart the gateway.** It reads the secret at startup.
+5. **Check `FRONTEND_URL`.** It must be the address users open the console at:
+   the redirect URI is built from it, and a sign-in completes only through that
+   address.
+6. **Check which host the console calls the gateway on.** The sign-in's cookies
+   must reach both that host and the host of `FRONTEND_URL`. A console built
+   with an empty `NEXT_PUBLIC_API_BASE` calls its own host, and nothing more is
+   needed. When `NEXT_PUBLIC_API_BASE` names another host, set `COOKIE_DOMAIN`
+   to a domain that covers both. Two ports on `localhost` are one host for
+   cookies.
 
-The sign-in page shows **Log in with SSO** as soon as the provider is saved.
-Until the secret is stored and the gateway has restarted, the entry reports
-that single sign-on is unavailable. A user selects it, enters their work or
-school email, and is sent to the provider whose `domains` cover that email. The
-page does not list which organizations are connected.
+The sign-in page shows **Log in with SSO** once the provider is saved; until the
+secret is stored and the gateway restarted, it reports that single sign-on is
+unavailable. A user enters their work or school email and is sent to the
+provider whose `domains` cover it. The page does not list connected
+organizations.
 
-Later changes to `SSO_PROVIDERS` apply without a restart. A changed client
-secret needs one.
-
-Saving either setting asks the administrator to confirm, as other changes to
-who may sign in do: with a code from the account's authenticator app, or with
-its password when it has none.
+Later changes to `SSO_PROVIDERS` apply without a restart; a changed client
+secret needs one. Saving either asks the administrator to confirm who they are
+(see [Confirming sensitive actions](#confirming-sensitive-actions)).
 
 ## Provider fields
 
@@ -85,162 +75,126 @@ its password when it has none.
 
 ## What a sign-in does
 
-The gateway identifies a member by the provider's own identifier for them, not
-by their email. Once that identifier is linked to an account, the member signs
-in to that account, whatever email the provider reports later.
-
-For an identifier that is not linked yet, the gateway uses the email, and only
-when both of these hold:
-
-- the email is in one of the provider's `domains`;
-- the provider reports the email as verified, or `assume_email_verified` is on.
-
-Otherwise the sign-in is refused. A provider vouches only for its own domains.
-
-With a trusted email, the result depends on whether an account already has it:
+The gateway identifies a member by the provider's identifier for them, not by
+email. Once that identifier is linked to an account, the member signs in to it
+whatever email the provider reports later. For an identifier not linked yet,
+the gateway trusts the email only if it is in one of the provider's `domains`
+and the provider reports it verified (or `assume_email_verified` is on);
+otherwise the sign-in is refused. Then:
 
 | Account with that email | Result |
 |---|---|
 | None, and `auto_create` is off | The sign-in is refused |
 | None, and `auto_create` is on | An account is created with `default_role`. With `require_approval` it waits in **Admin → Users** like any registration |
-| Exists and is active | The member is asked to sign in to it once, the way they usually do, and then to accept the link |
-| Exists and is not active | The sign-in is refused. This includes a deleted account: its email stays taken, as it does for signup |
+| Exists and is active | The member signs in to it once, the usual way, and accepts the link |
+| Exists and is not active | The sign-in is refused. A deleted account's email stays taken, as for signup |
 
-Creating accounts this way does not depend on the public signup switch or the
-signup allowlist. An address on `ADMIN_EMAILS` is never created this way.
-
-### Let members in without approval
-
-To give every member an account that works at their first sign-in:
-
-```json
-"auto_create": true,
-"require_approval": false
-```
+Creating accounts this way ignores the public signup switch and the signup
+allowlist, but never creates an account for an address on `ADMIN_EMAILS`. To
+let every member in at their first sign-in, set `"auto_create": true` and
+`"require_approval": false`.
 
 ### Link existing accounts without asking
 
-With `auto_link` on, an active account that has the same email is linked at
-once, when the deployment requires email verification, the account's email is
-verified and the account is not an administrator. Leave it off in two cases:
-
-- **The deployment has ever run without email verification.** Accounts
-  registered during that time are marked verified without proof, so someone
-  could have registered a member's address.
-- **The organization reassigns email addresses.** A new member who receives an
-  old address would be linked to the previous holder's account.
+With `auto_link` on, an active account with the same email is linked at once
+when the deployment requires email verification, the account's email is
+verified, and the account is not an administrator. Leave it off if the
+deployment has ever run without email verification (accounts registered then
+were marked verified without proof), or if the organization reassigns email
+addresses (a new member would get the previous holder's account).
 
 ### Providers that do not report a verified email
 
-Some providers never send `email_verified`. Microsoft Entra ID is one. If the
-organization manages its own email addresses, set `assume_email_verified` to
-`true` for that provider. Without it, no member of such a provider can complete
-a first sign-in.
+Some providers, Microsoft Entra ID among them, never send `email_verified`. If
+the organization manages its own addresses, set `assume_email_verified` to
+`true` for that provider; otherwise no member can complete a first sign-in.
 
 ### Issuers that several organizations share
 
-Some providers sign in every organization's accounts at one issuer. Google is
-one: an account in your organization and a personal Google account both come
-from `https://accounts.google.com`, and a personal account can carry a verified
-email in your domain. Such a provider names the organization an account belongs
-to in a claim. Put that claim and its value in `required_claims`, and a sign-in
-whose ID token does not carry it is refused:
+Some providers sign in every organization's accounts at one issuer. At Google,
+an organization account and a personal account both come from
+`https://accounts.google.com`, and a personal account can carry a verified
+email in your domain. Require the claim that names the organization, and a
+sign-in whose ID token lacks it is refused:
 
 ```json
 "required_claims": {"hd": "example.edu"}
 ```
 
-For Google the claim is `hd`, the organization's primary domain.
-
-A member signs in only through the provider they were linked through. Another
-provider with the same issuer does not let them in, so a provider's
-`required_claims` and its `enabled` switch hold for all of its members.
+For Google the claim is `hd`, the organization's primary domain. A member signs
+in only through the provider they were linked through, so a provider's
+`required_claims` and `enabled` switch hold for all of its members.
 
 ## Linking and unlinking
 
-A user manages their own links under **Settings → Single sign-on**: they can
-connect an organization account and disconnect one. Both ask the user to
-confirm, and the only way to sign in to an account cannot be disconnected.
-
-The organization account's email may differ from the account's. It cannot be
-the email of another account here: one address belongs to one account, so the
-user signs in to that account and connects the organization account there.
+Users connect and disconnect organization accounts under **Settings → Single
+sign-on**; both ask them to confirm, and the only way to sign in to an account
+cannot be disconnected. The organization account's email may differ from the
+account's, but it cannot be another account's email: the user signs in to that
+account and connects there.
 
 An administrator sees a user's links in the user's detail panel under **Admin →
-Users** and can unlink one. Unlinking removes the link only: it does not end
-the account's sessions or revoke its API keys. Administrators cannot create a
-link for a user.
-
-If a sign-in is refused because the account is already connected to a different
-identity from the same organization, the provider has recreated the member or
-given the address to someone else. Confirm which, then unlink the old identity.
+Users** and can unlink one, but cannot create one. Unlinking removes the link
+only; it does not end sessions or revoke API keys. A sign-in refused because
+the account is linked to a different identity from the same organization means
+the provider recreated the member or gave the address to someone else; confirm
+which, then unlink the old identity.
 
 ## Confirming sensitive actions
 
 An account created by single sign-on has no password. When its owner deletes
 the account, sets a password or changes the sign-in email, the console sends
-them to the provider to sign in again instead of asking for a password.
+them to the provider to sign in again.
 
-An administrator's changes in **Admin** are never confirmed at the provider.
-They ask for a code from the account's authenticator app, or for its password
-when it has none. An account that signs in only through a provider and is made
-an administrator sets a password first, under **Settings**: adding an
-authenticator app asks for it too.
+An administrator confirms a security-relevant change in **Admin** with a code
+from the account's authenticator app, or with the account's password. An
+administrator who signs in only through a provider, with no password and no
+verified phone, signs in at the provider again instead; each sign-in confirms
+one change in the same session within five minutes. An account with a verified
+phone but no password must set a password under **Settings** first, and adding
+an authenticator app also needs a password.
 
 ## When a member leaves the organization
 
 The gateway is not told when a provider disables an account. The member can no
-longer sign in through the provider, but sessions that are already open and
-API keys keep working. Suspend the account in **Admin → Users** to end both.
+longer sign in through the provider, but open sessions and API keys keep
+working. Suspend the account in **Admin → Users** to end both.
 
 ## Stop offering a provider
 
 Set `enabled` to `false`. Accounts that sign in only through that provider can
-then use **Forgot password** to set a password, which needs outgoing email to
-be configured. Without outgoing email, set passwords for those accounts before
-you disable the provider.
-
-Removing the provider from `SSO_PROVIDERS` keeps its members out too. Their
-links stay. A provider with the same issuer takes a link over only when its
-`domains` cover the email the link was made with, which is how links follow a
-provider whose `id` you change.
-
-Changing a provider's `issuer` breaks every existing link to it, because links
-are recorded against the issuer.
+then set a password with **Forgot password**, which needs outgoing email;
+without it, set their passwords before you disable the provider. Removing the
+provider from `SSO_PROVIDERS` keeps its members out too, and their links stay.
+A provider with the same issuer takes over a link only when its `domains` cover
+the email the link was made with. Changing a provider's `issuer` breaks every
+existing link to it, because links are recorded against the issuer.
 
 ## Try it with a local provider
 
-You can test against [Keycloak](https://www.keycloak.org/) on your own
-machine. Run the gateway from a
-[development checkout](installation.md#development-checkout-no-docker) rather
-than in a container, so that `localhost` names the same machine for your
-browser and for the gateway.
+Run the gateway from a
+[development checkout](installation.md#development-checkout-no-docker), so that
+`localhost` means the same machine to your browser and the gateway, and start
+[Keycloak](https://www.keycloak.org/) on another port:
 
-1. Start Keycloak on a port the gateway does not use:
+```bash
+docker run --rm -p 8081:8080 \
+  -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
+  quay.io/keycloak/keycloak:26.0 start-dev
+```
 
-   ```bash
-   docker run --rm -p 8081:8080 \
-     -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
-     quay.io/keycloak/keycloak:26.0 start-dev
-   ```
-
-2. In the Keycloak admin console at `http://localhost:8081`, create a realm,
-   a user with an email and a password, and an OpenID Connect client with
-   client authentication on and the redirect URI
-   `<FRONTEND_URL>/auth/sso/keycloak/callback`.
-3. In the gateway, add a provider whose `issuer` is
-   `http://localhost:8081/realms/<realm>`, whose `id` is `keycloak` and whose
-   `domains` include the domain of the user's email. Store the client's secret
-   in the setting the provider names, then restart the gateway.
-4. Open the console's sign-in page, select **Log in with SSO** and enter the
-   user's email.
-
-Mark the user's email as verified in Keycloak, or the sign-in is refused.
+In the Keycloak admin console at `http://localhost:8081`, create a realm, a user
+with a verified email and a password, and an OpenID Connect client with client
+authentication on and the redirect URI `<FRONTEND_URL>/auth/sso/keycloak/callback`.
+Then add a provider with `id` `keycloak`, `issuer`
+`http://localhost:8081/realms/<realm>` and `domains` covering the user's email,
+store the client secret, restart the gateway, and sign in with **Log in with
+SSO**.
 
 ## When a sign-in is refused
 
-The sign-in page shows a short message. The gateway's log names the provider
-and the reason, and never contains a token or a secret.
+The sign-in page shows a short message. The gateway's log names the provider and
+the reason, and never contains a token or a secret.
 
 | Message says | Usual cause |
 |---|---|

@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-11-06 19:14+0000\n"
+"POT-Creation-Date: 2026-11-28 06:22+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -26,433 +26,297 @@ msgstr "编写 provider adapter"
 
 #: ../developer/provider-adapters.md:3
 msgid ""
-"This page is for contributors adding support for a provider the gateway "
-"cannot talk to yet. To serve another model from a provider the gateway "
-"already supports, you need no code at all; see [Adding a New Model"
-"](adding-models.md)."
+"This page is for adding a provider the gateway cannot talk to yet. "
+"Serving another model from a supported provider needs no code; see "
+"[Adding a New Model](adding-models.md)."
 msgstr ""
-"本页面向要给网关接入新 provider 的贡献者。如果只是想用网关已经支持的 provider 再提供一个模型，完全不用写代码；见[添加新模型"
+"本页介绍如何接入网关目前还无法对接的 provider。如果只是从已支持的 provider 提供另一个模型，不需要写代码，见[添加新模型"
 "](adding-models.md)。"
 
 #: ../developer/provider-adapters.md:7
-msgid ""
-"Most providers do not need a new adapter either. If the API is OpenAI-"
-"compatible, a profile and a few lines in `registry.py` are enough, as "
-"Step 1 shows. A dedicated adapter is only for a provider with its own "
-"wire format."
-msgstr ""
-"大多数 provider 也不需要新写 adapter。如果 API 兼容 OpenAI，一个 profile 加上 `registry.py` "
-"里的几行改动就够了，见第 1 步。只有协议格式自成一套的 provider，才需要专门的 adapter。"
-
-#: ../developer/provider-adapters.md:11
 msgid "Step 1: decide whether you need an adapter at all"
 msgstr "第 1 步：先判断到底需不需要 adapter"
 
-#: ../developer/provider-adapters.md:13
+#: ../developer/provider-adapters.md:9
 msgid ""
-"Most new providers expose an OpenAI-style `/chat/completions` endpoint. "
-"For those, **do not write an adapter class.** Register a provider "
-"profile, then add two things to `_make_adapter` in "
-"`apps/backend/serving/servers/registry.py`: an arm that selects the "
-"profile, and the kind in the OpenAI-compatible tuple further down the "
-"same function:"
+"If the provider exposes an OpenAI-style `/chat/completions` endpoint, "
+"**do not write an adapter class.** Add a provider profile in "
+"`apps/backend/serving/adapters/profiles.py` for its usage or path quirks,"
+" then change `_build_adapter` in "
+"`apps/backend/serving/servers/registry.py` (called by `_make_adapter`) in"
+" two places:"
 msgstr ""
-"大多数新 provider 都提供 OpenAI 风格的 `/chat/completions` 端点。对这类 provider，**不要写 "
-"adapter 类**。先注册一个 provider profile，再在 "
-"`apps/backend/serving/servers/registry.py` 的 `_make_adapter` "
-"里改两处：一是加一个选中该 profile 的分支，二是在同一函数靠后的 OpenAI 兼容元组里加上这个 kind："
+"如果 provider 提供 OpenAI 风格的 `/chat/completions` 端点，**不要编写 adapter 类**。在 "
+"`apps/backend/serving/adapters/profiles.py` 中为它的用量或路径差异添加一个 provider "
+"profile，然后修改 `apps/backend/serving/servers/registry.py` 中的 "
+"`_build_adapter`（由 `_make_adapter` 调用）的两处："
 
-#: ../developer/provider-adapters.md:43
+#: ../developer/provider-adapters.md:39
 msgid ""
-"Add the kind to `RESERVED_PROVIDER_LABELS` in the same module as well, so"
-" that no route can borrow it as a label of its own; a unit test fails if "
-"a dispatchable kind is missing from that set."
+"Also add the kind to `RESERVED_PROVIDER_LABELS` in the same module. That "
+"set is the list of kinds the catalog accepts, and it stops routes from "
+"borrowing the kind as a label; a unit test fails if a dispatchable kind "
+"is missing. If the provider answers `stream_options.include_usage` with a"
+" final usage chunk, add the kind to `_STREAM_USAGE_DEFAULT_KINDS` too. "
+"`deepseek`, `zai`, `kimi` and `minimax` are built this way."
 msgstr ""
-"还要把这个 kind 加进同一模块的 `RESERVED_PROVIDER_LABELS`，防止路由把它拿去当自己的标签；如果可分派的 kind "
-"没有加进这个集合，单元测试会失败。"
+"同时把这个 kind 加入同一模块的 `RESERVED_PROVIDER_LABELS`。这个集合就是模型目录接受的 kind "
+"列表，也能防止路由把该 kind 借作自己的标签；如果某个可分发的 kind 不在其中，单元测试会失败。如果该 provider "
+"会用最后一个用量块响应 `stream_options.include_usage`，也把这个 kind 加入 "
+"`_STREAM_USAGE_DEFAULT_KINDS`。`deepseek`、`zai`、`kimi` 和 `minimax` "
+"都是这样接入的。"
 
-#: ../developer/provider-adapters.md:47
+#: ../developer/provider-adapters.md:46
 msgid ""
-"This is how `deepseek`, `zai`, `kimi`, and `minimax` are integrated "
-"today: a per-provider profile in "
-"`apps/backend/serving/adapters/profiles.py` carries the usage-metric or "
-"path quirks, and `OpenAICompatAdapter` does the rest."
+"Write a dedicated adapter only for a different wire format, such as "
+"Gemini's `generateContent`, the Anthropic Messages API or OpenRouter's "
+"provider-pinning fields. `gemini`, `claude`, `anthropic` and `openrouter`"
+" each have their own branch:"
 msgstr ""
-"`deepseek`、`zai`、`kimi` 和 `minimax` 目前都是这样接入的：每个 provider 在 "
-"`apps/backend/serving/adapters/profiles.py` 里有一份 "
-"profile，记录用量指标或路径上的特殊处理，其余都交给 `OpenAICompatAdapter`。"
+"只有协议格式不同时才需要专门的 adapter，例如 Gemini 的 `generateContent`、Anthropic Messages "
+"API 或 OpenRouter 用于固定上游的字段。`gemini`、`claude`、`anthropic` 和 `openrouter` "
+"各有自己的分支："
 
-#: ../developer/provider-adapters.md:51
-msgid ""
-"Write a dedicated adapter only when the provider speaks a genuinely non-"
-"OpenAI wire format — Gemini's `generateContent`, the Anthropic Messages "
-"API, OpenRouter's provider-pinning body fields. `gemini`, `claude`, "
-"`anthropic`, and `openrouter` all follow that pattern, each with its own "
-"dispatch branch:"
-msgstr ""
-"只有 provider 用的确实不是 OpenAI 的协议格式时，才需要写专门的 adapter，例如 Gemini 的 "
-"`generateContent`、Anthropic Messages API，以及 OpenRouter 用来锁定 sub-provider "
-"的请求体字段。`gemini`、`claude`、`anthropic` 和 `openrouter` 都是这种情况，各自有独立的分派分支："
-
-#: ../developer/provider-adapters.md:61
+#: ../developer/provider-adapters.md:56
 msgid "Step 2: write the adapter (custom protocols only)"
 msgstr "第 2 步：编写 adapter（仅限自定义协议）"
 
-#: ../developer/provider-adapters.md:63
+#: ../developer/provider-adapters.md:58
 msgid ""
-"Create a new file under `apps/backend/serving/adapters/`, for example "
-"`apps/backend/serving/adapters/your_provider.py`. The backend package "
-"root is `apps/backend`, so imports are written as `serving.…` / "
-"`routing.…`:"
+"Create `apps/backend/serving/adapters/your_provider.py`. The package root"
+" is `apps/backend`, so imports start with `serving.` or `routing.`:"
 msgstr ""
-"在 `apps/backend/serving/adapters/` 下新建一个文件，例如 "
-"`apps/backend/serving/adapters/your_provider.py`。后端的包根目录是 "
-"`apps/backend`，因此 import 写成 `serving.…` / `routing.…`："
+"创建 `apps/backend/serving/adapters/your_provider.py`。包的根目录是 "
+"`apps/backend`，所以导入以 `serving.` 或 `routing.` 开头："
 
-#: ../developer/provider-adapters.md:218
+#: ../developer/provider-adapters.md:212
 msgid "Export it from `apps/backend/serving/adapters/__init__.py`:"
 msgstr "在 `apps/backend/serving/adapters/__init__.py` 里导出它："
 
-#: ../developer/provider-adapters.md:229
+#: ../developer/provider-adapters.md:223
 msgid "and import it at the top of `apps/backend/serving/servers/registry.py`:"
 msgstr "并在 `apps/backend/serving/servers/registry.py` 顶部导入它："
 
-#: ../developer/provider-adapters.md:238
+#: ../developer/provider-adapters.md:232
 msgid "Step 3: add the model to your registry"
 msgstr "第 3 步：把模型加进注册表"
 
-#: ../developer/provider-adapters.md:271
+#: ../developer/provider-adapters.md:234
+msgid ""
+"Add an entry like this to the `models` list of the catalog (**Admin → "
+"Routing → Models**); every field is in the [Configuration Reference"
+"](adding-models.md#configuration-reference):"
+msgstr ""
+"在模型目录（**Admin → Routing → Models**）的 `models` 列表中加入类似下面的条目；全部字段见[配置参考"
+"](adding-models.md#configuration-reference)："
+
+#: ../developer/provider-adapters.md:260
 msgid "Step 4: set the variables"
 msgstr "第 4 步：设置变量"
 
-#: ../developer/provider-adapters.md:273
+#: ../developer/provider-adapters.md:262
 msgid ""
-"On a gateway with a database, add both on the admin console's "
-"**Configuration** tab with **Add variable**, marking the key secret, and "
-"restart the backend. Without a database, add them to `.env`; a gateway "
-"with a database also copies them from there into the database at startup,"
-" unless it already has a value of that name:"
+"Add both variables in **Admin → Settings → Providers & Routing** with "
+"**Add variable**, mark the key **Secret**, and restart the backend. A "
+"gateway without a database reads them from `.env`; a gateway with one "
+"also copies them from `.env` into the database at startup unless it "
+"already stores that name:"
 msgstr ""
-"有数据库的网关上，在管理控制台的 **Configuration** 标签页里用 **Add variable** 添加这两个变量，把 key "
-"标为 secret，然后重启后端。没有数据库时，把它们加进 "
-"`.env`；有数据库的网关启动时也会把那里的值复制进数据库，除非数据库里已经有同名的值："
+"在 **Admin → Settings → Providers & Routing** 中用 **Add variable** "
+"添加这两个变量，把 key 标记为 **Secret**，然后重启后端。没有数据库的网关从 `.env` "
+"读取它们；有数据库的网关也会在启动时把它们从 `.env` 复制到数据库，除非数据库中已有同名的值："
 
-#: ../developer/provider-adapters.md:284
+#: ../developer/provider-adapters.md:272
 #, python-brace-format
 msgid ""
-"A route whose `${VAR}`-backed `api_key`, `api_keys`, or `base_url` "
-"resolves to empty is not registered. By default that drops the whole "
-"model, and the backend logs which models were skipped and which variables"
-" were unset. Mark a route `optional: true` to have only that route be "
-"skipped instead, leaving the rest of the model registered."
+"If a `${VAR}` in `api_key`, `api_keys` or `base_url` is empty, the whole "
+"model is skipped and the log names the model and variable. Mark a route "
+"`optional: true` to skip only that route."
 msgstr ""
-"如果某条路由的 `api_key`、`api_keys` 或 `base_url` 引用的 `${VAR}` "
-"解析为空，这条路由就不会注册。默认情况下整个模型都会被丢弃，后端日志会写明跳过了哪些模型、哪些变量没设置。给路由加上 `optional: "
-"true`，就只跳过这一条路由，模型的其他路由照常注册。"
+"如果 `api_key`、`api_keys` 或 `base_url` 中的 `${VAR}` "
+"为空，整个模型都会被跳过，日志会写明模型和变量。把路由标记为 `optional: true`，则只跳过这条路由。"
 
-#: ../developer/provider-adapters.md:290
+#: ../developer/provider-adapters.md:276
 msgid "Step 5: verify it"
 msgstr "第 5 步：验证"
 
-#: ../developer/provider-adapters.md:292
+#: ../developer/provider-adapters.md:278
 msgid ""
-"Start the gateway with a registry that uses the new kind, then check it "
-"as described in [Verify it through the gateway](adding-models.md#verify-"
-"it-through-the-gateway)."
-msgstr ""
-"用包含新 kind 的注册表启动网关，再按[通过网关验证](adding-models.md#verify-it-through-the-"
-"gateway)里的方法检查。"
+"Restart the backend with your code, then check the model as in [Verify it"
+" through the gateway](adding-models.md#verify-it-through-the-gateway)."
+msgstr "用你的代码重启后端，然后按[通过网关验证](adding-models.md#verify-it-through-the-gateway)检查模型。"
 
-#: ../developer/provider-adapters.md:295
+#: ../developer/provider-adapters.md:281
 msgid "Deployment-local adapters"
 msgstr "部署自带的 adapter"
 
-#: ../developer/provider-adapters.md:297
+#: ../developer/provider-adapters.md:283
 msgid ""
-"A deployment can register a local factory without editing the built-in "
-"dispatch. Its module exposes a synchronous, no-argument `register()` "
-"function:"
-msgstr "部署可以注册自己的 adapter 工厂，不用改内置的分派逻辑。做法是在一个模块里提供一个同步、无参数的 `register()` 函数："
+"A deployment can register its own adapter factory without editing the "
+"built-in dispatch. Its module exposes a synchronous `register()` that "
+"takes no arguments:"
+msgstr "部署可以注册自己的 adapter 工厂，而不必修改内置的分发逻辑。它的模块提供一个不带参数的同步 `register()` 函数："
 
-#: ../developer/provider-adapters.md:313
+#: ../developer/provider-adapters.md:300
 msgid ""
-"Set `BACKEND_EXTENSIONS` to this module's import name and use `kind: "
-"example_service` in the model registry. The factory receives the route's "
-"configuration dictionary and returns an adapter. It runs before built-in "
-"provider defaults, so it must supply any profile or path defaults it "
-"needs. Duplicate registrations fail; replacing a built-in kind requires "
-"`register_adapter_factory(kind, factory, override=True)` and is logged. "
-"See [Backend Extensions](backend-extensions.md) for the startup and "
-"deployment requirements."
+"Set `BACKEND_EXTENSIONS` to the module's import name and use `\"kind\": "
+"\"example_service\"` in the catalog. The factory receives the route's "
+"configuration dictionary before any built-in defaults, so it must supply "
+"its own profile and path defaults. Registering a kind twice fails; "
+"replacing a built-in kind needs `register_adapter_factory(kind, factory, "
+"override=True)` and is logged. See [Backend Extensions](backend-"
+"extensions.md)."
 msgstr ""
-"把 `BACKEND_EXTENSIONS` 设为这个模块的导入名，并在模型注册表里使用 `kind: "
-"example_service`。工厂接收路由的配置字典，返回一个 adapter。它在内置 provider 默认值生效之前运行，所以需要的 "
-"profile 或路径默认值都得自己提供。重复注册会失败；要替换内置 kind，必须调用 "
-"`register_adapter_factory(kind, factory, "
-"override=True)`，并且会记一条日志。启动和部署方面的要求见[后端扩展](backend-extensions.md)。"
+"把 `BACKEND_EXTENSIONS` 设为该模块的导入名，并在模型目录中使用 `\"kind\": "
+"\"example_service\"`。工厂拿到的是应用内置默认值之前的路由配置字典，所以它必须自己提供 profile 和路径默认值。同一个 "
+"kind 注册两次会失败；替换内置 kind 需要 `register_adapter_factory(kind, factory, "
+"override=True)`，并会记录日志。见[后端扩展](backend-extensions.md)。"
 
-#: ../developer/provider-adapters.md:322
+#: ../developer/provider-adapters.md:307
 msgid "BaseAdapter API reference"
 msgstr "BaseAdapter API 参考"
 
+#: ../developer/provider-adapters.md:309
+msgid ""
+"Every adapter subclasses `BaseAdapter` "
+"(`apps/backend/serving/adapters/base.py`) and implements:"
+msgstr "每个 adapter 都继承 `BaseAdapter`（`apps/backend/serving/adapters/base.py`）并实现："
+
 #: ../developer/provider-adapters.md:324
 msgid ""
-"All adapters inherit from `BaseAdapter` "
-"(`apps/backend/serving/adapters/base.py`) and implement:"
+"The base class's `messages()` and `stream_messages()` serve the Anthropic"
+" Messages API by translating to and from these two methods; an Anthropic-"
+"native adapter overrides them. Helpers:"
 msgstr ""
-"所有 adapter 都继承自 "
-"`BaseAdapter`（`apps/backend/serving/adapters/base.py`），并实现："
+"基类的 `messages()` 和 `stream_messages()` 通过与这两个方法互相转换来提供 Anthropic Messages"
+" API；原生使用 Anthropic 格式的 adapter 会覆盖它们。辅助方法："
 
-#: ../developer/provider-adapters.md:339
-msgid "Utility methods provided by the base class:"
-msgstr "基类提供的工具方法："
+#: ../developer/provider-adapters.md:356
+msgid "Attributes:"
+msgstr "属性："
 
-#: ../developer/provider-adapters.md:369
-msgid "Available attributes:"
-msgstr "可用的属性："
+#: ../developer/provider-adapters.md:363
+msgid "Capabilities"
+msgstr "能力"
 
-#: ../developer/provider-adapters.md:376
-msgid "Advanced features"
-msgstr "进阶功能"
+#: ../developer/provider-adapters.md:365
+msgid ""
+"**Images.** A model with `\"input_modalities\": [\"text\", \"image\"]` "
+"sends image content blocks; handle them in `chat_completion`. A route can"
+" declare narrower modalities, so a text-only fallback never receives "
+"media."
+msgstr ""
+"**图像**。声明了 `\"input_modalities\": [\"text\", \"image\"]` 的模型会收到图像内容块，请在 "
+"`chat_completion` 中处理。路由可以声明比模型更窄的模态，这样纯文本的回退路由永远不会收到媒体。"
+
+#: ../developer/provider-adapters.md:368
+msgid ""
+"**Tools.** With `\"supports_tools\": true`, convert the provider's tool "
+"calls to the OpenAI shape and pass them to "
+"`format_response(tool_calls=...)`."
+msgstr ""
+"**工具**。设置 `\"supports_tools\": true` 后，把 provider 的工具调用转换成 OpenAI 格式，传给 "
+"`format_response(tool_calls=...)`。"
+
+#: ../developer/provider-adapters.md:370
+msgid ""
+"**Structured output.** With `\"supports_structured_output\": true`, "
+"forward `response_format`. The gateway also checks replies itself: when "
+"an endpoint cannot take the format, the OpenAI-compatible adapter puts it"
+" in the prompt; `kind: vllm` routes get `structured_outputs` with "
+"`disable_any_whitespace`; and a non-streaming reply that is not valid "
+"JSON for the schema is retried up to twice with the schema in the prompt "
+"(not when `max_tokens` cut it off). If no attempt conforms, the last "
+"reply is returned as is, and `metadata.structured_output` in the request "
+"log records the attempts."
+msgstr ""
+"**结构化输出**。设置 `\"supports_structured_output\": true` 后，转发 "
+"`response_format`。网关自己也会检查回复：端点不支持该格式时，兼容 OpenAI 的 adapter "
+"会把格式要求写进提示词；`kind: vllm` 的路由会额外收到带 `disable_any_whitespace` 的 "
+"`structured_outputs`；非流式回复如果不是符合 schema 的有效 JSON，会带着写进提示词的 schema "
+"最多重试两次（被 `max_tokens` 截断的回复除外）。如果没有一次符合要求，就原样返回最后一次回复，请求日志的 "
+"`metadata.structured_output` 会记录这些尝试。"
 
 #: ../developer/provider-adapters.md:378
-msgid "Multi-modal support"
-msgstr "多模态支持"
+msgid ""
+"**Concurrency.** Do not add a limiter. The gateway caps open requests per"
+" provider key and lowers the cap on 429 (see [Outbound "
+"concurrency](routing.md#outbound-concurrency)); wrap your upstream call "
+"in a slot from `apps/backend/serving/adapters/upstream_limiter.py`, as "
+"the built-in adapters do."
+msgstr ""
+"**并发**。不要自己加限流器。网关会限制每个 provider key 上同时打开的请求数，并在收到 429 "
+"时降低上限（见[出站并发](routing.md#outbound-concurrency)）；像内置 adapter 一样，用 "
+"`apps/backend/serving/adapters/upstream_limiter.py` 提供的槽位包住上游调用即可。"
 
-#: ../developer/provider-adapters.md:380
-msgid "For models accepting images:"
-msgstr "对于接受图像输入的模型："
+#: ../developer/provider-adapters.md:384
+msgid "Checklist"
+msgstr "检查清单"
 
 #: ../developer/provider-adapters.md:386
 msgid ""
-"Handle the image content blocks in your adapter's `chat_completion`. A "
-"route may declare narrower `input_modalities` than the model, so a text-"
-"only fallback never receives media."
+"Return the OpenAI response shape from `format_response()`, with integer "
+"`UsageInfo` fields and a `finish_reason` of `stop`, `length`, "
+"`content_filter` or `tool_calls`."
 msgstr ""
-"在 adapter 的 `chat_completion` 里处理图像内容块。单条路由可以声明比模型更窄的 "
-"`input_modalities`，这样纯文本的回退路由就永远不会收到媒体内容。"
+"用 `format_response()` 返回 OpenAI 响应格式，`UsageInfo` 字段为整数，`finish_reason` 取 "
+"`stop`、`length`、`content_filter` 或 `tool_calls`。"
 
-#: ../developer/provider-adapters.md:390
-msgid "Tool / function calling"
-msgstr "工具 / function calling"
-
-#: ../developer/provider-adapters.md:396
-msgid "Parse the provider's tool calls into OpenAI shape and pass them through:"
-msgstr "把 provider 返回的工具调用解析成 OpenAI 的结构再透传出去："
-
-#: ../developer/provider-adapters.md:418
-msgid "Structured output (JSON mode)"
-msgstr "结构化输出（JSON mode）"
-
-#: ../developer/provider-adapters.md:424
-msgid "Handle the `response_format` parameter:"
-msgstr "处理 `response_format` 参数："
-
-#: ../developer/provider-adapters.md:431
+#: ../developer/provider-adapters.md:389
 msgid ""
-"The gateway does not rely on the provider alone to honor "
-"`response_format`:"
-msgstr "网关不会只依赖 provider 自己来遵守 `response_format`："
-
-#: ../developer/provider-adapters.md:433
-msgid ""
-"When an endpoint cannot take the requested format, the OpenAI-compatible "
-"adapter describes it in the prompt instead. This covers a route without "
-"`supports_structured_output` and a provider that keeps only `json_object`"
-" of a schema."
+"Prefer provider-reported usage; fall back to `estimate_prompt_tokens()` "
+"and `estimate_text_tokens()`."
 msgstr ""
-"当某个端点无法接受所请求的格式时，OpenAI 兼容的 adapter 会改为在 prompt 中描述该格式。这包括没有 "
-"`supports_structured_output` 的路由，以及对 schema 只保留 `json_object` 的 provider。"
-
-#: ../developer/provider-adapters.md:437
-msgid ""
-"A `kind: vllm` route also gets `structured_outputs` with "
-"`disable_any_whitespace`, so the model cannot loop on whitespace inside "
-"the JSON grammar."
-msgstr ""
-"`kind: vllm` 的路由还会收到带 `disable_any_whitespace` 的 "
-"`structured_outputs`，这样模型就不会在 JSON 语法内部反复输出空白。"
-
-#: ../developer/provider-adapters.md:440
-msgid ""
-"A non-streaming reply is checked against the request. JSON in a code "
-"fence or surrounded by prose is unwrapped. A reply that is not JSON or "
-"does not match the schema is asked again with the schema in the prompt, "
-"up to twice, unless it was cut off by `max_tokens`. If no attempt "
-"conforms, the last reply is returned unchanged rather than as an error. "
-"The request log's `metadata.structured_output` records the attempts and "
-"whether the reply conformed."
-msgstr ""
-"非流式的回复会按请求进行检查。包在代码块里或夹在文字中的 JSON 会被取出。不是 JSON 或不符合 schema 的回复，会在 prompt "
-"中附上 schema 后重新请求，最多两次；被 `max_tokens` 截断的回复除外。如果没有一次符合要求，就原样返回最后一次的回复，而不是返回错误。请求日志的 "
-"`metadata.structured_output` 会记录尝试次数以及回复是否符合要求。"
-
-#: ../developer/provider-adapters.md:448
-msgid "Limiting concurrent requests"
-msgstr "限制并发请求"
-
-#: ../developer/provider-adapters.md:450
-msgid ""
-"An adapter does not need its own limiter. The gateway already caps how "
-"many requests it keeps open against each provider key, and lowers the cap"
-" when the provider answers 429; see [Outbound concurrency](routing.md"
-"#outbound-concurrency). A new adapter takes part by wrapping its upstream"
-" call in a slot from `apps/backend/serving/adapters/upstream_limiter.py`,"
-" as the built-in adapters do."
-msgstr ""
-"adapter 不需要自己做限流。网关已经限制了每个 provider key 同时在途的请求数，provider 返回 429 "
-"时还会调低这个上限；见[出站并发](routing.md#outbound-concurrency)。新 adapter 只要像内置 "
-"adapter 那样，把对上游的调用包在从 `apps/backend/serving/adapters/upstream_limiter.py`"
-" 获取的槽位里，就能纳入这套机制。"
-
-#: ../developer/provider-adapters.md:457
-msgid "Examples"
-msgstr "示例"
-
-#: ../developer/provider-adapters.md:459
-msgid ""
-"**OpenAI-compatible provider.** DeepSeek has no adapter file. "
-"`_make_adapter` in `apps/backend/serving/servers/registry.py` sets "
-"`provider_profile = \"deepseek\"` and returns `OpenAICompatAdapter`; the "
-"profile lives in `apps/backend/serving/adapters/profiles.py`."
-msgstr ""
-"**OpenAI 兼容的 provider**。DeepSeek 没有 adapter "
-"文件。`apps/backend/serving/servers/registry.py` 里的 `_make_adapter` 设置 "
-"`provider_profile = \"deepseek\"` 并返回 `OpenAICompatAdapter`；profile 本身在 "
-"`apps/backend/serving/adapters/profiles.py`。"
-
-#: ../developer/provider-adapters.md:463
-msgid ""
-"**Custom API format.** See `apps/backend/serving/adapters/gemini.py` for "
-"message conversion against a non-OpenAI wire format."
-msgstr ""
-"**自定义 API 格式**。按非 OpenAI 协议格式转换消息的做法，可以参考 "
-"`apps/backend/serving/adapters/gemini.py`。"
-
-#: ../developer/provider-adapters.md:465
-msgid ""
-"**Local deployment.** vLLM and SGLang reuse "
-"`apps/backend/serving/adapters/openai_compat.py`. The `vllm` and `sglang`"
-" kinds dispatch to the same class; local-vs-remote behaviour comes from "
-"`base_url` and the routing layer, not from a dedicated adapter."
-msgstr ""
-"**本地部署**。vLLM 和 SGLang 复用 "
-"`apps/backend/serving/adapters/openai_compat.py`。`vllm` 和 `sglang` 这两个 "
-"kind 分发到同一个类；本地与远程的行为差异来自 `base_url` 和路由层，而不是来自专门的 adapter。"
-
-#: ../developer/provider-adapters.md:470
-msgid "Troubleshooting"
-msgstr "故障排查"
-
-#: ../developer/provider-adapters.md:472
-msgid "Response format errors"
-msgstr "响应格式错误"
-
-#: ../developer/provider-adapters.md:474
-msgid "Ensure `format_response()` returns the OpenAI-compatible structure."
-msgstr "确保 `format_response()` 返回 OpenAI 兼容的结构。"
-
-#: ../developer/provider-adapters.md:475
-msgid "Validate that `UsageInfo` fields are integers."
-msgstr "校验 `UsageInfo` 的各字段都是整数。"
-
-#: ../developer/provider-adapters.md:476
-msgid ""
-"Check `finish_reason` is one of `stop`, `length`, `content_filter`, "
-"`tool_calls`."
-msgstr "检查 `finish_reason` 是 `stop`、`length`、`content_filter`、`tool_calls` 之一。"
-
-#: ../developer/provider-adapters.md:478
-msgid ""
-"For streaming, emit the first non-empty content chunk as soon as it is "
-"available so time-to-first-token is recorded accurately."
-msgstr "流式场景下，第一个非空内容分片一可用就立刻发出，这样首 token 时延（time-to-first-token）才会被准确记录。"
-
-#: ../developer/provider-adapters.md:481
-msgid "Streaming issues"
-msgstr "流式问题"
-
-#: ../developer/provider-adapters.md:483
-#, python-brace-format
-msgid "Ensure chunks are SSE-formatted: `data: {json}\\n\\n`."
-msgstr "确保分片是 SSE 格式：`data: {json}\\n\\n`。"
-
-#: ../developer/provider-adapters.md:484
-msgid "Send the final usage chunk before `data: [DONE]`."
-msgstr "在 `data: [DONE]` 之前发送最后那个 usage 分片。"
-
-#: ../developer/provider-adapters.md:485
-msgid "Handle JSON parsing errors gracefully."
-msgstr "妥善处理 JSON 解析错误。"
-
-#: ../developer/provider-adapters.md:487
-msgid "Best practices"
-msgstr "最佳实践"
-
-#: ../developer/provider-adapters.md:489
-msgid ""
-"**Error handling** — use `self.http.json_post_with_retry()` and surface "
-"provider faults with useful messages."
-msgstr "**错误处理**——使用 `self.http.json_post_with_retry()`；provider 出错时，要给出有用的错误信息。"
-
-#: ../developer/provider-adapters.md:491
-msgid ""
-"**Usage accounting** — prefer provider-reported usage; fall back to "
-"`estimate_prompt_tokens()` / `estimate_text_tokens()`."
-msgstr ""
-"**用量记账**——优先采用 provider 上报的 usage；拿不到再回退到 `estimate_prompt_tokens()` / "
+"优先使用 provider 报告的用量；没有时退回 `estimate_prompt_tokens()` 和 "
 "`estimate_text_tokens()`。"
 
-#: ../developer/provider-adapters.md:493
-msgid ""
-"**Streaming helpers** — use `format_stream_chunk()`, "
-"`make_final_usage_chunk()`, and `done_sentinel()` for consistent SSE."
-msgstr ""
-"**流式辅助函数**——用 `format_stream_chunk()`、`make_final_usage_chunk()` 和 "
-"`done_sentinel()` 保证 SSE 输出一致。"
-
-#: ../developer/provider-adapters.md:495
-msgid ""
-"**Type safety** — full type hints, and keep request/response shapes "
-"aligned with `apps/backend/serving/schemas.py`."
-msgstr "**类型安全**——写完整的类型标注，并让请求/响应的结构与 `apps/backend/serving/schemas.py` 保持一致。"
-
-#: ../developer/provider-adapters.md:497
-msgid ""
-"**Testing** — exercise both streaming and non-streaming paths, and try "
-"large prompts to validate token clamping."
-msgstr "**测试**——流式和非流式两条路径都要测到，并用大 prompt 验证 token 数会被正确截断。"
-
-#: ../developer/provider-adapters.md:499
-msgid ""
-"**Docs & style** — Google-style docstrings in English; keep provider-"
-"specific logic out of shared code."
-msgstr "**文档与风格**——用英文写 Google 风格的 docstring；不要把 provider 专属的逻辑塞进共享代码。"
-
-#: ../developer/provider-adapters.md:501
+#: ../developer/provider-adapters.md:391
 #, python-brace-format
 msgid ""
-"**Secrets** — use `${ENV_VAR}` in YAML rather than hardcoding keys or "
-"endpoints, and keep the values in the gateway's settings "
-"(**Configuration** tab), or in `.env` for a gateway without a database."
+"Stream SSE lines (`data: {json}\\n\\n`) with `format_stream_chunk()`. "
+"Send the first content chunk as soon as you have it (time to first token "
+"is measured from it), then the final usage chunk "
+"(`make_final_usage_chunk()`), then `done_sentinel()`. Skip lines that are"
+" not valid JSON."
 msgstr ""
-"**密钥**——在 YAML 里用 `${ENV_VAR}`，不要硬编码 key "
-"或端点；取值放在网关的设置项里（**Configuration** 标签页），没有数据库的网关则放在 `.env` 中。"
+"用 `format_stream_chunk()` 输出 SSE 行（`data: {json}\\n\\n`）。拿到第一个内容块就立即发送（首 "
+"token 时间以它为准），然后发送最后的用量块（`make_final_usage_chunk()`），最后是 "
+"`done_sentinel()`。跳过不是有效 JSON 的行。"
 
-#: ../developer/provider-adapters.md:505
-msgid "See also"
-msgstr "另见"
-
-#: ../developer/provider-adapters.md:507
-msgid "[Adding a New Model](adding-models.md) — every field a model entry accepts"
-msgstr "[添加新模型](adding-models.md)——模型条目接受的全部字段"
-
-#: ../developer/provider-adapters.md:508
-msgid "[Architecture](architecture.md#adapters) — where adapters sit in a request"
-msgstr "[架构](architecture.md#adapters)——adapter 在一次请求中所处的位置"
-
-#: ../developer/provider-adapters.md:509
+#: ../developer/provider-adapters.md:395
 msgid ""
-"[Backend Extensions](backend-extensions.md) — registering an adapter from"
-" outside the source tree"
-msgstr "[后端扩展](backend-extensions.md)——在源码树之外注册 adapter"
+"Use `self.http.json_post_with_retry()` and give provider errors useful "
+"messages."
+msgstr "使用 `self.http.json_post_with_retry()`，并为 provider 的错误提供有用的消息。"
+
+#: ../developer/provider-adapters.md:397
+msgid ""
+"Keep request and response shapes aligned with "
+"`apps/backend/serving/schemas.py`, and keep provider-specific logic out "
+"of shared code."
+msgstr "请求和响应的结构要与 `apps/backend/serving/schemas.py` 保持一致，provider 特有的逻辑不要放进共享代码。"
+
+#: ../developer/provider-adapters.md:400
+msgid "Test streaming and non-streaming paths, including large prompts."
+msgstr "测试流式和非流式两条路径，包括超长提示词。"
+
+#: ../developer/provider-adapters.md:401
+#, python-brace-format
+msgid ""
+"Put keys and endpoints in settings and reference them as `${NAME}`; the "
+"catalog refuses inline credentials."
+msgstr "把 key 和端点放在设置项中，用 `${NAME}` 引用；模型目录不接受内联凭据。"
+
+#: ../developer/provider-adapters.md:404
+msgid ""
+"For examples, read `apps/backend/serving/adapters/gemini.py` (a non-"
+"OpenAI format) and the `deepseek` profile in "
+"`apps/backend/serving/adapters/profiles.py` (an OpenAI-compatible "
+"provider with no adapter file). Where adapters sit in a request is in "
+"[Architecture](architecture.md#adapters)."
+msgstr ""
+"示例可以参考 `apps/backend/serving/adapters/gemini.py`（非 OpenAI 格式）和 "
+"`apps/backend/serving/adapters/profiles.py` 中的 `deepseek` profile（兼容 "
+"OpenAI、没有 adapter 文件的 provider）。adapter "
+"在请求中的位置见[架构](architecture.md#adapters)。"
+

@@ -35,11 +35,34 @@
 /zh_CN/client-ip                       /zh_CN/trusted-proxies-and-client-ips  301
 /zh_CN/client-ip.html                  /zh_CN/trusted-proxies-and-client-ips  301
 
-# Harvard-cluster runbook, generalised to any HPC host (#1330)
-/fasrc                                 /hpc-model-host                   301
-/fasrc.html                            /hpc-model-host                   301
-/zh_CN/fasrc                           /zh_CN/hpc-model-host             301
-/zh_CN/fasrc.html                      /zh_CN/hpc-model-host             301
+# Harvard-cluster runbook, generalised to any HPC host (#1330), now a
+# section of the local-model guide
+/fasrc                                 /add-local-model                  301
+/fasrc.html                            /add-local-model                  301
+/zh_CN/fasrc                           /zh_CN/add-local-model            301
+/zh_CN/fasrc.html                      /zh_CN/add-local-model            301
+
+# Pages folded into others in the documentation cleanup
+/hpc-model-host                        /add-local-model                  301
+/hpc-model-host.html                   /add-local-model                  301
+/zh_CN/hpc-model-host                  /zh_CN/add-local-model            301
+/zh_CN/hpc-model-host.html             /zh_CN/add-local-model            301
+/openrouter                            /adding-models                    301
+/openrouter.html                       /adding-models                    301
+/zh_CN/openrouter                      /zh_CN/adding-models              301
+/zh_CN/openrouter.html                 /zh_CN/adding-models              301
+/routing-internals                     /routing                          301
+/routing-internals.html                /routing                          301
+/zh_CN/routing-internals               /zh_CN/routing                    301
+/zh_CN/routing-internals.html          /zh_CN/routing                    301
+/about                                 /                                 301
+/about.html                            /                                 301
+/zh_CN/about                           /zh_CN/                           301
+/zh_CN/about.html                      /zh_CN/                           301
+/console-translations                  /translations                     301
+/console-translations.html             /translations                     301
+/zh_CN/console-translations            /zh_CN/translations               301
+/zh_CN/console-translations.html       /zh_CN/translations               301
 
 # Distribution UI guides consolidated (#1465), now the Site UI Modules page
 /site-ui                               /site-ui-modules                  301

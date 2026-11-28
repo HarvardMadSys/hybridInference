@@ -3,7 +3,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  HybridInference\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-09-28 15:43+0800\n"
+"POT-Creation-Date: 2026-11-28 14:27+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -12,35 +12,31 @@ msgstr ""
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=utf-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"Generated-By: Babel 2.18.0\n"
+"Generated-By: Babel 2.19.0\n"
 
-#: ../developer/index.rst:99
+#: ../developer/index.rst:103
 msgid "Getting Started"
 msgstr "入门"
 
-#: ../developer/index.rst:107
+#: ../developer/index.rst:111
 msgid "Concepts"
 msgstr "概念"
 
-#: ../developer/index.rst:117
+#: ../developer/index.rst:120
 msgid "Guides"
 msgstr "指南"
 
-#: ../developer/index.rst:129
+#: ../developer/index.rst:133
 msgid "Customizing a Deployment"
 msgstr "定制部署"
 
-#: ../developer/index.rst:137
+#: ../developer/index.rst:141
 msgid "Operations"
 msgstr "运维"
 
-#: ../developer/index.rst:147
+#: ../developer/index.rst:155
 msgid "Contributing"
 msgstr "参与贡献"
-
-#: ../developer/index.rst:154
-msgid "Project"
-msgstr "项目"
 
 #: ../developer/index.rst:2
 msgid "HybridInference"
@@ -49,237 +45,255 @@ msgstr ""
 #: ../developer/index.rst:4
 msgid ""
 "HybridInference is an open-source LLM inference gateway. It puts one "
-"OpenAI-compatible HTTP API in front of a mix of inference servers you run"
-" yourself — vLLM, SGLang, Ollama, or anything else that speaks the OpenAI"
-" API — and hosted provider APIs, then decides per request which of them "
-"answers."
+"OpenAI-compatible HTTP API in front of inference servers you run yourself"
+" (vLLM, SGLang, Ollama or any other OpenAI-compatible server) and hosted "
+"provider APIs, and picks for each request which of them answers."
 msgstr ""
-"HybridInference 是一个开源的 LLM 推理网关。它对外只提供一套 OpenAI 兼容的 HTTP "
-"API，背后可以同时接你自己部署的推理服务器（vLLM、SGLang、Ollama，或其他任何兼容 OpenAI API 的服务）和各家托管的 "
-"provider API，每个请求交给谁来回答，由网关决定。"
+"HybridInference 是一个开源的 LLM 推理网关。它对外提供一套 OpenAI 兼容的 HTTP "
+"API，背后可以接你自己部署的推理服务器（vLLM、SGLang、Ollama 或其他任何 OpenAI 兼容的服务器）和托管的 provider"
+" API，并为每个请求挑选由谁来回答。"
 
 #: ../developer/index.rst:9
 msgid ""
-"The idea the whole system is built around is that the *model id* a client"
-" asks for is decoupled from the *endpoint* that serves it. One published "
-"id can be backed by several routes at once, so traffic across them can be"
-" weighted, failed over when an endpoint degrades, priced, and logged — "
-"without the client changing a line."
+"A client asks for a *model id*, and the gateway decides which *endpoint* "
+"serves it. One id can have several routes, so the gateway can split "
+"traffic by weight, fail over when an endpoint degrades, and price and log"
+" every request while the client keeps sending the same id."
 msgstr ""
-"整个系统围绕一个想法：客户端请求的是\\ *模型 id*\\ ，而实际处理请求的\\ *端点*\\ 可以随时替换。同一个模型 id "
-"背后可以同时挂多条路由，于是可以按权重在它们之间分流、在某个端点变差时自动切到别的路由、分别计价并记录日志——客户端一行代码都不用改。"
+"客户端请求的是一个\\ *模型 id*\\ ，由网关决定哪个\\ *端点*\\ 来处理。一个 id "
+"可以有多条路由，所以网关可以按权重分流、在端点变差时回退，并为每个请求计价、记录日志，而客户端始终发送同一个 id。"
 
-#: ../developer/index.rst:15
+#: ../developer/index.rst:14
 msgid ""
-"This is the documentation for the gateway software itself: running it, "
-"understanding it, extending it, and contributing to it. The source is at "
-"`github.com/HarvardMadSys/hybridInference "
-"<https://github.com/HarvardMadSys/hybridInference>`_, under the MIT "
-"license; bugs and questions go to its `issue tracker "
-"<https://github.com/HarvardMadSys/hybridInference/issues>`_."
-msgstr ""
-"这份文档讲的是网关软件本身：怎么运行、怎么理解、怎么扩展，以及怎么参与开发。源码在 "
-"`github.com/HarvardMadSys/hybridInference "
-"<https://github.com/HarvardMadSys/hybridInference>`_，采用 MIT 许可；发现 bug "
-"或有问题，请提交到它的 `issue tracker "
-"<https://github.com/HarvardMadSys/hybridInference/issues>`_。"
+"This site documents the gateway software, not any one deployment of it. "
+"Which models a gateway serves, and how to get an account on it, are up to"
+" its operator."
+msgstr "本站介绍的是网关软件本身，不针对任何一个具体部署。某个网关提供哪些模型、怎样在上面开账号，由它的运营方决定。"
 
-#: ../developer/index.rst:23
+#: ../developer/index.rst:19
 msgid "What is in the box"
 msgstr "包含哪些部分"
 
+#: ../developer/index.rst:21
+msgid ""
+"**OpenAI-compatible API**: ``/v1/chat/completions``, ``/v1/embeddings``, "
+"``/v1/responses``, ``/v1/models`` and the Batch API (``/v1/files``, "
+"``/v1/batches``), plus Anthropic's Messages API at ``/v1/messages`` and "
+"``/anthropic/v1/messages``."
+msgstr ""
+"**OpenAI 兼容 "
+"API**：``/v1/chat/completions``、``/v1/embeddings``、``/v1/responses``、``/v1/models``"
+" 和 Batch API（``/v1/files``、``/v1/batches``），另有 Anthropic 的 Messages "
+"API：``/v1/messages`` 和 ``/anthropic/v1/messages``。"
+
 #: ../developer/index.rst:25
 msgid ""
-"**An OpenAI-compatible surface** — ``POST /v1/chat/completions``, ``POST "
-"/v1/embeddings``, ``POST /v1/responses`` and ``GET /v1/models``, plus an "
-"Anthropic Messages surface at ``/v1/messages`` and "
-"``/anthropic/v1/messages`` for clients that speak that protocol instead."
-msgstr ""
-"**OpenAI 兼容的接口**\\ ——``POST /v1/chat/completions``、``POST "
-"/v1/embeddings``、``POST /v1/responses`` 和 ``GET /v1/models``\\ "
-"；另外，``/v1/messages`` 和 ``/anthropic/v1/messages`` 提供 Anthropic Messages "
-"接口，方便使用这套协议的客户端。"
+"**Routing**: a router per model, weighted selection, fallback to the next"
+" route and a circuit breaker per endpoint."
+msgstr "**路由**：每个模型可选自己的 router，按权重挑选路由，失败时回退到下一条路由，每个端点都有熔断器。"
 
-#: ../developer/index.rst:29
+#: ../developer/index.rst:27
 msgid ""
-"**A routing engine** — a per-model choice of router, weighted selection "
-"among an id's routes, automatic fallback to the next route, and a per-"
-"endpoint circuit breaker that pulls a failing endpoint out of rotation."
+"**Adapters**: a generic OpenAI-compatible adapter, which also serves "
+"local servers, and dedicated adapters for OpenRouter, Anthropic, Claude "
+"on Google Vertex and Gemini."
 msgstr ""
-"**路由引擎**\\ ——每个模型可以选自己的 router；同一个模型 id "
-"的多条路由按权重挑选，失败了自动换下一条；每个端点还有熔断器，持续失败的端点会被暂时移出。"
+"**adapter**：一个通用的 OpenAI 兼容 adapter（本地服务器也用它），以及 "
+"OpenRouter、Anthropic、Google Vertex 上的 Claude 和 Gemini 的专用 adapter。"
 
-#: ../developer/index.rst:32
+#: ../developer/index.rst:30
 msgid ""
-"**Provider adapters** — a generic OpenAI-compatible adapter, which also "
-"serves your own local servers, alongside dedicated adapters for "
-"OpenRouter, Anthropic's direct API, Claude via Google Vertex, and Gemini."
+"**Console**: a Next.js app for sign-up, API keys, usage, request history "
+"and a chat playground, with an admin area for users, providers, models, "
+"routing and settings."
 msgstr ""
-"**provider adapter**\\ ——一个通用的 OpenAI 兼容 adapter，你自己部署的本地服务器也用它；另外还有 "
-"OpenRouter、Anthropic 官方 API、Google Vertex 上的 Claude 和 Gemini 的专用 adapter。"
+"**控制台**：一个 Next.js 应用，提供注册、API key、用量、请求记录和对话 "
+"playground，以及管理用户、provider、模型、路由和设置项的管理后台。"
 
-#: ../developer/index.rst:35
+#: ../developer/index.rst:33
 msgid ""
-"**A web and admin console** — a Next.js app for sign-up and login, API "
-"keys, usage and recent requests, a chat playground, and an admin area "
-"covering users, model visibility, provider keys, route weights and "
-"analytics."
+"**Postgres**: accounts, API keys, the request log and the gateway's "
+"configuration. The schema comes only from the migrations in "
+"``apps/backend/migrations/``; the service issues no DDL."
 msgstr ""
-"**Web 控制台与管理后台**\\ ——一个 Next.js 应用，提供注册登录、API key "
-"管理、用量和最近请求、对话调试页（playground），以及管理后台：用户、模型可见性、provider key、路由权重和数据分析。"
+"**Postgres**：保存账号、API key、请求日志和网关的配置。表结构只来自 ``apps/backend/migrations/`` "
+"中的迁移；服务本身不执行任何 DDL。"
 
-#: ../developer/index.rst:38
+#: ../developer/index.rst:37
 msgid ""
-"**Operational storage** — Postgres for accounts, API keys and a request "
-"log, with the schema created on startup rather than by a migration tool."
-msgstr "**运行数据存储**\\ ——用 Postgres 存账号、API key 和请求日志；表结构由网关在启动时自动创建，不需要单独的迁移工具。"
-
-#: ../developer/index.rst:41
-msgid ""
-"The backend is Python (3.11–3.13) under ``apps/backend/``, split into "
-"``serving/`` (HTTP surface, auth, adapters, storage, observability) and "
-"``routing/`` (route table, strategies, endpoint health, fallback). The "
-"console is Next.js under ``apps/frontend/``. The repository is MIT-"
-"licensed."
+"The backend is Python 3.11–3.13 under ``apps/backend/``: ``serving/`` "
+"holds the HTTP API, authentication, adapters, storage and observability, "
+"and ``routing/`` the route table, strategies, endpoint health and "
+"fallback. The console is Next.js under ``apps/frontend/``."
 msgstr ""
-"后端是 ``apps/backend/`` 下的 Python 代码（3.11–3.13），分成两部分：``serving/``\\ （HTTP "
-"接口、鉴权、adapter、存储、可观测性）和 ``routing/``\\ （路由表、路由策略、端点健康、回退）。控制台是 "
-"``apps/frontend/`` 下的 Next.js 应用。整个仓库采用 MIT 许可证。"
+"后端是 ``apps/backend/`` 下的 Python 3.11–3.13 代码：``serving/`` 包含 HTTP "
+"API、鉴权、adapter、存储和可观测性，``routing/`` 包含路由表、路由策略、端点健康和回退。控制台是 "
+"``apps/frontend/`` 下的 Next.js 应用。"
 
-#: ../developer/index.rst:47
+#: ../developer/index.rst:42
+msgid ""
+"A deployment keeps its identity, branding and model catalog in its own "
+"database, and its code and assets in a *distribution overlay* under "
+"``distributions/``. A fresh clone is therefore nobody's gateway but your "
+"own; see :doc:`distribution-customization`."
+msgstr ""
+"每个部署把站点信息、品牌和模型目录保存在自己的数据库里，把代码和资源放在 ``distributions/`` 下的\\ *发行版 "
+"overlay*\\ 里。所以新克隆的仓库不属于任何人，跑起来就是你自己的网关；见 :doc:`distribution-"
+"customization`。"
+
+#: ../developer/index.rst:48
 msgid "Where to start"
 msgstr "从哪里开始"
 
-#: ../developer/index.rst:53
+#: ../developer/index.rst:54
 msgid "If you want to"
 msgstr "如果你想"
 
-#: ../developer/index.rst:54
+#: ../developer/index.rst:55
 msgid "Start here"
 msgstr "看这里"
 
-#: ../developer/index.rst:55
+#: ../developer/index.rst:56
 msgid "Watch a gateway serve a request, with no account, key or GPU"
 msgstr "不用账号、key 或 GPU，先看网关处理一次请求"
 
-#: ../developer/index.rst:56
+#: ../developer/index.rst:57
 msgid ":doc:`router-tutorial`"
 msgstr ""
 
-#: ../developer/index.rst:57
+#: ../developer/index.rst:58
 msgid "Run your own gateway against real providers"
 msgstr "用真实的 provider 跑起你自己的网关"
 
-#: ../developer/index.rst:58
+#: ../developer/index.rst:59
 msgid ":doc:`installation`"
 msgstr ""
 
-#: ../developer/index.rst:59
+#: ../developer/index.rst:60
 msgid "Choose what your distribution can configure or customize"
 msgstr "了解发行版能配置、能定制哪些东西"
 
-#: ../developer/index.rst:60
+#: ../developer/index.rst:61
 msgid ":doc:`distribution-customization`"
 msgstr ""
 
-#: ../developer/index.rst:61
+#: ../developer/index.rst:62
 msgid "Follow a request from HTTP through to an upstream call"
 msgstr "跟着一个请求，从 HTTP 入口一路走到上游调用"
 
-#: ../developer/index.rst:62
+#: ../developer/index.rst:63
 msgid ":doc:`architecture`"
 msgstr ""
 
-#: ../developer/index.rst:63
+#: ../developer/index.rst:64
 msgid "Serve another model from a provider the gateway already supports"
 msgstr "从网关已经支持的 provider 再接入一个模型"
 
-#: ../developer/index.rst:64
+#: ../developer/index.rst:65
 msgid ":doc:`adding-models`"
 msgstr ""
 
-#: ../developer/index.rst:65
+#: ../developer/index.rst:66
 msgid "Support a provider whose API the gateway cannot speak yet"
 msgstr "接入一个网关还不支持的 provider API"
 
-#: ../developer/index.rst:66
+#: ../developer/index.rst:67
 msgid ":doc:`provider-adapters`"
 msgstr ""
 
-#: ../developer/index.rst:67
-msgid ""
-"Add a provider, a key or a model from the admin console, without editing "
-"YAML or restarting"
-msgstr "不改 YAML、不重启，直接在管理控制台里添加 provider、key 或模型"
+#: ../developer/index.rst:68
+msgid "Add a provider, a key or a model from the admin console, without a restart"
+msgstr "不重启，直接在管理控制台里添加 provider、key 或模型"
 
-#: ../developer/index.rst:69
+#: ../developer/index.rst:70
 msgid ":doc:`configuration`, under *Runtime configuration from the admin console*"
 msgstr ":doc:`configuration` 里的\\ *从管理控制台做运行时配置*\\ 一节"
 
-#: ../developer/index.rst:71
+#: ../developer/index.rst:72
 msgid "Change how an endpoint gets chosen, or write your own strategy"
 msgstr "改变端点的挑选方式，或者自己写一个路由策略"
 
-#: ../developer/index.rst:72
+#: ../developer/index.rst:73
 msgid ":doc:`routing`"
 msgstr ""
 
-#: ../developer/index.rst:73
-msgid "Send a patch"
-msgstr "提交代码改动"
-
 #: ../developer/index.rst:74
-msgid ":doc:`contributing`"
-msgstr ""
-
-#: ../developer/index.rst:75
-msgid "Identify a version or plan an upgrade"
-msgstr "确认运行的是哪个版本，或规划一次升级"
-
-#: ../developer/index.rst:76
-msgid ":doc:`releases`"
-msgstr ""
-
-#: ../developer/index.rst:77
-msgid "Look up a term such as *route*, *endpoint* or *distribution*"
-msgstr "查一个术语，例如\\ *路由*\\ 、\\ *端点*\\ 或\\ *发行版*"
-
-#: ../developer/index.rst:78
-msgid ":doc:`glossary`"
-msgstr ""
-
-#: ../developer/index.rst:81
-msgid "Scope of this site"
-msgstr "本站的范围"
-
-#: ../developer/index.rst:83
-msgid ""
-"These pages document the software, not any one installation of it. Which "
-"models a given gateway serves, and how to get an account on it, are the "
-"operator's to publish separately."
-msgstr "这些页面讲的是软件本身，不针对任何一个具体部署。某个网关提供哪些模型、怎么在上面开账号，由各自的运营方另行公布。"
-
-#: ../developer/index.rst:87
-msgid ""
-"That separation is built into the repository: a deployment keeps its "
-"identity, its configuration-file locations and its feature switches in a "
-"*distribution overlay* under ``distributions/`` rather than in the code, "
-"which is why a fresh clone comes up as nobody's gateway but your own. "
-":doc:`distribution-customization` explains how to configure and extend an"
-" overlay."
-msgstr ""
-"仓库的组织方式也体现了这一点：每个部署把自己的站点信息、配置文件位置和功能开关放在 ``distributions/`` 下的\\ *发行版 "
-"overlay*\\ 里，而不是写进代码。所以新克隆下来的仓库不带任何别人的部署信息，跑起来就是你自己的网关。怎么配置和扩展 overlay，见 "
-":doc:`distribution-customization`。"
-
 msgid "Let an organization's members sign in with its own accounts"
 msgstr "让某个机构的成员用机构自己的账号登录"
 
+#: ../developer/index.rst:75
 msgid ":doc:`sso`"
 msgstr ":doc:`sso`"
 
+#: ../developer/index.rst:76
 msgid "Let an application create an API key on a user's account"
-msgstr "让某个应用在用户的账号上创建 API key"
+msgstr ""
+"让某个应用在用户的账号上创建 API key"
 
+#: ../developer/index.rst:77
 msgid ":doc:`api-key-authorization`"
-msgstr ":doc:`api-key-authorization`"
+msgstr ""
+
+#: ../developer/index.rst:78
+msgid "Send a patch"
+msgstr "提交代码改动"
+
+#: ../developer/index.rst:79
+msgid ":doc:`contributing`"
+msgstr ""
+
+#: ../developer/index.rst:80
+msgid "Identify a version or plan an upgrade"
+msgstr "确认运行的是哪个版本，或规划一次升级"
+
+#: ../developer/index.rst:81
+msgid ":doc:`releases`"
+msgstr ""
+
+#: ../developer/index.rst:82
+msgid "Look up a term such as *route*, *endpoint* or *distribution*"
+msgstr "查一个术语，例如\\ *路由*\\ 、\\ *端点*\\ 或\\ *发行版*"
+
+#: ../developer/index.rst:83
+msgid ":doc:`glossary`"
+msgstr ""
+
+#: ../developer/index.rst:86
+msgid "About the project"
+msgstr "关于本项目"
+
+#: ../developer/index.rst:88
+msgid ""
+"HybridInference is developed by the `Harvard MadSys Lab "
+"<https://juncheng.seas.harvard.edu/>`_ at the Harvard John A. Paulson "
+"School of Engineering and Applied Sciences and published under the `MIT "
+"license "
+"<https://github.com/HarvardMadSys/hybridInference/blob/main/LICENSE>`_. "
+"Its RouteWise router is the subject of the lab's EuroSys '27 paper and "
+"ships separately as the MIT-licensed `llm-routewise "
+"<https://github.com/HarvardMadSys/RouteWise>`_ library; this gateway is "
+"its production reference integration."
+msgstr ""
+"HybridInference 由哈佛大学 John A. Paulson 工程与应用科学学院的 `Harvard MadSys Lab "
+"<https://juncheng.seas.harvard.edu/>`_ 开发，以 `MIT 许可证 "
+"<https://github.com/HarvardMadSys/hybridInference/blob/main/LICENSE>`_ "
+"发布。它的 RouteWise router 是该实验室 EuroSys '27 论文的研究内容，并作为采用 MIT 许可的 `llm-"
+"routewise <https://github.com/HarvardMadSys/RouteWise>`_ "
+"库单独发布；本网关是它在生产环境中的参考集成。"
+
+#: ../developer/index.rst:97
+msgid ""
+"The source is at `github.com/HarvardMadSys/hybridInference "
+"<https://github.com/HarvardMadSys/hybridInference>`_, and its "
+"`contributors page "
+"<https://github.com/HarvardMadSys/hybridInference/graphs/contributors>`_ "
+"lists everyone who has landed a change. Report bugs and ask questions on "
+"the `issue tracker "
+"<https://github.com/HarvardMadSys/hybridInference/issues>`_."
+msgstr ""
+"源码在 `github.com/HarvardMadSys/hybridInference "
+"<https://github.com/HarvardMadSys/hybridInference>`_，它的 `贡献者页面 "
+"<https://github.com/HarvardMadSys/hybridInference/graphs/contributors>`_ "
+"列出了所有提交过改动的人。发现 bug 或有问题，请提交到 `issue tracker "
+"<https://github.com/HarvardMadSys/hybridInference/issues>`_。"
+
