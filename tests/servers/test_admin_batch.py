@@ -13,6 +13,7 @@ from serving.batch import config as batch_config_module
 from serving.batch.model_limits import BatchModelLimits
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
+from serving.servers.routers.admin import batch as admin_batch
 
 ADMIN = {"Authorization": "Bearer test-admin"}
 
@@ -26,6 +27,8 @@ class _FakeBatchStore:
         self.writes: list[tuple] = []
         #: Raised after a write is applied: a commit whose reply was lost.
         self.write_error: Exception | None = None
+        #: The stored size of each item's content, for the page's byte budget.
+        self.item_bytes = 1
 
     async def list_model_limits(self) -> dict[str, int]:
         return dict(self.limits)
@@ -61,8 +64,10 @@ class _FakeBatchStore:
     async def get_batch(self, batch_id: str) -> dict | None:
         return {"id": batch_id, "user_id": "u-owner"} if batch_id == "batch_1" else None
 
-    async def item_contents(self, batch_id: str, *, after: int, limit: int) -> list[dict]:
-        self.writes.append(("contents", batch_id, after, limit))
+    async def item_contents(
+        self, batch_id: str, *, after: int, limit: int, max_bytes: int
+    ) -> tuple[list[dict], bool]:
+        self.writes.append(("contents", batch_id, after, limit, max_bytes))
         items = [
             {
                 "id": n,
@@ -72,7 +77,10 @@ class _FakeBatchStore:
             }
             for n in (1, 2, 3)
         ]
-        return [item for item in items if item["id"] > after][:limit]
+        after_cursor = [item for item in items if item["id"] > after]
+        # Like the store: one item at least, then as many as fit the budget.
+        page = after_cursor[: max(1, min(limit, max_bytes // self.item_bytes))]
+        return page, len(page) < len(after_cursor)
 
     async def user_labels(self, user_ids: list[str]) -> dict[str, dict]:
         self.writes.append(("labels", tuple(user_ids)))
@@ -489,6 +497,22 @@ async def test_an_admin_reads_a_batchs_prompts_page_by_page(admin_client):
         {"batch_id": "batch_1", "after": 0, "first_item_id": 1, "last_item_id": 2, "items": 2},
         {"batch_id": "batch_1", "after": 2, "first_item_id": 3, "last_item_id": 3, "items": 1},
     ]
+
+
+async def test_a_page_of_prompts_is_bounded_by_size_as_well_as_count(admin_client):
+    client, store = admin_client
+    _store_prompts(client, True)
+    store.item_bytes = admin_batch.CONTENTS_PAGE_BYTES // 2
+
+    first = await client.get("/admin/batch/jobs/batch_1/requests?limit=3", headers=ADMIN)
+
+    body = first.json()
+    assert [item["custom_id"] for item in body["data"]] == ["req-1", "req-2"]
+    assert (body["has_more"], body["last_id"]) == (True, 2)
+    assert store.writes[-1] == ("contents", "batch_1", 0, 3, admin_batch.CONTENTS_PAGE_BYTES)
+    second = await client.get("/admin/batch/jobs/batch_1/requests?limit=3&after=2", headers=ADMIN)
+    assert [item["custom_id"] for item in second.json()["data"]] == ["req-3"]
+    assert second.json()["has_more"] is False
 
 
 async def test_a_page_past_the_last_item_returns_nothing_and_is_not_audited(admin_client):

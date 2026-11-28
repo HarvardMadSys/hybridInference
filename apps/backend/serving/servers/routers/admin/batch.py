@@ -238,6 +238,14 @@ async def batch_summary(
     return {"users": users, "totals": totals}
 
 
+#: The most stored JSON (requests, responses and errors) one page of
+#: :func:`admin_batch_requests` holds; a page always holds one item at least.
+#: A request and a response may each be megabytes, so ``limit`` alone could
+#: make one answer hundreds of megabytes. A page cut short still says
+#: ``has_more``.
+CONTENTS_PAGE_BYTES = 8 * 1024 * 1024
+
+
 @router.get("/batch/jobs/{batch_id}/requests")
 async def admin_batch_requests(
     batch_id: str,
@@ -255,7 +263,9 @@ async def admin_batch_requests(
     log (``db_store_full_content``), the setting that already decides whether
     administrators can read request content: where a deployment keeps that
     off, a batch's stored requests stay unreadable here too, although the
-    batch needs them to run. Every page that returns stored content is
+    batch needs them to run. A page holds up to ``limit`` items and no more
+    than :data:`CONTENTS_PAGE_BYTES` of their stored JSON (one at least).
+    Every page that returns stored content is
     audited as ``batch.requests.read`` against the batch's owner, with the
     item ids it returned, before it is returned: a page whose audit row cannot
     be written is not answered. A page with nothing on it returns no content
@@ -274,8 +284,9 @@ async def admin_batch_requests(
     batch = await batch_store.get_batch(batch_id)
     if batch is None:
         raise HTTPException(status_code=404, detail=f"Batch '{batch_id}' not found")
-    items = await batch_store.item_contents(batch_id, after=after, limit=limit + 1)
-    page = items[:limit]
+    page, more = await batch_store.item_contents(
+        batch_id, after=after, limit=limit, max_bytes=CONTENTS_PAGE_BYTES
+    )
     if page:
         # Each read that returns content is its own audit row, naming exactly
         # the items it returned (ids are ascending within the batch, so the
@@ -300,7 +311,7 @@ async def admin_batch_requests(
     return {
         "object": "list",
         "data": page,
-        "has_more": len(items) > limit,
+        "has_more": more,
         "last_id": page[-1]["id"] if page else None,
     }
 
