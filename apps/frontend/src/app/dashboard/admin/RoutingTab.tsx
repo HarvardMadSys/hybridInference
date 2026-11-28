@@ -9,7 +9,7 @@ export function RoutingTab() {
         <h2 className="text-[14px] font-semibold text-gray-900">Routing</h2>
         <p className="mt-1 text-sm text-gray-500">
           Configure model routing policy, provider candidates, and fixed weights. RouteWise
-          parameters are under Settings → RouteWise.
+          parameters are under Settings → Providers & Routing.
         </p>
       </div>
       <ProviderRoutesTab />

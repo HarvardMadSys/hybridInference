@@ -585,7 +585,7 @@ describe('ProviderRoutesTab', () => {
     expect(setOffloadRoute).toHaveBeenCalledTimes(1);
   });
 
-  it('does not show RouteWise parameters: they are on Settings → RouteWise', async () => {
+  it('does not show RouteWise parameters: they are on Settings → Providers & Routing', async () => {
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,
       openrouter_provider_options: openRouterProviderOptions,

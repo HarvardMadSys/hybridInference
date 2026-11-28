@@ -28,8 +28,34 @@ const ANALYTICS_SETTING_LABELS: Readonly<Record<string, string>> = {
   analytics_growth_rate_enabled: 'Growth Rate',
 };
 
+/** Plain labels for the known switches; anything new falls back to its key in words. */
+const SETTING_LABELS: Readonly<Record<string, string>> = {
+  ...ANALYTICS_SETTING_LABELS,
+  user_auth_enabled: 'Require API key for inference',
+  signup_enabled: 'Allow new sign-ups',
+  signup_require_email_verification: 'Require email verification for sign-ups',
+  signup_admin_notify_enabled: 'Email admins about new sign-ups',
+  log_full_payload: 'Log full request payloads',
+  log_rejected_requests: 'Log rejected requests',
+  log_synthetic_probes: 'Log synthetic probes',
+  force_chat_completions_streaming: 'Stream chat completions upstream',
+  reasoning_small_call_reroute_enabled: 'Reroute small reasoning calls',
+  auto_mode_enabled: 'Enable auto models',
+};
+
+function roleLabel(key: string, prefix: string): string {
+  return key
+    .slice(prefix.length)
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 function settingLabel(key: string): string {
-  if (ANALYTICS_SETTING_LABELS[key]) return ANALYTICS_SETTING_LABELS[key];
+  if (SETTING_LABELS[key]) return SETTING_LABELS[key];
+  if (key.startsWith('user_concurrency_'))
+    return `${roleLabel(key, 'user_concurrency_')} concurrency limit`;
+  if (key.startsWith('user_daily_quota_'))
+    return `${roleLabel(key, 'user_daily_quota_')} daily quota`;
   return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
@@ -126,12 +152,15 @@ export function RuntimeSettingsSection({
   onToast,
   renderExtra,
   onUnsavedChange,
+  visibleKeys,
 }: {
   /** Anchor of the section. */
   id: string;
   title: string;
   description: string;
   settings: RuntimeSettingItem[];
+  /** While searching: only these keys' rows are shown; the rest stay mounted, drafts intact. */
+  visibleKeys?: ReadonlySet<string>;
   loading: boolean;
   onSaved: (updated: RuntimeSettingItem) => void;
   /** Called once after a save that wrote at least one setting, even partly. */
@@ -320,7 +349,7 @@ export function RuntimeSettingsSection({
             return (
               <li
                 key={setting.key}
-                className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6"
+                className={`${visibleKeys && !visibleKeys.has(setting.key) ? 'hidden' : 'flex'} flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6`}
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">

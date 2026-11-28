@@ -171,7 +171,7 @@ describe('the live configuration on Admin → Settings sub-tabs', () => {
     fireEvent.change(within(form).getByLabelText('Value'), { target: { value: 'eu-west' } });
 
     // A save of another category, on another sub-tab, while the form is open.
-    await openSettingsTab('Setup');
+    await openSettingsTab(/^Site & Setup/);
     const general = screen.getByRole('region', { name: 'General' });
     fireEvent.change(within(general).getByLabelText('SITE_NAME'), { target: { value: 'New' } });
     // Saved as revision 2; revision 3 is someone else's, which the form has not seen.
@@ -217,10 +217,10 @@ describe('the live configuration on Admin → Settings sub-tabs', () => {
     ]);
   });
 
-  it('shows the live group status and badge in the Alerts sub-tab, and re-reads it after a save', async () => {
+  it('shows the live group status and badge on the Operations tab, and re-reads it after a save', async () => {
     vi.mocked(getConfig).mockResolvedValue(config({ source_version: v(7) }));
     vi.mocked(getLiveConfigStatus).mockResolvedValue(liveStatus(7));
-    await renderSettings('Alerts');
+    await renderSettings('Operations');
 
     const alerts = screen.getByRole('region', { name: 'Alerts' });
     expect(within(alerts).getByText('Applies live')).toBeInTheDocument();

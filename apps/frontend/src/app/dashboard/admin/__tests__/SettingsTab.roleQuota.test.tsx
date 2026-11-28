@@ -115,13 +115,13 @@ const cnyQuotaSetting = {
 /** The harness renders the page; the runtime's accounting unit comes from the state above. */
 function renderCnySettings() {
   siteConfigState.accountingCurrency = 'CNY';
-  return renderSettings('Common');
+  return renderSettings();
 }
 
 describe('SettingsTab role quota', () => {
   it('renders Apply button only on quota settings and runs the confirm flow', async () => {
     const api = await import('@/lib/api/admin');
-    await renderSettings('Common');
+    await renderSettings();
 
     const applyBtn = await screen.findByRole('button', { name: /apply to existing users/i });
     fireEvent.click(applyBtn);
@@ -142,7 +142,7 @@ describe('SettingsTab role quota', () => {
 
   it('holds Apply back while its quota has an unsaved change', async () => {
     const api = await import('@/lib/api/admin');
-    await renderSettings('Common');
+    await renderSettings();
 
     // Applying writes the saved quota, not the one being typed.
     const apply = await screen.findByRole('button', { name: /apply to existing users/i });
@@ -179,11 +179,11 @@ describe('SettingsTab role quota', () => {
           finishPreview = resolve;
         }),
     );
-    await renderSettings('Common');
+    await renderSettings();
 
     fireEvent.click(await screen.findByRole('button', { name: /apply to existing users/i }));
     await waitFor(() => expect(api.previewRoleQuotaApply).toHaveBeenCalledWith('pro'));
-    await openSettingsTab('Access');
+    await openSettingsTab(/^Access/);
     fireEvent.click(await screen.findByRole('button', { name: 'Remove example.com' }));
     const review = screen.getByRole('dialog', {
       name: 'Remove example.com from the signup allowlist?',
@@ -207,7 +207,7 @@ describe('SettingsTab role quota', () => {
 
     // Applying was not queued behind it: it needs its own click and review.
     expect(screen.queryByRole('dialog')).toBeNull();
-    await openSettingsTab('Common');
+    await openSettingsTab(/^Access/);
     fireEvent.click(screen.getByRole('button', { name: /apply to existing users/i }));
     expect(
       await screen.findByRole('dialog', { name: 'Apply the pro quota to existing keys?' }),

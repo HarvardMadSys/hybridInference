@@ -3,7 +3,7 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { EMPTY_CONFIG, renderSettings } from './settingsTabHarness';
+import { EMPTY_CONFIG, openSettingsTab, renderSettings } from './settingsTabHarness';
 
 const refreshMock = vi.fn();
 
@@ -130,7 +130,7 @@ describe('SettingsTab and the site configuration', () => {
       min: 1,
       max: null,
     });
-    await renderSettings();
+    await renderSettings('Operations');
 
     const input = await screen.findByLabelText('max_concurrent_requests_per_user value');
     fireEvent.change(input, { target: { value: '5' } });
@@ -178,7 +178,7 @@ describe('SettingsTab and the site configuration', () => {
           finish = resolve;
         }),
     );
-    await renderSettings();
+    await renderSettings('Operations');
 
     const input = await screen.findByLabelText('max_concurrent_requests_per_user value');
     fireEvent.change(input, { target: { value: '5' } });
@@ -212,7 +212,7 @@ describe('SettingsTab and the site configuration', () => {
   });
 
   it('refuses an out-of-range number without writing', async () => {
-    await renderSettings();
+    await renderSettings('Operations');
     const input = await screen.findByLabelText('max_concurrent_requests_per_user value');
     fireEvent.change(input, { target: { value: '0' } });
     // The bar shows for the invalid draft, with Save held back and the reason.
@@ -237,6 +237,7 @@ describe('SettingsTab and the site configuration', () => {
     fireEvent.click(flag);
     expect(screen.queryByRole('button', { name: 'Save changes to Access Controls' })).toBeNull();
 
+    await openSettingsTab('Operations');
     const input = screen.getByLabelText('max_concurrent_requests_per_user value');
     fireEvent.change(input, { target: { value: '5' } });
     expect(screen.getByText('1 unsaved change')).toBeVisible();
@@ -270,7 +271,7 @@ describe('SettingsTab and the site configuration', () => {
 describe('SettingsTab signup allowlist', () => {
   it('adds a domain from the form opened by Add domain, with no review', async () => {
     vi.mocked(addSignupAllowedDomain).mockResolvedValue(undefined as never);
-    await renderSettings('Access');
+    await renderSettings(/^Access/);
 
     // No input until Add domain is chosen.
     expect(screen.queryByLabelText('Domain to add')).toBeNull();
@@ -292,7 +293,7 @@ describe('SettingsTab signup allowlist', () => {
     vi.mocked(addSignupAllowedDomain)
       .mockRejectedValueOnce(new Error('Domain already listed'))
       .mockResolvedValueOnce(undefined as never);
-    await renderSettings('Access');
+    await renderSettings(/^Access/);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Add domain' }));
     fireEvent.change(screen.getByLabelText('Domain to add'), {
@@ -316,7 +317,7 @@ describe('SettingsTab signup allowlist', () => {
       ],
     } as never);
     vi.mocked(removeSignupAllowedDomain).mockResolvedValue(undefined as never);
-    await renderSettings('Access');
+    await renderSettings(/^Access/);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Remove acme.example' }));
     const dialog = screen.getByRole('dialog', {
@@ -340,7 +341,7 @@ describe('SettingsTab signup allowlist', () => {
     vi.mocked(listSignupAllowedDomains).mockResolvedValue({
       domains: [{ domain: 'acme.example', is_wildcard: false, created_at: null }],
     } as never);
-    await renderSettings('Access');
+    await renderSettings(/^Access/);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Remove acme.example' }));
     const dialog = screen.getByRole('dialog', {
@@ -378,10 +379,14 @@ describe('SettingsTab feedback', () => {
     // It floats over the sections, so it must not swallow clicks meant for them.
     expect(feedback.closest('.pointer-events-none')).not.toBeNull();
     expect(feedback.closest('section')).toBeNull();
-    for (const name of ['Access Controls', 'Other Runtime Settings']) {
+    for (const name of ['Access Controls']) {
       expect(feedback.compareDocumentPosition(screen.getByRole('region', { name }))).toBe(
         Node.DOCUMENT_POSITION_FOLLOWING,
       );
     }
+    // The Other Runtime Settings section is on another tab; it is in the page too.
+    expect(feedback.compareDocumentPosition(document.getElementById('settings-other')!)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
   });
 });

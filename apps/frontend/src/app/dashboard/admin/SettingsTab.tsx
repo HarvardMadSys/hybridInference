@@ -79,7 +79,7 @@ function needsConfiguration(block: SettingsBlock): boolean {
   );
 }
 
-/** What a sub-tab shows beside its name: unsaved changes, and missing settings. */
+/** What a tab shows beside its name: unsaved changes, and missing settings. */
 function TabMeta({ dirty, missing }: { dirty: number; missing: number }) {
   if (dirty === 0 && missing === 0) return null;
   return (
@@ -103,19 +103,27 @@ function TabMeta({ dirty, missing }: { dirty: number; missing: number }) {
   );
 }
 
+/** Whether a runtime setting matches a search, by key, label, description or group title. */
+function runtimeMatchesQuery(setting: RuntimeSettingItem, query: string): boolean {
+  const haystack =
+    `${setting.key.replace(/_/g, ' ')} ${setting.description} ${RUNTIME_GROUPS[runtimeGroupOf(setting.key)].title}`.toLowerCase();
+  return haystack.includes(query);
+}
+
 /**
  * Admin → Settings: every setting an administrator changes in the console but
- * the model configuration, which is on Admin → Providers → Models. In
- * sub-tabs (see `settingsLayout`): Common, with the settings changed most
- * often, then one sub-tab per topic, then Setup, with what is usually set
- * once. A topic's sections sit together whatever stores them: the
- * database-backed configuration, the runtime settings, and the sections with
- * an API of their own.
+ * the model configuration, which is on Admin → Providers → Models. Four task
+ * tabs (see `settingsLayout`): Access & Limits, Providers & Routing,
+ * Operations, and Site & Setup. Each tab holds its whole topic together —
+ * the database-backed configuration, the runtime settings, and the sections
+ * with an API of their own — so one change never needs two tabs.
  *
- * Every sub-tab stays mounted while another is shown, so a change waits
- * unsaved, wherever it was made, until it is saved or discarded. A search or
- * Missing only looks through the configuration on every sub-tab at once, and
- * hides the other sections until it is cleared.
+ * Every tab stays mounted while another is shown, so a change waits
+ * unsaved, wherever it was made, until it is saved or discarded. Search
+ * looks through the configuration and the runtime settings on every tab at
+ * once; Missing only lists the configuration that still needs a value.
+ * Sections with an API of their own stay mounted but hidden while a filter
+ * is on, so a change unsaved in one is not lost.
  */
 export function SettingsTab({
   initialTab = DEFAULT_SETTINGS_TAB,
@@ -148,19 +156,45 @@ export function SettingsTab({
     // Next's initial hash scroll can run before the sections exist. Wait for
     // both reads so the runtime sections above the target have their full height.
     if (!editor.settled || runtimeLoading || initialAnchorHandled.current) return;
-    initialAnchorHandled.current = true;
     const target = document.getElementById(window.location.hash.slice(1));
-    if (target && !target.closest('[hidden]')) {
-      target.scrollIntoView({ block: 'start' });
+    if (!target) {
+      initialAnchorHandled.current = true;
+      return;
     }
-  }, [editor.settled, runtimeLoading]);
+    if (target.closest('[hidden]')) {
+      // A link to a section on another tab opens that tab first; this effect
+      // runs again and scrolls once the section is shown. While a filter is
+      // on, a hidden section stays hidden — there is nowhere to land.
+      if (editor.filtering) {
+        initialAnchorHandled.current = true;
+        return;
+      }
+      const panel = target.closest('[id$="-panel"]');
+      const key = panel?.id.replace('admin-settings-', '').replace('-panel', '');
+      const owner = SETTINGS_TABS.find((tab) => tab.key === key);
+      if (!owner || owner.key === activeTab) {
+        initialAnchorHandled.current = true;
+        return;
+      }
+      setActiveTab(owner.key);
+      router.replace(
+        owner.key === DEFAULT_SETTINGS_TAB
+          ? `${pathname}${window.location.hash}`
+          : `${pathname}?tab=${owner.key}${window.location.hash}`,
+        { scroll: false },
+      );
+      return;
+    }
+    initialAnchorHandled.current = true;
+    target.scrollIntoView({ block: 'start' });
+  }, [editor.settled, editor.filtering, runtimeLoading, activeTab, pathname, router]);
 
   // Unsaved changes in the sections that are not configuration, by section,
-  // so a sub-tab can say it has some while another is shown.
+  // so a tab can say it has some while another is shown.
   const [unsavedBySection, setUnsavedBySection] = useState<Record<string, number>>({});
   const unsavedReporters = useRef(new Map<string, (count: number) => void>());
 
-  // A sub-tab keeps its changes while another is shown; another admin tab,
+  // A tab keeps its changes while another is shown; another admin tab,
   // being a page of its own, would not, so leaving with any unsaved asks first.
   useLeaveGuard(
     editor.groups.reduce((total, group) => total + editor.dirtyCount(group), 0) +
@@ -280,7 +314,7 @@ export function SettingsTab({
   }
 
   const { filtering } = editor;
-  // Without the configuration (an older backend), a sub-tab that only edits it has nothing to show.
+  // Without the configuration (an older backend), a tab that only edits it has nothing to show.
   const tabs = SETTINGS_TABS.filter(
     (tab) => editor.config !== null || tab.blocks.some((block) => !needsConfiguration(block)),
   );
@@ -338,12 +372,27 @@ export function SettingsTab({
       </button>
     ) : null;
 
+  // While searching, the runtime settings that match join the configuration
+  // results; under Missing only they never match (nothing runtime is missing).
+  const searchQuery = editor.query.trim().toLowerCase();
+  const matchingRuntime =
+    filtering && !editor.missingOnly && searchQuery
+      ? runtimeSettings.filter((setting) => runtimeMatchesQuery(setting, searchQuery))
+      : [];
+  const runtimeForGroup = (group: RuntimeGroupKey) =>
+    filtering
+      ? matchingRuntime.filter((setting) => runtimeGroupOf(setting.key) === group)
+      : runtimeSettings.filter((setting) => runtimeGroupOf(setting.key) === group);
+
   const runtimeSection = (group: RuntimeGroupKey) => (
     <RuntimeSettingsSection
       id={`settings-${group}`}
       title={RUNTIME_GROUPS[group].title}
       description={RUNTIME_GROUPS[group].description}
       settings={runtimeSettings.filter((setting) => runtimeGroupOf(setting.key) === group)}
+      visibleKeys={
+        filtering ? new Set(runtimeForGroup(group).map((setting) => setting.key)) : undefined
+      }
       // The catch-all is usually empty: it waits unseen rather than flash a spinner.
       loading={runtimeLoading && group !== 'other'}
       onSaved={replaceSetting}
@@ -385,7 +434,7 @@ export function SettingsTab({
   };
 
   const renderBlock = (tab: SettingsTabDefinition, block: SettingsBlock): ReactNode => {
-    // While a filter lists every sub-tab's categories, each says where it lives.
+    // While a filter lists every tab's categories, each says where it lives.
     const tag = filtering ? tab.label : undefined;
     if (block.kind === 'config') {
       return (
@@ -409,10 +458,14 @@ export function SettingsTab({
           />
         ));
     }
-    // Not configuration: a filter hides it, but it stays mounted, and with
-    // it any change still unsaved in it.
+    // Not configuration: a filter hides a panel, and a runtime group with no
+    // match, but both stay mounted, and with them any change still unsaved.
+    const hidden =
+      filtering &&
+      (block.kind === 'panel' ||
+        (block.kind === 'runtime' && runtimeForGroup(block.group).length === 0));
     return (
-      <div key={blockKey(block)} hidden={filtering}>
+      <div key={blockKey(block)} hidden={hidden}>
         {block.kind === 'runtime'
           ? runtimeSection(block.group)
           : panelSection(block.panel, !filtering && tab.key === currentTab)}
@@ -420,7 +473,11 @@ export function SettingsTab({
     );
   };
 
-  const matching = matchingSettingCount(editor);
+  const matching = matchingSettingCount(editor) + matchingRuntime.length;
+  const totalUnsaved =
+    editor.groups.reduce((total, group) => total + editor.dirtyCount(group), 0) +
+    Object.values(unsavedBySection).reduce((total, count) => total + count, 0);
+  const missingCount = editor.config?.missing.length ?? 0;
 
   return (
     <div className="mt-6 space-y-4">
@@ -430,11 +487,41 @@ export function SettingsTab({
       ) : null}
       {editor.config ? <ConfigurationFilters editor={editor} /> : null}
 
+      {/* One line that answers "is anything wrong, and did I leave a change
+          unsaved anywhere?" without opening each tab to check. */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-gray-200 px-3 py-2 text-[12px] text-gray-600">
+        {editor.config ? (
+          missingCount > 0 ? (
+            <span>
+              <strong className="font-medium text-red-700">
+                {missingCount} required {missingCount === 1 ? 'setting' : 'settings'} missing
+              </strong>
+              {!editor.missingOnly ? (
+                <button
+                  type="button"
+                  onClick={() => editor.setMissingOnly(true)}
+                  className="ml-2 font-medium text-gray-900 underline underline-offset-2"
+                >
+                  Show only these
+                </button>
+              ) : null}
+            </span>
+          ) : (
+            <span>All required settings are set</span>
+          )
+        ) : null}
+        <span aria-live="polite">
+          {totalUnsaved > 0
+            ? `${totalUnsaved} unsaved ${totalUnsaved === 1 ? 'change' : 'changes'} across all tabs`
+            : 'No unsaved changes'}
+        </span>
+      </div>
+
       {filtering ? (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-2 text-[12px] text-gray-600">
           <span aria-live="polite">
-            {matching === 1 ? '1 setting matches' : `${matching} settings match`}, from every
-            sub-tab. Other sections are hidden until the filter is cleared.
+            {matching === 1 ? '1 setting matches' : `${matching} settings match`}, from every tab.
+            Sections with their own API are hidden until the filter is cleared.
           </span>
           <button type="button" onClick={clearFilters} className={BUTTON_GHOST}>
             Clear filters
@@ -455,7 +542,7 @@ export function SettingsTab({
         />
       )}
 
-      {/* Feedback for the sections on every sub-tab. The live region is
+      {/* Feedback for the sections on every tab. The live region is
           always there (so a screen reader announces each message) and takes
           no height: a message floats at the top right of the sections,
           pinned to the top of the window while they scroll, without pushing
@@ -473,7 +560,7 @@ export function SettingsTab({
         </div>
       </div>
 
-      {filtering && editor.visibleGroups.length === 0 ? (
+      {filtering && editor.visibleGroups.length === 0 && matchingRuntime.length === 0 ? (
         <AdminEmptyState
           title={
             editor.missingOnly && editor.config?.missing.length === 0 && !editor.query.trim()
@@ -487,7 +574,10 @@ export function SettingsTab({
       <div className="flex flex-col gap-8">
         {tabs.map((tab) => {
           const shown = filtering
-            ? editor.visibleGroups.some((group) => tabOfCategory(group.id) === tab.key)
+            ? editor.visibleGroups.some((group) => tabOfCategory(group.id) === tab.key) ||
+              tab.blocks.some(
+                (block) => block.kind === 'runtime' && runtimeForGroup(block.group).length > 0,
+              )
             : tab.key === currentTab;
           return (
             <div
@@ -497,7 +587,7 @@ export function SettingsTab({
               aria-labelledby={filtering ? undefined : tabId(tab.key)}
               hidden={!shown}
             >
-              {/* While a filter lists every sub-tab's categories, each is tagged instead. */}
+              {/* While a filter lists every tab's categories, each is tagged instead. */}
               {tab.description && !filtering ? (
                 <p className="mb-6 max-w-3xl text-[12px] leading-relaxed text-gray-500">
                   {tab.description}

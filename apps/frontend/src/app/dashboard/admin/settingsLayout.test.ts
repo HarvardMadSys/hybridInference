@@ -8,18 +8,35 @@ import {
   runtimeGroupOf,
   settingsTabKey,
   tabOfCategory,
+  tabOfRuntimeGroup,
   type RuntimeGroupKey,
 } from './settingsLayout';
 
 describe('settingsLayout', () => {
-  it('names each configuration category on one sub-tab only', () => {
+  it('names each configuration category on one tab only', () => {
     const named = SETTINGS_TABS.flatMap((tab) =>
       tab.blocks.flatMap((block) => (block.kind === 'config' ? [block.category] : [])),
     );
     expect(new Set(named).size).toBe(named.length);
   });
 
-  it('lists every category the backend has today on the sub-tab of its topic', () => {
+  it('has four task tabs, each holding its whole topic', () => {
+    expect(SETTINGS_TABS.map((tab) => tab.key)).toEqual([
+      'access',
+      'providers',
+      'operations',
+      'setup',
+    ]);
+    expect(SETTINGS_TABS.map((tab) => tab.label)).toEqual([
+      'Access & Limits',
+      'Providers & Routing',
+      'Operations',
+      'Site & Setup',
+    ]);
+    expect(DEFAULT_SETTINGS_TAB).toBe('access');
+  });
+
+  it('lists every category the backend has today on the tab of its topic', () => {
     expect(
       Object.fromEntries(
         [
@@ -39,7 +56,7 @@ describe('settingsLayout', () => {
         ].map((category) => [category, tabOfCategory(category)]),
       ),
     ).toEqual({
-      application: 'application',
+      application: 'setup',
       general: 'setup',
       security: 'access',
       signup: 'access',
@@ -47,16 +64,43 @@ describe('settingsLayout', () => {
       phone: 'access',
       providers: 'providers',
       routing: 'providers',
-      batch: 'batch',
+      batch: 'operations',
       network: 'setup',
-      alerts: 'alerts',
+      alerts: 'operations',
       integrations: 'setup',
       privacy: 'setup',
     });
     expect(tabOfCategory('added-later')).toBe('setup');
   });
 
-  it('leaves the model catalog to Providers → Models, and names it on no sub-tab', () => {
+  it('keeps every runtime group on the tab of its topic, with no Common tab', () => {
+    const expected: Record<RuntimeGroupKey, string> = {
+      access: 'access',
+      concurrency: 'access',
+      quotas: 'access',
+      requests: 'providers',
+      logging: 'operations',
+      analytics: 'operations',
+      other: 'operations',
+    };
+    for (const [group, tab] of Object.entries(expected)) {
+      expect(tabOfRuntimeGroup(group as RuntimeGroupKey), group).toBe(tab);
+    }
+    const runtimeBlocks = SETTINGS_TABS.flatMap((tab) =>
+      tab.blocks.flatMap((block) => (block.kind === 'runtime' ? [[tab.key, block.group]] : [])),
+    );
+    expect(runtimeBlocks).toEqual([
+      ['access', 'access'],
+      ['access', 'concurrency'],
+      ['access', 'quotas'],
+      ['providers', 'requests'],
+      ['operations', 'logging'],
+      ['operations', 'analytics'],
+      ['operations', 'other'],
+    ]);
+  });
+
+  it('leaves the model catalog to Providers → Models, and names it on no tab', () => {
     expect(MODEL_CATALOG_CATEGORY).toBe('models');
     expect([...CATEGORIES_ELSEWHERE]).toEqual(['models']);
     expect(SETTINGS_TABS.map((tab) => tab.key)).not.toContain('models');
@@ -66,42 +110,10 @@ describe('settingsLayout', () => {
     expect(named).not.toContain(MODEL_CATALOG_CATEGORY);
   });
 
-  it('gives RouteWise its own sub-tab, after Providers & Routing', () => {
-    expect(SETTINGS_TABS.map((tab) => tab.key)).toEqual([
-      'common',
-      'access',
-      'providers',
-      'routewise',
-      'application',
-      'batch',
-      'alerts',
-      'setup',
-      'backup',
-    ]);
-    const routewise = SETTINGS_TABS.find((tab) => tab.key === 'routewise');
-    expect(routewise?.label).toBe('RouteWise');
-    expect(routewise?.blocks).toEqual([{ kind: 'panel', panel: 'routewise' }]);
-    expect(settingsTabKey('routewise')).toBe('routewise');
-  });
-
-  it('opens on Common, which holds every runtime setting, and keeps Setup and Backup last', () => {
-    expect(SETTINGS_TABS[0].key).toBe('common');
-    expect(DEFAULT_SETTINGS_TAB).toBe('common');
-    expect(SETTINGS_TABS.slice(-2).map((tab) => tab.key)).toEqual(['setup', 'backup']);
-
-    const groups: RuntimeGroupKey[] = [
-      'access',
-      'concurrency',
-      'quotas',
-      'requests',
-      'logging',
-      'analytics',
-      'other',
-    ];
-    const runtimeBlocks = SETTINGS_TABS.flatMap((tab) =>
-      tab.blocks.flatMap((block) => (block.kind === 'runtime' ? [[tab.key, block.group]] : [])),
-    );
-    expect(runtimeBlocks).toEqual(groups.map((group) => ['common', group]));
+  it('puts the RouteWise panel on Providers & Routing, with its routing config', () => {
+    const providers = SETTINGS_TABS.find((tab) => tab.key === 'providers');
+    expect(providers?.blocks).toContainEqual({ kind: 'panel', panel: 'routewise' });
+    expect(providers?.blocks).toContainEqual({ kind: 'config', category: 'routing' });
   });
 
   it('puts each runtime setting in the group of its topic', () => {
@@ -150,12 +162,10 @@ describe('settingsLayout', () => {
     });
   });
 
-  it('reads a sub-tab from the address, and the default from anything else', () => {
-    expect(settingsTabKey('application')).toBe('application');
+  it('reads a tab from the address, and the default from anything else', () => {
     expect(settingsTabKey('setup')).toBe('setup');
-    // Models is a tab of its own now; the settings page sends such a link there.
-    expect(settingsTabKey('models')).toBe('common');
-    expect(settingsTabKey('nonsense')).toBe('common');
-    expect(settingsTabKey(undefined)).toBe('common');
+    expect(settingsTabKey('operations')).toBe('operations');
+    expect(settingsTabKey('nonsense')).toBe('access');
+    expect(settingsTabKey(undefined)).toBe('access');
   });
 });

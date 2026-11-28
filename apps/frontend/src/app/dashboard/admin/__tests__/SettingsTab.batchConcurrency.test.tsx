@@ -65,10 +65,10 @@ describe('SettingsTab batch concurrency', () => {
     cleanup();
   });
 
-  it('lists the section on the Batch sub-tab and shows update toasts', async () => {
+  it('lists the section on the Operations tab and shows update toasts', async () => {
     const api = await import('@/lib/api/admin');
 
-    await renderSettings('Batch');
+    await renderSettings('Operations');
     expect(
       within(screen.getByRole('tabpanel')).getByRole('region', { name: 'Batch Concurrency' }),
     ).toBeInTheDocument();

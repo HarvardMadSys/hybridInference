@@ -15,13 +15,16 @@ export const EMPTY_CONFIG: ConfigResponse = {
   restart_supported: false,
 };
 
-/** Open a sub-tab of Admin → Settings by its name, once the page shows it. */
+/** Open a tab of Admin → Settings by its name, once the page shows it. */
 export async function openSettingsTab(name: string | RegExp) {
   fireEvent.click(await screen.findByRole('tab', { name }));
 }
 
-/** Render Admin → Settings, then open the sub-tab named `tab`, if any. */
-export async function renderSettings(tab?: string, props: ComponentProps<typeof SettingsTab> = {}) {
+/** Render Admin → Settings, then open the tab named `tab`, if any. */
+export async function renderSettings(
+  tab?: string | RegExp,
+  props: ComponentProps<typeof SettingsTab> = {},
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });

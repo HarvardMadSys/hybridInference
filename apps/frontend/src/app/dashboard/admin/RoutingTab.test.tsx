@@ -20,7 +20,7 @@ describe('RoutingTab', () => {
     expect(screen.getByRole('heading', { level: 2, name: 'Routing' })).toBeInTheDocument();
     expect(screen.getByTestId('provider-routes-tab')).toHaveTextContent('provider routes');
     expect(
-      screen.getByText(/RouteWise parameters are under Settings → RouteWise/),
+      screen.getByText(/RouteWise parameters are under Settings → Providers & Routing/),
     ).toBeInTheDocument();
   });
 });
