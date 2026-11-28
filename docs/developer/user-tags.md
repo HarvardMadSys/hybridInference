@@ -60,6 +60,8 @@ every active account with at least *K* such hours.
 - A request is a row of `api_logs` attributed to the account. Rows written by a
   batch job are left out: the gateway sends batch requests at its own pace,
   whoever is watching.
+- Service accounts are never matched: they are unattended by design. To put a
+  tag's limits on one, add the tag to it by hand.
 - `unattended` defaults to *every one of the last 12 hours* (12 of 12). Use
   *Preview matches* in the editor to see who a different rule would match before
   saving it. For example, *20 of 24* catches fewer heavy human users, and
