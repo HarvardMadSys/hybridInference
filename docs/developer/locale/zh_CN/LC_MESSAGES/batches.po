@@ -1650,10 +1650,11 @@ msgstr ""
 #: ../developer/batches.md:23
 msgid ""
 "You have the most unfinished batches allowed, you created the most "
-"batches allowed in the last hour, the batch would take your unfinished "
+"batches allowed in the last hour (`Retry-After` then gives the seconds "
+"until you may create another), the batch would take your unfinished "
 "requests over their limit, your daily or monthly quota is used up, or the"
 " key has spent its own budget"
-msgstr "你的未完成批次已达上限、你在过去一小时内创建的批次已达上限、该批次会让你的未完成请求超过上限、你的每日或每月额度已用完，或这个 key 已用完它自己的预算"
+msgstr "你的未完成批次已达上限、你在过去一小时内创建的批次已达上限（此时 `Retry-After` 给出距可以再创建一个批次还有多少秒）、该批次会让你的未完成请求超过上限、你的每日或每月额度已用完，或这个 key 已用完它自己的预算"
 
 #: ../developer/batches.md:489
 msgid ""

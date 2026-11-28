@@ -29,6 +29,7 @@ from serving.servers.routers import batches
 from serving.storage.batch_store import (
     TERMINAL_BATCH_STATUSES,
     BatchDeleteInProgress,
+    BatchLimitExceeded,
     BatchOwnerUnavailable,
 )
 
@@ -183,6 +184,14 @@ class FakeBatchStore:
             for row in self.batches.values()
             if row["user_id"] == user_id and row["status"] in ACTIVE
         )
+
+    async def precheck_creates_per_hour(self, user_id: str, max_per_hour: int) -> None:
+        # Every batch here was created within the hour; the oldest frees a slot in 30 minutes.
+        created = sum(1 for row in self.batches.values() if row["user_id"] == user_id)
+        if created >= max_per_hour:
+            raise BatchLimitExceeded(
+                "batches_per_hour", limit=max_per_hour, current=created, retry_after=1799.5
+            )
 
     async def find_idempotent(self, *, owner_id: str, api_surface: str, key: str) -> None:
         return None
@@ -1113,6 +1122,25 @@ async def test_a_caller_at_the_active_batch_limit_gets_429(client, settings, sto
     assert "at most 2" in _message(refused)
     assert others.status_code == 200
     assert after_cancel.status_code == 200
+
+
+async def test_a_caller_over_the_hourly_limit_is_refused_before_the_body_is_read(
+    client, settings, store
+):
+    settings["BATCH_MAX_CREATES_PER_HOUR"] = "1"
+    await _create(client)
+
+    # Not JSON: read and parsed, it would be a 400.
+    refused = await client.post("/v1/batches", content=b"{not json", headers=_auth())
+    others = await client.post("/v1/batches", json=_body(), headers=_auth("key-bob"))
+
+    assert refused.status_code == 429
+    assert refused.headers["Retry-After"] == "1800"
+    assert _message(refused) == (
+        "Too many batches created: at most 1 may be created in an hour; try again in 1800 seconds"
+    )
+    assert others.status_code == 200
+    assert len(store.created) == 2
 
 
 async def test_the_limit_is_checked_again_before_the_insert(client, settings, store, monkeypatch):

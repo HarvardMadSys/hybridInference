@@ -485,7 +485,7 @@ A batch keeps the window and retention it was created with.
 | `409` | The `Idempotency-Key` was already used with a different request |
 | `410` | The `Idempotency-Key`'s batch has been deleted |
 | `413` | The body is larger than the size limit |
-| `429` | You have the most unfinished batches allowed, you created the most batches allowed in the last hour, the batch would take your unfinished requests over their limit, your daily or monthly quota is used up, or the key has spent its own budget |
+| `429` | You have the most unfinished batches allowed, you created the most batches allowed in the last hour (`Retry-After` then gives the seconds until you may create another), the batch would take your unfinished requests over their limit, your daily or monthly quota is used up, or the key has spent its own budget |
 
 A file batch is counted against the limit on unfinished requests while its file is read, after the create call has answered; over the limit, it is `failed` with `queued_request_limit` in `errors`.
 

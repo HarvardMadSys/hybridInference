@@ -540,7 +540,7 @@ async def create_batch(
         # Nothing to replay: refuse a caller who may not create before making
         # them upload the body.
         _may_create(request, user_ctx, config)
-        await admission.precheck_active(store, owner, config)
+        await admission.precheck_caps(store, owner, config)
     elif not may_use_batch(user_ctx.get("role"), config) and not await _key_names_a_batch(
         store, owner, key
     ):
@@ -599,7 +599,7 @@ async def create_batch(
         # Not with an Idempotency-Key: a concurrent create with the same key may
         # have just filled the cap, and the insert transaction answers that
         # with the first create's batch, not a refusal.
-        await admission.precheck_active(store, owner, config)
+        await admission.precheck_caps(store, owner, config)
     common = {
         "batch_id": f"batch_{uuid.uuid4().hex}",
         "user_id": owner,

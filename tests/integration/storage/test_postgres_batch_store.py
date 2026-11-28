@@ -1756,6 +1756,24 @@ async def test_the_hourly_create_cap_counts_batches_however_they_ended(pool, sto
         2,
         2,
     )
+    # A slot frees when the first is an hour old: about an hour from now.
+    assert 3590 < refused.value.retry_after <= 3600
+    # The precheck, without the lock, refuses the same way. With the first 50
+    # minutes old a slot frees in 10; under a lowered cap of 1, only when the
+    # second is an hour old too.
+    await _execute(
+        pool,
+        "UPDATE batch_jobs SET created_at = now() - interval '50 minutes' WHERE id = $1",
+        first["id"],
+    )
+    with pytest.raises(BatchLimitExceeded) as prechecked:
+        await store.precheck_creates_per_hour("alice", 2)
+    assert (prechecked.value.kind, prechecked.value.current) == ("batches_per_hour", 2)
+    assert 590 < prechecked.value.retry_after <= 600
+    with pytest.raises(BatchLimitExceeded) as lowered:
+        await store.precheck_creates_per_hour("alice", 1)
+    assert 3590 < lowered.value.retry_after <= 3600
+    await store.precheck_creates_per_hour("alice", 3)
     # Someone else is not held back, and an hour later the first stops counting.
     await create(user="bob")
     await _execute(
