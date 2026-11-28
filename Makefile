@@ -1,6 +1,6 @@
 # Infrastructure choices persist across every lifecycle command.
 -include .ops.env
-export CLOUD_AGENT_NETWORK PGADMIN_PUBLISH
+export PGADMIN_PUBLISH
 # Exporting an undefined variable supplies an empty value, which would mask a
 # profile selected in a distribution env file or .env before Compose reads it.
 ifneq ($(origin COMPOSE_PROFILES),undefined)
@@ -276,15 +276,6 @@ COMPOSE_FILE_ARGS := -f deploy/docker/docker-compose.yml
 DISTRIBUTION_COMPOSE_FILE := $(if $(DISTRIBUTION_PATH),$(wildcard $(DISTRIBUTION_PATH)/deploy/docker-compose.yml),)
 ifneq ($(DISTRIBUTION_COMPOSE_FILE),)
 COMPOSE_FILE_ARGS += -f $(DISTRIBUTION_COMPOSE_FILE)
-endif
-# Standalone cloud agent on the same host (hybridInference-cloud-agent). Opting
-# in attaches the console to that stack's network so the `/agents` rewrites
-# from #1206 can resolve `web` and `control-plane`; without it they resolve
-# nothing and the console answers 500 for a page it is configured to serve.
-# Off by default because the network is `external` — naming one that does not
-# exist fails every compose command on every other deployment.
-ifeq ($(CLOUD_AGENT_NETWORK),1)
-COMPOSE_FILE_ARGS += -f deploy/docker/docker-compose.cloud-agent.yml
 endif
 # pgAdmin publishes no host port unless asked: the console reaches it on its
 # own network, behind the admin session check, and a host port skips that

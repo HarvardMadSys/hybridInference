@@ -190,8 +190,8 @@ nothing.
 
 Name optional profiles on the command line, which outranks every env file:
 `make up COMPOSE_PROFILES=admin` (a comma-separated list). To keep host-local
-choices (profiles, `CLOUD_AGENT_NETWORK`, `PGADMIN_PUBLISH`) across commands,
-copy `.ops.env.example` to `.ops.env` and uncomment what this host needs.
+choices (profiles, `PGADMIN_PUBLISH`) across commands, copy `.ops.env.example`
+to `.ops.env` and uncomment what this host needs.
 
 ### Diagnostics, deployment and recovery
 
