@@ -3087,9 +3087,9 @@ type RouteCapabilityEdit =
 
 /**
  * The signed-in administrator's confirmation of a route save that sends the
- * provider's stored keys to a host none of its routes uses: the password, or
- * `''` when a code or a fresh single sign-on confirms instead. Sent only once
- * the gateway asks (`ADMIN_CONFIRMATION_REQUIRED`).
+ * provider's stored keys to a host, port or scheme none of its routes uses:
+ * the password, or `''` when a code or a fresh single sign-on confirms
+ * instead. Sent only once the gateway asks (`ADMIN_CONFIRMATION_REQUIRED`).
  */
 interface RouteSaveConfirmation {
   password?: string;

@@ -631,12 +631,16 @@ writes anything, and the audit log records each check as
 `routing.provider_routes.verify`, a failed one too.
 
 A check sends the provider's stored API keys to the route's base URL. Verify
-sends them only to the provider's own host or a host its routes already use.
-A save that would send them to any other host answers `403` with `error_code`
-`ADMIN_CONFIRMATION_REQUIRED` until the body carries the signed-in
-administrator's `password`, or `""` when the account confirms with an
-authenticator code or a fresh single sign-on instead; the console asks for it.
-`ADMIN_TOKEN` cannot confirm, so it cannot point a route at such a host.
+sends them only where they already go: the scheme, host and port of the
+provider's own base URL or of one its routes uses, so plain `http` or another
+port on the provider's host is somewhere else. A save that would send them
+anywhere else answers `403` with `error_code` `ADMIN_CONFIRMATION_REQUIRED`
+until the body carries the signed-in administrator's `password`, or `""` when
+the account confirms with an authenticator code or a fresh single sign-on
+instead; the console asks for it. `ADMIN_TOKEN` cannot confirm, so it cannot
+point a route there. A refused confirmation (the admin token, a wrong password,
+too many attempts) is audited as a failed `routing.provider_routes.verify`,
+without the password; the `403` that only asks is not.
 
 See
 [Runtime configuration from the admin console](configuration.md#runtime-configuration-from-the-admin-console)

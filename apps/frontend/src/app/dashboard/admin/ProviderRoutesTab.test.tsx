@@ -4893,11 +4893,11 @@ describe('ProviderRoutesTab', () => {
 
   describe('a save that would send the keys to a new host', () => {
     const newHost = 'https://keys.elsewhere.example/v1';
-    const prompt = "Send the provider's keys to a new host?";
+    const prompt = "Send the provider's keys to a new address?";
     const asked = () =>
       new APIError(
         'ADMIN_CONFIRMATION_REQUIRED',
-        "Sending the provider's stored API keys to a host none of its routes uses needs your " +
+        "Sending the provider's stored API keys where none of its routes sends them needs your " +
           'confirmation: your password, or the code or single sign-on your account confirms with.',
         403,
       );

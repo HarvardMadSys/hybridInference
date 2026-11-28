@@ -2258,9 +2258,9 @@ class RuntimeModelCapabilities(BaseModel):
 #: What ``password`` is on a route save (see ``provider_routes._verify_for_save``).
 _ROUTE_SAVE_PASSWORD = (
     "The signed-in administrator's confirmation, needed only when the route would send the "
-    "provider's stored API keys to a host none of its routes uses: their password, or an "
-    "empty string when the account confirms with an authenticator code or a fresh single "
-    "sign-on instead. Verify ignores it"
+    "provider's stored API keys to a scheme, host and port none of its routes uses: their "
+    "password, or an empty string when the account confirms with an authenticator code or a "
+    "fresh single sign-on instead. Verify ignores it"
 )
 
 

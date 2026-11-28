@@ -3973,42 +3973,72 @@ async def _verify_provider_route(update: PreparedRouteUpdate | PreparedRouteCand
         raise HTTPException(status_code=400, detail=detail) from exc
 
 
-def _url_host(url: str | None) -> str | None:
-    """The lower-cased host of *url*, without a trailing dot; None when it names none."""
+#: The port a base URL's scheme connects to when it names none.
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+#: Where a request goes: its scheme, lower-cased host and port.
+_Origin = tuple[str, str, int]
+
+
+def _url_origin(url: str | None) -> _Origin | None:
+    """Where *url* sends a request: its scheme, its host and the port it connects to.
+
+    The host is lower-cased, without a trailing dot, and the port is the
+    scheme's own when *url* names none. A URL without a scheme is taken as
+    https, as a saved base URL is (:func:`_normalize_base_url`). None when
+    *url* names no host, a malformed port or another scheme.
+    """
     if not url:
         return None
     try:
-        host = urlparse(url if "://" in url else f"https://{url.lstrip('/')}").hostname
+        parsed = urlparse(url if "://" in url else f"https://{url.lstrip('/')}")
+        port = parsed.port
     except ValueError:
         return None
-    return host.rstrip(".").lower() if host else None
+    default_port = _DEFAULT_PORTS.get(parsed.scheme)
+    if not parsed.hostname or default_port is None:
+        return None
+    return (
+        parsed.scheme,
+        parsed.hostname.rstrip(".").lower(),
+        default_port if port is None else port,
+    )
 
 
-def _hosts_given_keys(prepared: PreparedRouteUpdate | PreparedRouteCandidate) -> set[str]:
-    """The hosts the gateway already sends *prepared*'s keys to.
+def _origin_text(origin: _Origin) -> str:
+    """*origin* as a URL prefix, its port left out when it is the scheme's own."""
+    scheme, host, port = origin
+    shown = f"[{host}]" if ":" in host else host
+    return f"{scheme}://{shown}" if port == _DEFAULT_PORTS[scheme] else f"{scheme}://{shown}:{port}"
 
-    The provider's own host, its default base URL (which a deployment's
-    ``*_BASE_URL`` setting or a custom provider's definition sets), and the host
-    of every live route that draws on the same provider's keys.
+
+def _origins_given_keys(prepared: PreparedRouteUpdate | PreparedRouteCandidate) -> set[_Origin]:
+    """Where the gateway already sends *prepared*'s keys: scheme, host and port.
+
+    The provider's own default base URL (which a deployment's ``*_BASE_URL``
+    setting or a custom provider's definition sets), and the base URL of every
+    live route that draws on the same provider's keys. The scheme and the port
+    count as well as the host: plain http to the provider's host would send the
+    keys unencrypted, and another port on it is another server.
     """
-    hosts = {
-        host
+    origins = {
+        origin
         for url in dynamic_keys.get_registered_base_urls(prepared.key_provider)
-        if (host := _url_host(url)) is not None
+        if (origin := _url_origin(url)) is not None
     }
     try:
-        own_host = _url_host(_target_for_provider(prepared.upstream_provider).default_base_url)
+        own = _url_origin(_target_for_provider(prepared.upstream_provider).default_base_url)
     except HTTPException:
-        own_host = None
-    if own_host is not None:
-        hosts.add(own_host)
-    return hosts
+        own = None
+    if own is not None:
+        origins.add(own)
+    return origins
 
 
 def _keys_go_to(prepared: PreparedRouteUpdate | PreparedRouteCandidate) -> bool:
-    """Whether the gateway already sends *prepared*'s keys to the host of its base URL."""
-    host = _url_host(prepared.base_url)
-    return host is not None and host in _hosts_given_keys(prepared)
+    """Whether the gateway already sends *prepared*'s keys where its base URL points."""
+    origin = _url_origin(prepared.base_url)
+    return origin is not None and origin in _origins_given_keys(prepared)
 
 
 async def _audit_check(
@@ -4079,14 +4109,14 @@ async def _verify_dry_run(
     A check sends the provider's stored key -- the one named, or the provider's
     own -- to the route's base URL. Saving nothing, it left nothing to see, so a
     base URL of anyone's choosing collected the key unnoticed. A check now goes
-    only where those keys already go: the provider's own host, or the host of a
-    live route that sends them. Saving a route elsewhere asks the signed-in
-    administrator to confirm first (:func:`_verify_for_save`), and is audited
-    the same way.
+    only where those keys already go (:func:`_origins_given_keys`): the scheme,
+    host and port of the provider's own base URL, or of a live route that sends
+    them. Saving a route elsewhere asks the signed-in administrator to confirm
+    first (:func:`_verify_for_save`), and is audited the same way.
 
     Raises:
-        HTTPException: 422 for a host the keys do not go to; 400 when the
-            upstream refuses the check.
+        HTTPException: 422 for a scheme, host or port the keys do not go to;
+            400 when the upstream refuses the check.
     """
     if not _keys_go_to(prepared):
         await _audit_check(
@@ -4095,14 +4125,15 @@ async def _verify_dry_run(
             model_id=model_id,
             route_id=route_id,
             prepared=prepared,
-            error="the provider's keys do not go to this host",
+            error="the provider's keys do not go to this scheme, host and port",
         )
+        origin = _url_origin(prepared.base_url)
         raise HTTPException(
             status_code=422,
             detail=f"Verify would send {prepared.key_provider}'s stored API keys to "
-            f"{_url_host(prepared.base_url)}, where no route of that provider sends them. Save "
-            "the route instead: saving asks you to confirm, checks it against the upstream the "
-            "same way, and the audit log records where it points.",
+            f"{_origin_text(origin) if origin else prepared.base_url}, where no route of that "
+            "provider sends them. Save the route instead: saving asks you to confirm, checks it "
+            "against the upstream the same way, and the audit log records where it points.",
         )
     await _audited_check(op_store, actor, model_id=model_id, route_id=route_id, prepared=prepared)
 
@@ -4120,15 +4151,20 @@ async def _verify_for_save(
     """Check the route a save writes against its upstream before anything is saved.
 
     The check sends the provider's stored key to the route's base URL. Where
-    the provider's keys already go (:func:`_hosts_given_keys`) it runs at once,
-    so an ordinary edit is unchanged. Anywhere else the signed-in administrator
-    confirms first (:func:`confirm_administrator`), so neither a copied console
-    session alone nor ``ADMIN_TOKEN``, which has no account to confirm, can
-    point the keys at a host of its choosing. A signed-in administrator who
-    sent no ``password`` is asked for it before any proof is checked, which
-    costs no sign-in attempt; an empty one confirms with an authenticator code
-    or a fresh single sign-on instead. Every check is audited as Verify's
-    (``routing.provider_routes.verify``), a failed one too.
+    the provider's keys already go -- the same scheme, host and port
+    (:func:`_origins_given_keys`) -- it runs at once, so an ordinary edit is
+    unchanged. Anywhere else, plain http or another port on the provider's own
+    host included, the signed-in administrator confirms first
+    (:func:`confirm_administrator`), so neither a copied console session alone
+    nor ``ADMIN_TOKEN``, which has no account to confirm, can point the keys at
+    a server of its choosing. A signed-in administrator who sent no
+    ``password`` is asked for it before any proof is checked, which costs no
+    sign-in attempt; an empty one confirms with an authenticator code or a
+    fresh single sign-on instead. Every check is audited as Verify's
+    (``routing.provider_routes.verify``), a failed one too, and so is a refused
+    confirmation, without the password. Asking for one --
+    ``ADMIN_CONFIRMATION_REQUIRED``, or a code the session owes -- is the
+    console's ordinary way to a confirmed save and is not audited.
 
     Raises:
         AdminConfirmationRequiredError: 403, asking the signed-in administrator
@@ -4140,10 +4176,23 @@ async def _verify_for_save(
     if not _keys_go_to(prepared):
         # No provider name or host in it: the console tells this refusal by its
         # error code, which a message matching another code's words would hide.
-        action = "Sending the provider's stored API keys to a host none of its routes uses"
+        action = "Sending the provider's stored API keys where none of its routes sends them"
         if password is None and get_admin_user_id(request) is not None:
             raise AdminConfirmationRequiredError(action)
-        await confirm_administrator(request, op_store, password or None, action=action)
+        try:
+            await confirm_administrator(request, op_store, password or None, action=action)
+        except HTTPException as exc:
+            # The admin token, a wrong password, too many attempts: nothing was
+            # sent, but the attempt to send the keys somewhere new is on record.
+            await _audit_check(
+                op_store,
+                actor,
+                model_id=model_id,
+                route_id=route_id,
+                prepared=prepared,
+                error=f"the confirmation was refused (HTTP {exc.status_code})",
+            )
+            raise
     await _audited_check(op_store, actor, model_id=model_id, route_id=route_id, prepared=prepared)
 
 

@@ -191,7 +191,8 @@ function routeErrorMessage(err: unknown) {
 
 /**
  * Whether the gateway asks the administrator to confirm a route save: it would
- * send the provider's stored keys to a host none of the provider's routes uses.
+ * send the provider's stored keys to a host, port or scheme none of the
+ * provider's routes uses.
  */
 function asksForConfirmation(err: unknown) {
   return err instanceof APIError && err.code === 'ADMIN_CONFIRMATION_REQUIRED';
@@ -1718,10 +1719,10 @@ export function ProviderRoutesTab() {
   /**
    * Save a route, with `save(password)` making the write. When the gateway asks
    * the administrator to confirm -- the route would send the provider's stored
-   * keys to a host none of its routes uses -- the dialog asks for the password,
-   * or the code or single sign-on the account confirms with, and saves again
-   * with the answer; its failures stay in the dialog. Resolves to why the first
-   * save failed otherwise, as `confirmation.perform` does.
+   * keys to a host, port or scheme none of its routes uses -- the dialog asks
+   * for the password, or the code or single sign-on the account confirms with,
+   * and saves again with the answer; its failures stay in the dialog. Resolves
+   * to why the first save failed otherwise, as `confirmation.perform` does.
    */
   const performRouteSave = async (
     save: (password?: string) => Promise<void>,
@@ -1741,14 +1742,15 @@ export function ProviderRoutesTab() {
     if (!asked) return failure;
     savePassword.current = '';
     confirmation.request({
-      title: "Send the provider's keys to a new host?",
+      title: "Send the provider's keys to a new address?",
       confirmLabel: 'Save route',
       busyLabel: 'Saving…',
       body: (
         <div className="space-y-2">
           <p>
             Saving checks the route at <code className="text-[12px]">{baseUrl}</code>, which sends
-            the provider&apos;s stored API keys to a host none of its routes uses yet.
+            the provider&apos;s stored API keys to a host, port or scheme none of its routes uses
+            yet.
             {confirmsWithoutPassword ? null : ' Confirm with your password.'}
           </p>
           <ReauthPassword valueRef={savePassword} label="Your password" />

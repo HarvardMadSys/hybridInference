@@ -26,6 +26,7 @@ from serving.config.batch_routes import BatchRouteResolver
 from serving.config.route_states import RouteState, RouteStateResolver
 from serving.config.routewise_model_settings import model_routewise_setting_keys
 from serving.config.settings import get_settings
+from serving.exceptions import TwoFactorRequiredError
 from serving.pricing import PricingSchedule, effective_pricing
 from serving.servers.bootstrap import _EffectiveRouteRefreshState, _reload_effective_route_state
 from serving.servers.deps import AppServices, verify_admin_access
@@ -5181,6 +5182,18 @@ async def test_a_save_audits_its_upstream_check_even_when_it_fails(admin_client,
     assert call["details"]["upstream_provider"] == pinned
 
 
+def _refused_confirmations(status_code: int) -> list[dict[str, Any]]:
+    """The audit rows of refused confirmations, checked to be nothing else."""
+    rows = [call.kwargs for call in provider_routes.log_admin_action.await_args_list]
+    for row in rows:
+        assert row["action"] == "routing.provider_routes.verify"
+        assert row["success"] is False
+        assert row["details"]["error"] == f"the confirmation was refused (HTTP {status_code})"
+        assert row["details"]["base_url"] == NEW_HOST_URL
+        assert row["details"]["api_key_id"] == "db-openrouter"
+    return rows
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("save", SAVES)
 async def test_the_admin_token_cannot_send_a_providers_keys_to_a_new_host(admin_client, save):
@@ -5189,7 +5202,7 @@ async def test_the_admin_token_cannot_send_a_providers_keys_to_a_new_host(admin_
 
     responses = [
         await _save(client, save, base_url=NEW_HOST_URL),
-        await _save(client, save, base_url=NEW_HOST_URL, password="anything"),
+        await _save(client, save, base_url=NEW_HOST_URL, password="token-caller-guess-4821"),
     ]
 
     for response in responses:
@@ -5197,7 +5210,10 @@ async def test_the_admin_token_cannot_send_a_providers_keys_to_a_new_host(admin_
         assert "admin token cannot confirm" in response.json()["detail"]
     verify_mock.assert_not_awaited()
     getattr(op_store, SAVE_WRITES[save]).assert_not_awaited()
-    provider_routes.log_admin_action.assert_not_awaited()
+    # Nothing was sent, and each refused attempt is on record, without the password.
+    refused = _refused_confirmations(403)
+    assert len(refused) == 2
+    assert "token-caller-guess-4821" not in repr(refused)
 
 
 @pytest.mark.asyncio
@@ -5207,17 +5223,139 @@ async def test_a_new_host_is_confirmed_before_anything_is_sent(console_admin, sa
     await _prepare_save(client, op_store, save)
 
     asked = await _save(client, save, base_url=NEW_HOST_URL)
-    wrong = await _save(client, save, base_url=NEW_HOST_URL, password="guess")
 
-    # Asked first, with nothing checked: asking costs no sign-in attempt.
+    # Asked first, with nothing checked: asking costs no sign-in attempt and,
+    # being the console's ordinary way to a confirmed save, leaves no audit row.
     assert asked.status_code == 403, asked.text
     assert asked.json()["error_code"] == "ADMIN_CONFIRMATION_REQUIRED"
     assert "the provider's stored API keys" in asked.json()["detail"]
+    provider_routes.log_admin_action.assert_not_awaited()
+
+    wrong = await _save(client, save, base_url=NEW_HOST_URL, password="wrong-guess-7350")
+
     assert wrong.status_code == 400, wrong.text
     assert op_store.get_user_by_id.await_count == 1
     verify_mock.assert_not_awaited()
     getattr(op_store, SAVE_WRITES[save]).assert_not_awaited()
+    # The refused password is on record as a failed check; the password is not.
+    (refused,) = _refused_confirmations(400)
+    assert refused["actor"] == AuditActor.admin("u-admin", "127.0.0.1")
+    assert "wrong-guess-7350" not in repr(refused)
+
+
+@pytest.mark.asyncio
+async def test_a_code_the_session_owes_is_asked_for_and_not_audited(console_admin, monkeypatch):
+    """The console answers a code it owes with its two-factor prompt and saves again."""
+    client, op_store, _route_executor, _fake_routewise, verify_mock = console_admin
+    monkeypatch.setattr(
+        reauthentication,
+        "confirmed_by_two_factor",
+        AsyncMock(side_effect=TwoFactorRequiredError("stale", "Sending the keys")),
+    )
+    await _prepare_save(client, op_store, "add-route")
+
+    response = await _save(client, "add-route", base_url=NEW_HOST_URL, password="")
+
+    assert response.status_code == 403, response.text
+    assert response.json()["error_code"] == "TWO_FACTOR_REQUIRED"
+    verify_mock.assert_not_awaited()
+    op_store.upsert_provider_route_candidate.assert_not_awaited()
     provider_routes.log_admin_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("base_url", "goes_there"),
+    [
+        ("http://openrouter.ai/api/v1", False),
+        ("https://openrouter.ai:8443/api/v1", False),
+        ("https://openrouter.ai:443/api/v1", True),
+    ],
+    ids=["plain-http", "another-port", "the-https-port-spelled-out"],
+)
+async def test_the_providers_host_counts_only_with_its_scheme_and_port(
+    admin_client, base_url, goes_there
+):
+    """The keys go to OpenRouter over https on 443: plain http or another port is somewhere new."""
+    client, op_store, _route_executor, _fake_routewise, verify_mock = admin_client
+    await _prepare_save(client, op_store, "add-route")
+
+    response = await _save(client, "add-route", base_url=base_url)
+
+    if goes_there:
+        assert response.status_code == 200, response.text
+        verify_mock.assert_awaited_once()
+        return
+    # The admin token cannot confirm, so it cannot send the keys there.
+    assert response.status_code == 403, response.text
+    assert "admin token cannot confirm" in response.json()["detail"]
+    verify_mock.assert_not_awaited()
+    op_store.upsert_provider_route_candidate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("base_url", "named"),
+    [
+        ("http://openrouter.ai/api/v1", "http://openrouter.ai"),
+        ("https://openrouter.ai:8443/api/v1", "https://openrouter.ai:8443"),
+    ],
+    ids=["plain-http", "another-port"],
+)
+async def test_verify_refuses_another_scheme_or_port_on_the_providers_host(
+    admin_client, base_url, named
+):
+    client, op_store, _route_executor, _fake_routewise, verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    provider_routes.log_admin_action.reset_mock()
+
+    response = await client.post(
+        "/admin/routing/provider-route-candidate-verifications/minimax-fast",
+        json={
+            "capabilities": RUNTIME_CAPABILITIES,
+            "route_type": "on_demand",
+            **OPENROUTER_PARASAIL_TARGET,
+            "base_url": base_url,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 422, response.text
+    assert f"API keys to {named}, where no route of that provider" in response.json()["detail"]
+    verify_mock.assert_not_awaited()
+    refused = provider_routes.log_admin_action.await_args.kwargs
+    assert refused["success"] is False
+    assert refused["details"]["base_url"] == base_url
+
+
+@pytest.mark.parametrize(
+    ("url", "origin"),
+    [
+        ("https://api.example.com/v1", ("https", "api.example.com", 443)),
+        ("api.example.com/v1", ("https", "api.example.com", 443)),
+        ("HTTP://API.Example.com.:8080/v1", ("http", "api.example.com", 8080)),
+        ("http://gpu-box.lan/v1", ("http", "gpu-box.lan", 80)),
+        ("https://[2001:DB8::1]:8443/v1", ("https", "2001:db8::1", 8443)),
+        ("ftp://api.example.com", None),
+        ("https://api.example.com:99999", None),
+        ("https:///v1", None),
+        ("", None),
+    ],
+)
+def test_url_origin_is_scheme_host_and_effective_port(url, origin):
+    assert provider_routes._url_origin(url) == origin
+
+
+def test_origin_text_leaves_out_only_the_schemes_own_port():
+    assert provider_routes._origin_text(("https", "api.example.com", 443)) == (
+        "https://api.example.com"
+    )
+    assert provider_routes._origin_text(("http", "api.example.com", 443)) == (
+        "http://api.example.com:443"
+    )
+    assert provider_routes._origin_text(("https", "2001:db8::1", 8443)) == (
+        "https://[2001:db8::1]:8443"
+    )
 
 
 @pytest.mark.asyncio
