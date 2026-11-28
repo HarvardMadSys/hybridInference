@@ -691,6 +691,16 @@ make ps
 | `Configuration load failed after 3 attempts`, then `Authentication configuration incomplete` | The backend could not read its settings from the database. Fix the connection; do not add secrets to `.env` |
 | The console shows a configuration error with a retry button | The console could not get a valid `/site-config` from the backend within three seconds. Check the frontend logs and the backend, then retry |
 
+### The backend's memory after large requests
+
+At startup the backend fixes glibc's mmap threshold at 128 KiB, glibc's own
+starting value, and logs `Allocator: glibc mmap threshold fixed at 128 KiB`.
+Without this, the threshold rises with every large request body or reply the
+backend frees, and the process keeps a burst's memory long after the burst
+ends. `serving/servers/allocator.py` has the details. An operator's own
+`MALLOC_MMAP_THRESHOLD_`, or `glibc.malloc.mmap_threshold` in `GLIBC_TUNABLES`,
+takes precedence. With any other C library the backend changes nothing.
+
 ### A monitor or service account is suddenly getting 429s
 
 `Too many authentication failures from this IP. Temporarily blocked.` is the
