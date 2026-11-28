@@ -31,7 +31,7 @@ import { useBulkTurnAverages } from './hooks/useUserTurnAverages';
 import { useBulkAskQuestionFractions } from './hooks/useUserAskQuestionFractions';
 import { useBulkAutomationScores } from './hooks/useUserAutomationScores';
 import { compareByScore } from './lib/automation';
-import { filterStateFromUrl, filterStateToUrl } from './lib/filterTypes';
+import { DEFAULT_FILTER_STATE, filterStateFromUrl, filterStateToUrl } from './lib/filterTypes';
 import { OPEN_USER_PARAM } from './lib/userLink';
 import { getViewById } from './lib/views';
 import { parseHiddenColumns, type ColumnId } from './lib/columns';
@@ -92,9 +92,16 @@ export default function UsersTab() {
 
   const applyFilterState = useCallback(
     (next: FilterState) => {
-      setFilterState(next);
+      // A view saved before tiers existed has no role. Fill every missing key
+      // from the default so the address and the table agree.
+      const normalized: FilterState = {
+        ...DEFAULT_FILTER_STATE,
+        ...next,
+        role: next.role ?? null,
+      };
+      setFilterState(normalized);
       setPage(0);
-      const qs = filterStateToUrl(next, currency);
+      const qs = filterStateToUrl(normalized, currency);
       router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
     },
     [pathname, router, currency],
@@ -396,6 +403,7 @@ export default function UsersTab() {
             onDensityChange={setDensity}
             hiddenColumns={hiddenColumns}
             onHiddenColumnsChange={setHiddenColumns}
+            roleCounts={usersQuery.data?.role_counts}
           />
         </div>
 

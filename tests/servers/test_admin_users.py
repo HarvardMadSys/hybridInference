@@ -238,6 +238,42 @@ async def test_list_users_search_combined_with_status(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_list_users_filters_by_role(admin_client):
+    """GET /admin/users?role=admin lists that tier and still counts every tier."""
+    client, op_store, _log_store, _log = admin_client
+
+    sc = {
+        "all": 4,
+        "pending_approval": 0,
+        "active": 4,
+        "suspended": 0,
+        "rejected": 0,
+        "deleted": 0,
+        "roles": {"free": 1, "pro": 2, "internal": 0, "admin": 1},
+    }
+    op_store.list_users.return_value = (1, [_user_row(role="admin")], sc)
+
+    response = await client.get("/admin/users?role=admin", headers=AUTH)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["users"][0]["role"] == "admin"
+    assert body["role_counts"] == {"free": 1, "pro": 2, "internal": 0, "admin": 1}
+    assert op_store.list_users.await_args.kwargs["role"] == "admin"
+
+
+@pytest.mark.asyncio
+async def test_list_users_rejects_an_unknown_role(admin_client):
+    client, op_store, _log_store, _log = admin_client
+
+    response = await client.get("/admin/users?role=banana", headers=AUTH)
+
+    assert response.status_code == 422
+    op_store.list_users.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_list_users_deleted_count(admin_client):
     """status_counts includes 'deleted' field."""
     client, op_store, _log_store, _log = admin_client

@@ -305,12 +305,22 @@ class StatusCounts(BaseModel):
     deleted: int = 0
 
 
+class RoleCounts(BaseModel):
+    """How many accounts are in each tier (always unfiltered)."""
+
+    free: int = 0
+    pro: int = 0
+    internal: int = 0
+    admin: int = 0
+
+
 class ListUsersResponse(BaseModel):
     """Response payload for listing users."""
 
     total: int
     users: list[UserListItem]
     status_counts: StatusCounts = Field(default_factory=StatusCounts)
+    role_counts: RoleCounts = Field(default_factory=RoleCounts)
 
 
 # ========================================

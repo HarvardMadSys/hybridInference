@@ -95,6 +95,8 @@ export type QuotaStateFilter = 'near' | 'over' | 'custom' | 'default';
 
 export interface FilterState {
   status: UserStatus | null;
+  /** Account tier. Null lists every tier. */
+  role: UserRole | null;
   search: string;
   sortBy: SortBy;
   minCostToday: number | null;

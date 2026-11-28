@@ -65,11 +65,20 @@ interface StatusCounts {
   deleted: number;
 }
 
+export interface UserRoleCounts {
+  free: number;
+  pro: number;
+  internal: number;
+  admin: number;
+}
+
 interface ListUsersResponse {
   currency?: 'USD' | 'CNY';
   total: number;
   users: AdminUser[];
   status_counts: StatusCounts;
+  /** Absent from a gateway that predates the tier filter. */
+  role_counts?: UserRoleCounts;
 }
 
 interface ApproveRejectResponse {
@@ -96,6 +105,8 @@ interface ListUsersOptions {
   includeUsageTotals?: boolean;
   /** Only the users a user tag applies to. */
   tag?: string;
+  /** Only accounts in this tier. */
+  role?: 'free' | 'pro' | 'internal' | 'admin';
 }
 
 export async function listUsers(opts: ListUsersOptions = {}): Promise<ListUsersResponse> {
@@ -118,6 +129,7 @@ export async function listUsers(opts: ListUsersOptions = {}): Promise<ListUsersR
     params.set('include_usage_totals', String(opts.includeUsageTotals));
   }
   if (opts.tag) params.set('tag', opts.tag);
+  if (opts.role) params.set('role', opts.role);
   const resp = await fetchWithAuth(API_BASE, `/admin/users?${params.toString()}`);
   return jsonOrThrow<ListUsersResponse>(resp);
 }

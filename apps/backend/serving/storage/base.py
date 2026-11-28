@@ -563,10 +563,13 @@ class OperationalStore(ABC):
         anomaly: bool | None = None,
         include_usage_totals: bool = True,
         tag: str | None = None,
+        role: str | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Return ``(total_count, user_rows, status_counts_row)``.
 
         *tag* keeps only the users that tag applies to.
+        *role* keeps only accounts in that tier (``free``, ``pro``,
+        ``internal``, ``admin``).
 
         *sort_by* values that reference cost (``cost_today``, ``cost_month``,
         ``cost_alltime``) or usage (``requests``, ``tokens``) require joining
@@ -580,7 +583,8 @@ class OperationalStore(ABC):
         uncomputed metrics are ``None``. Sorting still computes its selected metric.
 
         ``status_counts_row`` is a dict with keys ``all``, ``pending_approval``,
-        ``active``, ``suspended``, ``rejected``, ``deleted``.
+        ``active``, ``suspended``, ``rejected``, ``deleted``, plus ``roles``:
+        unfiltered counts for ``free``, ``pro``, ``internal`` and ``admin``.
 
         Additional kw-only filters (all default to ``None`` — no-op):
         - ``min_cost_today`` / ``min_cost_month``: filter to users whose

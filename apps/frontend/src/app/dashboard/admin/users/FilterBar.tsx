@@ -1,8 +1,11 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import type { UserRoleCounts } from '@/lib/api/admin';
+
 import type { Density, FilterState } from './types';
 import { StatusFilter } from './filters/StatusFilter';
+import { TierFilter } from './filters/TierFilter';
 import { UsageFilter } from './filters/UsageFilter';
 import { ProviderFilter } from './filters/ProviderFilter';
 import { QuotaFilter } from './filters/QuotaFilter';
@@ -23,6 +26,8 @@ interface FilterBarProps {
   onDensityChange: (d: Density) => void;
   hiddenColumns: ColumnId[];
   onHiddenColumnsChange: (hidden: ColumnId[]) => void;
+  /** Unfiltered account counts for each tier. */
+  roleCounts?: UserRoleCounts;
 }
 
 export function FilterBar({
@@ -32,6 +37,7 @@ export function FilterBar({
   onDensityChange,
   hiddenColumns,
   onHiddenColumnsChange,
+  roleCounts,
 }: FilterBarProps) {
   const [searchInput, setSearchInput] = useState(state.search);
   // Keep a ref to the latest state so the debounce callback always merges into
@@ -60,6 +66,11 @@ export function FilterBar({
 
   return (
     <div className="space-y-2">
+      <TierFilter
+        value={state.role}
+        counts={roleCounts}
+        onChange={(role) => onChange({ ...stateRef.current, role })}
+      />
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-[14rem] flex-1">
           <svg
