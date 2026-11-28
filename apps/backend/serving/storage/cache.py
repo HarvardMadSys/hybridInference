@@ -701,6 +701,40 @@ class CachedOperationalStore(OperationalStore):
             is_service_account=is_service_account,
         )
 
+    async def create_service_account(
+        self,
+        *,
+        user_id: str,
+        login_name: str,
+        password_hash: str,
+        user_name: str,
+        role: str,
+        key_hash: str,
+        key_prefix: str,
+        quota_daily_cost_usd: Decimal | float = 1000.0,
+        quota_monthly_cost_usd: Decimal | float | None = None,
+        quota_daily_cost_amount: Decimal | float | None = None,
+        quota_monthly_cost_amount: Decimal | float | None = None,
+        expires_at: datetime | None = None,
+        notes: str | None = None,
+    ) -> Row:
+        """Delegate to wrapped store (a new account has nothing cached to invalidate)."""
+        return await self._store.create_service_account(
+            user_id=user_id,
+            login_name=login_name,
+            password_hash=password_hash,
+            user_name=user_name,
+            role=role,
+            key_hash=key_hash,
+            key_prefix=key_prefix,
+            quota_daily_cost_usd=quota_daily_cost_usd,
+            quota_monthly_cost_usd=quota_monthly_cost_usd,
+            quota_daily_cost_amount=quota_daily_cost_amount,
+            quota_monthly_cost_amount=quota_monthly_cost_amount,
+            expires_at=expires_at,
+            notes=notes,
+        )
+
     async def get_or_create_setup_code(
         self,
         *,

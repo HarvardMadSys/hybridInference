@@ -347,6 +347,37 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def create_service_account(
+        self,
+        *,
+        user_id: str,
+        login_name: str,
+        password_hash: str,
+        user_name: str,
+        role: str,
+        key_hash: str,
+        key_prefix: str,
+        quota_daily_cost_usd: Decimal | float = 1000.0,
+        quota_monthly_cost_usd: Decimal | float | None = None,
+        quota_daily_cost_amount: Decimal | float | None = None,
+        quota_monthly_cost_amount: Decimal | float | None = None,
+        expires_at: datetime | None = None,
+        notes: str | None = None,
+    ) -> Row:
+        """Create an active service account and its first API key in one transaction.
+
+        The account has no email, holds *role*, is flagged
+        ``is_service_account`` and gets its Default project; the key is issued
+        on that project with the given quota, which becomes the account's.
+        Nothing is written unless all of it is. Returns the key row (at least
+        ``id`` and ``created_at``).
+
+        Raises:
+            LoginNameTakenError: Another account holds *login_name*
+                (case-insensitively), including one created concurrently.
+        """
+
+    @abstractmethod
     async def get_or_create_setup_code(
         self,
         *,

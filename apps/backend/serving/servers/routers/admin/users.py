@@ -18,7 +18,7 @@ from serving.auth import sso_accounts
 from serving.auth.two_factor import admin_two_factor_required, has_authenticator
 from serving.config.provider_labels import resolve_display_names
 from serving.config.settings import ROLE_RANK, get_settings
-from serving.exceptions import HardDeleteStateChanged
+from serving.exceptions import HardDeleteStateChanged, LoginNameTakenError
 from serving.model_access import (
     DISABLED_MODELS_PREFERENCE_KEY,
     get_disabled_models_from_preferences,
@@ -602,7 +602,9 @@ async def create_service_account(
     as for key creation).
 
     ``login_name`` is checked like every login name (422); without one it is
-    derived from ``name``. 409 when another account holds it.
+    derived from ``name``. 409 when another account holds it, including one
+    created concurrently. The account and its key are written together or
+    not at all.
 
     Returns the plaintext API key ONLY ONCE. Save it immediately.
 
@@ -635,32 +637,27 @@ async def create_service_account(
     # Nobody knows this password: it exists only so the row satisfies the
     # same shape as a person's, and sign-in refuses service accounts anyway.
     password_hash = await password_utils.hash_password_async(secrets.token_urlsafe(32))
-    await op_store.create_user(
-        user_id=user_id,
-        email=None,
-        password_hash=password_hash,
-        user_name=payload.name.strip(),
-        login_name=login_name,
-        status="active",
-        is_service_account=True,
-    )
-    if payload.role != "free":
-        await op_store.update_user_fields(user_id, role=payload.role)
-
-    project = await op_store.get_default_project(user_id)
     plaintext_key = generate_api_key()
-    await op_store.create_key(
-        key_hash=hash_api_key(plaintext_key),
-        key_prefix=plaintext_key[:12],
-        user_id=user_id,
-        user_name=payload.name.strip(),
-        quota_daily_cost_usd=payload.quota_daily_cost_usd,
-        quota_monthly_cost_usd=payload.quota_monthly_cost_usd,
-        expires_at=payload.expires_at,
-        notes=payload.notes,
-        project_id=project["id"] if project is not None else None,
-        **native_quota_updates(payload),
-    )
+    # The account, its role, its Default project and its key in one
+    # transaction: a failure leaves nothing to block a retry, and of two
+    # concurrent creates of one name the unique index lets one through.
+    try:
+        await op_store.create_service_account(
+            user_id=user_id,
+            login_name=login_name,
+            password_hash=password_hash,
+            user_name=payload.name.strip(),
+            role=payload.role,
+            key_hash=hash_api_key(plaintext_key),
+            key_prefix=plaintext_key[:12],
+            quota_daily_cost_usd=payload.quota_daily_cost_usd,
+            quota_monthly_cost_usd=payload.quota_monthly_cost_usd,
+            expires_at=payload.expires_at,
+            notes=payload.notes,
+            **native_quota_updates(payload),
+        )
+    except LoginNameTakenError as exc:
+        raise HTTPException(409, f"Login name '{login_name}' is already in use") from exc
 
     await log_admin_action(
         op_store,
