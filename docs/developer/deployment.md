@@ -438,7 +438,7 @@ requests anyway, turn on the `log_synthetic_probes` runtime setting.
 
 ## Alerting
 
-The backend sends alerts to one Slack or WeCom (企业微信) group webhook. In the **Alerts** section of **Admin → Settings → Operations**, choose
+The backend sends alerts to one Slack or WeCom (企业微信) group webhook. In the **Alerts** section of **Admin → Settings → Alerts**, choose
 a **Notification channel** and enter its webhook URL; saved URLs are
 write-only. Choose **None** to turn notifications
 off.
@@ -462,7 +462,7 @@ server call an arbitrary address. A saved HTTPS URL may point elsewhere, such as
 a Slack-compatible Mattermost.
 
 Rules and thresholds are the `ALERT_RULES` document, under **Advanced** in
-**Admin → Settings → Site & Setup** (empty means built-in thresholds; changes
+**Admin → Settings → Alerts** (empty means built-in thresholds; changes
 need a restart). Two auth rules have deliberate defaults:
 `rules.auth_failure_spike` is off, because bad keys are background noise, and
 `rules.auth_ip_blocked` is on, because the source the blocklist refuses is
@@ -482,7 +482,7 @@ arrived on. Counts marked `(capped)` are lower bounds.
 
 ### Silencing alerts from the dashboard
 
-**Admin → Settings → Operations** has two controls, neither of which changes
+**Admin → Settings → Alerts** has two controls, neither of which changes
 `ALERT_RULES`. **Alert Notifications** snoozes every alert for up to 24 hours
 (the admin API accepts up to seven days). **Alert Types** mutes one type, such
 as `auth_ip_blocked`, for an hour, a day, a week or until unmuted. Mutes are
@@ -625,7 +625,7 @@ a setting marked **Restart required**.
 
 ### Promoting accounts with `ADMIN_EMAILS`
 
-`ADMIN_EMAILS` (under **Security** in **Admin → Settings → Access & Limits**)
+`ADMIN_EMAILS` (under **Security** in **Admin → Settings → Sign-in & security**)
 makes a listed address an administrator when that account signs in. You do not need it
 for the first administrator.
 
@@ -734,6 +734,16 @@ make ps
 | `The database records no schema version` or `The database is at revision …, behind this code's …` | Run `make migrate` (or [your deployment's step](#applying-schema-migrations)), then start the backend |
 | `Configuration load failed after 3 attempts`, then `Authentication configuration incomplete` | The backend could not read its settings from the database. Fix the connection; do not add secrets to `.env` |
 | The console shows a configuration error with a retry button | The console could not get a valid `/site-config` from the backend within three seconds. Check the frontend logs and the backend, then retry |
+
+### The backend's memory after large requests
+
+At startup the backend fixes glibc's mmap threshold at 128 KiB, glibc's own
+starting value, and logs `Allocator: glibc mmap threshold fixed at 128 KiB`.
+Without this, the threshold rises with every large request body or reply the
+backend frees, and the process keeps a burst's memory long after the burst
+ends. `serving/servers/allocator.py` has the details. An operator's own
+`MALLOC_MMAP_THRESHOLD_`, or `glibc.malloc.mmap_threshold` in `GLIBC_TUNABLES`,
+takes precedence. With any other C library the backend changes nothing.
 
 ### A monitor or service account is suddenly getting 429s
 

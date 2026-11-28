@@ -385,8 +385,8 @@ describe('Admin → Routing → Models', () => {
     expect(await screen.findByText(/This backend lists the model catalog/)).toBeInTheDocument();
     // The link lands on the documents, opening the Advanced they sit under.
     expect(
-      screen.getByRole('link', { name: 'Settings → Site & Setup → Advanced' }),
-    ).toHaveAttribute('href', '/dashboard/admin/settings?tab=setup#config-application');
+      screen.getByRole('link', { name: 'Settings → General → Advanced settings' }),
+    ).toHaveAttribute('href', '/dashboard/admin/settings?tab=general#config-application');
     expect(screen.queryByRole('region', { name: 'Model catalog' })).not.toBeInTheDocument();
   });
 });

@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-11-28 15:39+0000\n"
+"POT-Creation-Date: 2026-11-28 15:47+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -1160,11 +1160,11 @@ msgstr "告警"
 #: ../developer/deployment.md:441
 msgid ""
 "The backend sends alerts to one Slack or WeCom (企业微信) group webhook. In "
-"the **Alerts** section of **Admin → Settings → Operations**, choose a "
+"the **Alerts** section of **Admin → Settings → Alerts**, choose a "
 "**Notification channel** and enter its webhook URL; saved URLs are write-"
 "only. Choose **None** to turn notifications off."
 msgstr ""
-"后端把告警发送到一个 Slack 或企业微信群 webhook。在 **Admin → Settings → Operations** 的 "
+"后端把告警发送到一个 Slack 或企业微信群 webhook。在 **Admin → Settings → Alerts** 的 "
 "**Alerts** 部分选择 **Notification channel** 并填写其 webhook URL；已保存的 URL "
 "只能写入。选择 **None** 可以关闭通知。"
 
@@ -1232,14 +1232,13 @@ msgstr ""
 #: ../developer/deployment.md:464
 msgid ""
 "Rules and thresholds are the `ALERT_RULES` document, under **Advanced** "
-"in **Admin → Settings → Site & Setup** (empty means built-in thresholds; "
+"in **Admin → Settings → Alerts** (empty means built-in thresholds; "
 "changes need a restart). Two auth rules have deliberate defaults: "
 "`rules.auth_failure_spike` is off, because bad keys are background noise,"
 " and `rules.auth_ip_blocked` is on, because the source the blocklist "
 "refuses is sometimes the deployment's own monitor."
 msgstr ""
-"规则和阈值是 `ALERT_RULES` 文档，位于 **Admin → Settings → Site & Setup** 的 "
-"**Advanced** "
+"规则和阈值是 `ALERT_RULES` 文档，位于 **Admin → Settings → Alerts** 的 **Advanced** "
 "下（为空表示使用内置阈值；修改后需要重启）。两条认证规则的默认值是有意为之：`rules.auth_failure_spike` "
 "默认关闭，因为错误的 key 是互联网背景噪声；`rules.auth_ip_blocked` "
 "默认开启，因为被封禁的来源有时正是本部署自己的监控程序。"
@@ -1274,15 +1273,15 @@ msgstr "在仪表盘中静音告警"
 
 #: ../developer/deployment.md:485
 msgid ""
-"**Admin → Settings → Operations** has two controls, neither of which "
-"changes `ALERT_RULES`. **Alert Notifications** snoozes every alert for up"
-" to 24 hours (the admin API accepts up to seven days). **Alert Types** "
-"mutes one type, such as `auth_ip_blocked`, for an hour, a day, a week or "
-"until unmuted. Mutes are stored in the database and reach every process "
-"within seconds. An incident that opens while muted or snoozed closes "
-"without a recovery message; one posted before still gets its recovery."
+"**Admin → Settings → Alerts** has two controls, neither of which changes "
+"`ALERT_RULES`. **Alert Notifications** snoozes every alert for up to 24 "
+"hours (the admin API accepts up to seven days). **Alert Types** mutes one"
+" type, such as `auth_ip_blocked`, for an hour, a day, a week or until "
+"unmuted. Mutes are stored in the database and reach every process within "
+"seconds. An incident that opens while muted or snoozed closes without a "
+"recovery message; one posted before still gets its recovery."
 msgstr ""
-"**Admin → Settings → Operations** 中有两个控件，都不会修改 `ALERT_RULES`。**Alert "
+"**Admin → Settings → Alerts** 中有两个控件，都不会修改 `ALERT_RULES`。**Alert "
 "Notifications** 可以把所有告警暂停最多 24 小时（管理 API 最多接受七天）。**Alert Types** "
 "可以把某一类告警（例如 "
 "`auth_ip_blocked`）静音一小时、一天、一周或直到取消静音。静音保存在数据库中，几秒内就会到达每个进程。在静音或暂停期间开始的事件结束时不会发送恢复消息；之前已发出的事件仍会收到恢复消息。"
@@ -1555,12 +1554,12 @@ msgstr "用 `ADMIN_EMAILS` 提升账号"
 
 #: ../developer/deployment.md:628
 msgid ""
-"`ADMIN_EMAILS` (under **Security** in **Admin → Settings → Access & "
-"Limits**) makes a listed address an administrator when that account signs"
-" in. You do not need it for the first administrator."
+"`ADMIN_EMAILS` (under **Security** in **Admin → Settings → Sign-in & "
+"security**) makes a listed address an administrator when that account "
+"signs in. You do not need it for the first administrator."
 msgstr ""
-"`ADMIN_EMAILS`（位于 **Admin → Settings → Access & Limits** 的 **Security** "
-"下）会在列出的邮箱对应的账号登录时把它设为管理员。创建第一个管理员不需要它。"
+"`ADMIN_EMAILS`（位于 **Admin → Settings → Sign-in & security** 的 "
+"**Security** 下）会在列出的邮箱对应的账号登录时把它设为管理员。创建第一个管理员不需要它。"
 
 #: ../developer/deployment.md:633
 msgid ""
@@ -1855,10 +1854,32 @@ msgid ""
 msgstr "控制台没能在三秒内从后端拿到有效的 `/site-config`。检查前端日志和后端，然后重试"
 
 #: ../developer/deployment.md:738
+msgid "The backend's memory after large requests"
+msgstr "大请求过后后端的内存"
+
+#: ../developer/deployment.md:740
+msgid ""
+"At startup the backend fixes glibc's mmap threshold at 128 KiB, glibc's "
+"own starting value, and logs `Allocator: glibc mmap threshold fixed at "
+"128 KiB`. Without this, the threshold rises with every large request body"
+" or reply the backend frees, and the process keeps a burst's memory long "
+"after the burst ends. `serving/servers/allocator.py` has the details. An "
+"operator's own `MALLOC_MMAP_THRESHOLD_`, or `glibc.malloc.mmap_threshold`"
+" in `GLIBC_TUNABLES`, takes precedence. With any other C library the "
+"backend changes nothing."
+msgstr ""
+"后端启动时会把 glibc 的 mmap 阈值固定在 128 KiB，也就是 glibc 自己的初始值，并记录日志 `Allocator: "
+"glibc mmap threshold fixed at 128 "
+"KiB`。不这样做的话，后端每释放一个大的请求体或回复，阈值就会随之升高，一阵大请求过去很久之后，进程仍占着那批内存。细节见 "
+"`serving/servers/allocator.py`。运维人员自己设置的 `MALLOC_MMAP_THRESHOLD_`，或 "
+"`GLIBC_TUNABLES` 中的 `glibc.malloc.mmap_threshold`，优先生效。换成其他 C "
+"库时，后端不做任何改动。"
+
+#: ../developer/deployment.md:748
 msgid "A monitor or service account is suddenly getting 429s"
 msgstr "监控或服务账号突然开始收到 429"
 
-#: ../developer/deployment.md:740
+#: ../developer/deployment.md:750
 msgid ""
 "`Too many authentication failures from this IP. Temporarily blocked.` is "
 "the gateway's own abuse defense. A source with "
@@ -1871,7 +1892,7 @@ msgstr ""
 "`AUTH_FAILURE_BLOCK_THRESHOLD` 次（默认一天 200 次）的来源会被拒绝 "
 "`AUTH_FAILURE_BLOCK_DURATION_SEC`（一天）。"
 
-#: ../developer/deployment.md:745
+#: ../developer/deployment.md:755
 msgid ""
 "It usually hits a caller you own whose key was rotated or revoked. The "
 "block is checked before the key, so fixing the credential does not lift "
@@ -1886,11 +1907,11 @@ msgstr ""
 "`ip_blocked` 行出现在 **Recent Requests** 中，写明 key "
 "背后的账号及其状态（`revoked`、`expired`、`user_suspended`）。没有用户的行表示未能解析，并不能证明是陌生人。"
 
-#: ../developer/deployment.md:753
+#: ../developer/deployment.md:763
 msgid "Fix the credential, then clear the block:"
 msgstr "修好凭据，然后解除封禁："
 
-#: ../developer/deployment.md:768
+#: ../developer/deployment.md:778
 msgid ""
 "`cleared: false` means nothing was blocked. To exempt a source "
 "permanently, list it in `AUTH_FAILURE_BLOCK_EXEMPT_IPS` (comma-separated "
@@ -1901,11 +1922,11 @@ msgstr ""
 "`AUTH_FAILURE_BLOCK_EXEMPT_IPS`（逗号分隔的地址或 CIDR）。封禁列表保存在每个进程的内存中：重启会清空它，多个 "
 "worker 各自维护一份。"
 
-#: ../developer/deployment.md:773
+#: ../developer/deployment.md:783
 msgid "Resetting the stack"
 msgstr "重置这套服务栈"
 
-#: ../developer/deployment.md:775
+#: ../developer/deployment.md:785
 msgid ""
 "`make down && make up` keeps the data. To start with an empty database, "
 "remove the volume by name. `docker compose down -v` does not remove it, "
@@ -1915,14 +1936,14 @@ msgstr ""
 "`make down && make up` 会保留数据。要从空数据库开始，请按名称删除卷。`docker compose down -v` "
 "不会删除它，因为它被声明为 `external: true`，`make up` 会带着同样的数据回来："
 
-#: ../developer/deployment.md:785
+#: ../developer/deployment.md:795
 msgid ""
 "The backend then starts as a new deployment: new secrets unless `.env` "
 "supplies them, the settings `.env` still holds imported, and a new setup "
 "code."
 msgstr "随后后端会像新部署一样启动：除非 `.env` 提供，否则生成新的密钥，导入 `.env` 中仍有的设置项，并打印新的设置码。"
 
-#: ../developer/deployment.md:789
+#: ../developer/deployment.md:799
 msgid ""
 "`docker volume rm` is irreversible and takes every account, API key, "
 "request log and stored setting with it. Take a `pg_dump` first if any of "
@@ -1931,7 +1952,7 @@ msgstr ""
 "`docker volume rm` 不可逆，所有账号、API key、请求日志和已存储的设置项都会随之删除。只要其中有任何数据还有用，先做一次 "
 "`pg_dump`。"
 
-#: ../developer/deployment.md:793
+#: ../developer/deployment.md:803
 msgid ""
 "pgAdmin's volume is separate; see [Resetting pgAdmin](database.md"
 "#resetting-pgadmin)."

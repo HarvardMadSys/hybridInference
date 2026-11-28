@@ -240,16 +240,8 @@ msgstr ""
 "就会拒绝这项修改；见[记账货币](accounting.md)。"
 
 #: ../developer/distribution-customization.md:72
-msgid ""
-"The document accepts no file paths. Use the `MODEL_CATALOG` setting "
-"(**Admin → Routing → Models**) and the `ROUTING_POLICY`, `ALERT_RULES` "
-"and `SITE_BRANDING` settings (**Admin → Settings → Site & Setup → "
-"Advanced settings → Application**) instead. Router selection belongs to "
-"each model in the catalog."
-msgstr ""
-"该文档不接受文件路径。请改用 `MODEL_CATALOG` 设置项（**Admin → Routing → Models**），以及 "
-"`ROUTING_POLICY`、`ALERT_RULES` 和 `SITE_BRANDING` 设置项（**Admin → Settings →"
-" Site & Setup → Advanced settings → Application**）。router 的选择属于目录中的每个模型。"
+msgid "The document accepts no file paths. Use the `MODEL_CATALOG` setting (**Admin → Routing → Models**) and the `ROUTING_POLICY`, `ALERT_RULES` and `SITE_BRANDING` settings (under **Advanced settings** on the **Routing**, **Alerts** and **General** tabs of **Admin → Settings**) instead. Router selection belongs to each model in the catalog."
+msgstr "该文档不接受文件路径。请改用 `MODEL_CATALOG` 设置项（**Admin → Routing → Models**），以及 `ROUTING_POLICY`、`ALERT_RULES` 和 `SITE_BRANDING` 设置项（位于 **Admin → Settings** 中 **Routing**、**Alerts** 和 **General** 标签页的 **Advanced settings** 下）。router 的选择属于目录中的每个模型。"
 
 #: ../developer/distribution-customization.md:78
 msgid "Activating a manifest"

@@ -197,7 +197,7 @@ Binding to `0.0.0.0` can expose an unauthenticated model server to your LAN, so
 restrict the port with a host firewall, or bind a private interface Docker can
 reach.
 
-In the Admin Console, open **Settings**, then **Providers & Routing**, and set
+In the Admin Console, open **Settings**, then **Providers**, and set
 these three settings under **Providers**:
 
 | Setting | Value |

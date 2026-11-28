@@ -264,7 +264,7 @@ export function ModelQueueTab() {
             prefetch={false}
             className="underline"
           >
-            Settings → Providers & Routing → Advanced
+            Settings → Providers → Advanced settings
           </Link>{' '}
           to the queue status address of an on-demand model host, such as an HPC cluster’s on-demand
           proxy, and this page shows its jobs and the batch requests waiting for them.

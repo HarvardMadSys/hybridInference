@@ -52,7 +52,7 @@ function routewiseModels(byModel: Map<string, ProviderRoute[]>): string[] {
 }
 
 /**
- * Admin → Settings → Providers & Routing, under Advanced: the RouteWise
+ * Admin → Settings → Routing, under Advanced: the RouteWise
  * parameters and probes of one model, split out of Admin → Routing. Only
  * models whose routing policy is RouteWise are offered; the routes, their
  * limits and the policy stay on Routing, and the RouteWise decisions stay

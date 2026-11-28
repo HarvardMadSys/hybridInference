@@ -15,7 +15,6 @@ import {
   AdminEmptyState,
   AdminLoading,
   AdminNotice,
-  AdminSubTabs,
 } from '@/components/features/admin/AdminPrimitives';
 import { BUTTON_GHOST, BUTTON_SECONDARY } from '@/components/features/admin/adminStyles';
 import {
@@ -39,19 +38,25 @@ import { UsageInsightsSettingsSection } from './UsageInsightsSettingsSection';
 import { BatchConcurrencySection } from './BatchConcurrencySection';
 import { RoutewiseSettingsSection } from './RoutewiseSettingsSection';
 import { RuntimeSettingsSection } from './RuntimeSettingsSection';
+import { SettingsNav } from './SettingsNav';
+import { SettingsOverview } from './SettingsOverview';
 import { SignupPolicySection } from './SignupPolicySection';
+import { configLabel } from './configLabels';
+import { overviewItems } from './settingsOverview';
 import { useLeaveGuard } from './useLeaveGuard';
 import {
-  ADVANCED_SECTIONS,
   CATEGORIES_ELSEWHERE,
   DEFAULT_SETTINGS_TAB,
   RUNTIME_GROUPS,
+  SECTION_DESCRIPTIONS,
+  SETTINGS_GROUPS,
+  SETTINGS_SECTIONS,
   SETTINGS_TABS,
   blocksOf,
   isNamedCategory,
   runtimeGroupOf,
   sectionOfBlock,
-  tabOfCategory,
+  tabOfSection,
   type RuntimeGroupKey,
   type SettingsBlock,
   type SettingsPanelKey,
@@ -65,6 +70,11 @@ const tabId = (key: SettingsTabKey) => `admin-settings-${key}-tab`;
 const panelId = (key: SettingsTabKey) => `admin-settings-${key}-panel`;
 /** The sections under a tab's Advanced, which its toggle opens. */
 const advancedId = (key: SettingsTabKey) => `admin-settings-${key}-advanced`;
+
+/** The label of each heading of the navigation. */
+const GROUP_LABELS: ReadonlyMap<string, string> = new Map(
+  SETTINGS_GROUPS.map((group) => [group.key, group.label]),
+);
 
 /** The key of a section, unique on the page. */
 function blockKey(block: SettingsBlock): string {
@@ -108,28 +118,30 @@ function anchorTarget(hash: string): HTMLElement | null {
   );
 }
 
-/** What a tab shows beside its name: unsaved changes, and missing settings. */
-function TabMeta({ dirty, missing }: { dirty: number; missing: number }) {
+/** Unsaved changes and missing settings on a tab. */
+interface TabCounts {
+  dirty: number;
+  missing: number;
+}
+
+/** What a tab shows beside its name, for the eye: an unsaved-changes dot, and how many settings are missing. */
+function TabMeta({ dirty, missing }: TabCounts) {
   if (dirty === 0 && missing === 0) return null;
   return (
     <span className="flex shrink-0 items-center gap-1.5">
-      {dirty > 0 ? (
-        <span className="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden="true" />
-      ) : null}
+      {dirty > 0 ? <span className="h-1.5 w-1.5 rounded-full bg-amber-500" /> : null}
       {missing > 0 ? (
-        <span
-          className="rounded bg-red-50 px-1 text-[11px] font-medium tabular-nums text-red-700"
-          aria-hidden="true"
-        >
+        <span className="rounded bg-red-50 px-1 text-[11px] font-medium tabular-nums text-red-700">
           {missing}
         </span>
       ) : null}
-      {/* One phrase, so the tab's name reads "Access, unsaved changes, 1 missing". */}
-      <span className="sr-only">
-        {`${dirty > 0 ? ', unsaved changes' : ''}${missing > 0 ? `, ${missing} missing` : ''}`}
-      </span>
     </span>
   );
+}
+
+/** The same in words, after the tab's name: "Sign-up, unsaved changes, 1 missing". */
+function tabStatus({ dirty, missing }: TabCounts): string {
+  return `${dirty > 0 ? ', unsaved changes' : ''}${missing > 0 ? `, ${missing} missing` : ''}`;
 }
 
 /**
@@ -184,14 +196,15 @@ function runtimeMatchesQuery(setting: RuntimeSettingItem, query: string): boolea
 
 /**
  * Admin → Settings: every setting an administrator changes in the console but
- * the model configuration, which is on Admin → Routing → Models. Four task
- * tabs (see `settingsLayout`): Access & Limits, Providers & Routing,
- * Operations, and Site & Setup. Each tab holds its whole topic together —
- * the database-backed configuration, the runtime settings, and the sections
- * with an API of their own — so one change never needs two tabs. It opens on
- * what is commonly changed; its tuning waits under Advanced, at its bottom,
- * collapsed until it is opened, a search finds something in it, or a link
- * names a section or setting in it.
+ * the model configuration, which is on Admin → Routing → Models. An Overview
+ * leads one tab per topic (see `settingsLayout`), listed beside them under the
+ * headings Access, Inference, Monitoring and Deployment. Each tab holds its
+ * whole topic together — the database-backed configuration, the runtime
+ * settings, and the sections with an API of their own — so one change never
+ * needs two tabs. It opens on what is commonly changed; its tuning waits under
+ * Advanced, at its bottom, collapsed until it is opened, a search finds
+ * something in it, or a link names a section or setting in it. A built-in
+ * setting is shown under a plain name, with its variable's name beside it.
  *
  * Every tab stays mounted while another is shown, so a change waits
  * unsaved, wherever it was made, until it is saved or discarded. So does every
@@ -213,11 +226,13 @@ export function SettingsTab({
   const router = useRouter();
   const pathname = usePathname();
   // The model catalog is on Routing → Models: not listed here, nor found by a
-  // search. A category's tuning settings are a section of their own, under Advanced.
+  // search. A category's tuning settings are a section of their own, under
+  // Advanced, and each document is on the tab it configures.
   const editor = useConfigurationEditor({
     initialMissingOnly,
     excludeCategories: CATEGORIES_ELSEWHERE,
-    sections: ADVANCED_SECTIONS,
+    sections: SETTINGS_SECTIONS,
+    labelOf: configLabel,
   });
   // One confirmation for the page's confirmed writes, so only one is ever asked for.
   const confirmation = useConfirmAction();
@@ -228,13 +243,19 @@ export function SettingsTab({
   );
   const [toast, setToast] = useState<string | null>(null);
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The tabs and their panels, whose top a tab chosen far down the page opens at.
+  const contentRef = useRef<HTMLDivElement>(null);
 
   const [runtimeSettings, setRuntimeSettings] = useState<RuntimeSettingItem[]>([]);
   const [runtimeLoading, setRuntimeLoading] = useState(true);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [quotaLoadingRole, setQuotaLoadingRole] = useState<Role | null>(null);
   const anchorHandled = useRef(false);
-  // Bumped when the address's `#hash` changes on this page, to follow it too.
+  // A section the page itself was asked to show (an Overview link), in place
+  // of the address's `#hash`, until the link has been followed.
+  const requestedAnchor = useRef<string | null>(null);
+  // Bumped when the address's `#hash` changes on this page, or the page asks
+  // for a section, to follow it too.
   const [anchorRequests, setAnchorRequests] = useState(0);
 
   const openAdvanced = useCallback(
@@ -254,6 +275,7 @@ export function SettingsTab({
   useEffect(() => {
     const followHash = () => {
       anchorHandled.current = false;
+      requestedAnchor.current = null;
       setAnchorRequests((count) => count + 1);
     };
     window.addEventListener('hashchange', followHash);
@@ -264,9 +286,14 @@ export function SettingsTab({
     // Next's initial hash scroll can run before the sections exist. Wait for
     // both reads so the runtime sections above the target have their full height.
     if (!editor.settled || runtimeLoading || anchorHandled.current) return;
-    const target = anchorTarget(window.location.hash.slice(1));
-    if (!target) {
+    const hash = requestedAnchor.current ?? window.location.hash.slice(1);
+    const finish = () => {
       anchorHandled.current = true;
+      requestedAnchor.current = null;
+    };
+    const target = anchorTarget(hash);
+    if (!target) {
+      finish();
       return;
     }
     if (target.closest('[hidden]')) {
@@ -275,21 +302,21 @@ export function SettingsTab({
       // then scrolls once the section is shown. While a filter is on, a
       // hidden section stays hidden — there is nowhere to land.
       if (editor.filtering) {
-        anchorHandled.current = true;
+        finish();
         return;
       }
       const key = target.closest<HTMLElement>('[data-settings-tab]')?.dataset.settingsTab;
       const owner = SETTINGS_TABS.find((tab) => tab.key === key);
       if (!owner) {
-        anchorHandled.current = true;
+        finish();
         return;
       }
       if (owner.key !== activeTab) {
         setActiveTab(owner.key);
         router.replace(
           owner.key === DEFAULT_SETTINGS_TAB
-            ? `${pathname}${window.location.hash}`
-            : `${pathname}?tab=${owner.key}${window.location.hash}`,
+            ? `${pathname}#${hash}`
+            : `${pathname}?tab=${owner.key}#${hash}`,
           { scroll: false },
         );
         return;
@@ -298,10 +325,10 @@ export function SettingsTab({
         openAdvanced(owner.key);
         return;
       }
-      anchorHandled.current = true;
+      finish();
       return;
     }
-    anchorHandled.current = true;
+    finish();
     target.scrollIntoView({ block: 'start' });
   }, [
     editor.settled,
@@ -431,72 +458,7 @@ export function SettingsTab({
     });
   };
 
-  if (!editor.settled) {
-    return (
-      <div className="mt-6">
-        <AdminLoading />
-      </div>
-    );
-  }
-
   const { filtering } = editor;
-  // Without the configuration (an older backend), a tab that only edits it has nothing to show.
-  const tabs = SETTINGS_TABS.filter(
-    (tab) => editor.config !== null || blocksOf(tab).some((block) => !needsConfiguration(block)),
-  );
-  const currentTab = tabs.some((tab) => tab.key === activeTab) ? activeTab : tabs[0].key;
-
-  const selectTab = (key: SettingsTabKey) => {
-    setActiveTab(key);
-    router.replace(key === DEFAULT_SETTINGS_TAB ? pathname : `${pathname}?tab=${key}`, {
-      scroll: false,
-    });
-  };
-
-  const clearFilters = () => {
-    editor.setQuery('');
-    editor.setMissingOnly(false);
-    // Drops a `?missing=1` the page was opened with, so a reload does not filter again.
-    selectTab(currentTab);
-  };
-
-  const tabMeta = (tab: SettingsTabDefinition) => {
-    const groups = editor.groups.filter((group) => tabOfCategory(categoryOf(group)) === tab.key);
-    const unsavedElsewhere = blocksOf(tab).reduce(
-      (total, block) =>
-        block.kind === 'runtime' || block.kind === 'panel'
-          ? total + (unsavedBySection[blockKey(block)] ?? 0)
-          : total,
-      0,
-    );
-    return (
-      <TabMeta
-        dirty={
-          groups.reduce((total, group) => total + editor.dirtyCount(group), 0) + unsavedElsewhere
-        }
-        missing={groups.reduce(
-          (total, group) => total + group.entries.filter((entry) => entry.missing).length,
-          0,
-        )}
-      />
-    );
-  };
-
-  const renderQuotaApply = (setting: RuntimeSettingItem, unsaved: boolean) =>
-    setting.key.startsWith(QUOTA_KEY_PREFIX) ? (
-      <button
-        type="button"
-        onClick={() => void onClickApply(setting.key.slice(QUOTA_KEY_PREFIX.length) as Role)}
-        // It applies the saved quota, not the one being typed.
-        disabled={unsaved || quotaLoadingRole !== null || confirmation.busy}
-        title={unsaved ? 'Save or discard the new quota first' : undefined}
-        className={BUTTON_SECONDARY}
-      >
-        {quotaLoadingRole === setting.key.slice(QUOTA_KEY_PREFIX.length)
-          ? 'Loading...'
-          : 'Apply to existing users'}
-      </button>
-    ) : null;
 
   // While searching, the runtime settings that match join the configuration
   // results; under Missing only they never match (nothing runtime is missing).
@@ -531,6 +493,103 @@ export function SettingsTab({
         return editor.config !== null || !needsConfiguration(block);
     }
   };
+
+  // A tab with nothing to show on this gateway is not listed: Other until a
+  // later backend brings something for it, a configuration tab while an older
+  // backend has no configuration to read. The tab the address names stays
+  // listed while the runtime settings it may hold are on their way.
+  const tabs = SETTINGS_TABS.filter(
+    (tab) => blocksOf(tab).some(hasContent) || (runtimeLoading && tab.key === activeTab),
+  );
+  const currentTab = tabs.some((tab) => tab.key === activeTab) ? activeTab : tabs[0].key;
+
+  // Once both reads have answered, a tab the address names that this gateway
+  // does not list opens the Overview, and the address says so.
+  const unlisted =
+    editor.settled && !runtimeLoading && !filtering && !tabs.some((tab) => tab.key === activeTab);
+  useEffect(() => {
+    if (!unlisted) return;
+    setActiveTab(DEFAULT_SETTINGS_TAB);
+    router.replace(`${pathname}${window.location.hash}`, { scroll: false });
+  }, [unlisted, pathname, router]);
+
+  if (!editor.settled) {
+    return (
+      <div className="mt-6">
+        <AdminLoading />
+      </div>
+    );
+  }
+
+  /** Show a tab, and say so in the address: with `hash`, at the section it names. */
+  const selectTab = (key: SettingsTabKey, hash?: string) => {
+    setActiveTab(key);
+    const address = key === DEFAULT_SETTINGS_TAB ? pathname : `${pathname}?tab=${key}`;
+    router.replace(hash ? `${address}#${hash}` : address, { scroll: false });
+    // A tab chosen far down a long one opens at its top, not partway down it.
+    const content = contentRef.current;
+    if (!hash && content && content.getBoundingClientRect().top < 0) {
+      content.scrollIntoView?.({ block: 'start' });
+    }
+  };
+
+  /**
+   * Open a tab, and the section `hash` names on it, as a link to it would: the
+   * address keeps the hash, and the page's link handling opens the section's
+   * Advanced, if it is under one, and scrolls to it.
+   */
+  const openTab = (key: SettingsTabKey, hash?: string) => {
+    selectTab(key, hash);
+    if (!hash) return;
+    requestedAnchor.current = hash;
+    anchorHandled.current = false;
+    setAnchorRequests((count) => count + 1);
+  };
+
+  const clearFilters = () => {
+    editor.setQuery('');
+    editor.setMissingOnly(false);
+    // Drops a `?missing=1` the page was opened with, so a reload does not filter again.
+    selectTab(currentTab);
+  };
+
+  /** A tab's unsaved changes and missing settings, wherever on it they are. */
+  const tabCounts = (tab: SettingsTabDefinition): TabCounts => {
+    const groups = editor.groups.filter(
+      (group) => tabOfSection(group.id, categoryOf(group)) === tab.key,
+    );
+    const unsavedElsewhere = blocksOf(tab).reduce(
+      (total, block) =>
+        block.kind === 'runtime' || block.kind === 'panel'
+          ? total + (unsavedBySection[blockKey(block)] ?? 0)
+          : total,
+      0,
+    );
+    return {
+      dirty:
+        groups.reduce((total, group) => total + editor.dirtyCount(group), 0) + unsavedElsewhere,
+      missing: groups.reduce(
+        (total, group) => total + group.entries.filter((entry) => entry.missing).length,
+        0,
+      ),
+    };
+  };
+
+  const renderQuotaApply = (setting: RuntimeSettingItem, unsaved: boolean) =>
+    setting.key.startsWith(QUOTA_KEY_PREFIX) ? (
+      <button
+        type="button"
+        onClick={() => void onClickApply(setting.key.slice(QUOTA_KEY_PREFIX.length) as Role)}
+        // It applies the saved quota, not the one being typed.
+        disabled={unsaved || quotaLoadingRole !== null || confirmation.busy}
+        title={unsaved ? 'Save or discard the new quota first' : undefined}
+        className={BUTTON_SECONDARY}
+      >
+        {quotaLoadingRole === setting.key.slice(QUOTA_KEY_PREFIX.length)
+          ? 'Loading...'
+          : 'Apply to existing users'}
+      </button>
+    ) : null;
 
   /** Whether a filter leaves anything of a section. A section with its own API it hides. */
   const matchesFilter = (block: SettingsBlock): boolean => {
@@ -606,6 +665,16 @@ export function SettingsTab({
   const panelSection = (panel: SettingsPanelKey, onScreen: boolean) => {
     const onUnsavedChange = reportUnsaved(`panel-${panel}`);
     switch (panel) {
+      case 'overview':
+        return (
+          <SettingsOverview
+            items={overviewItems(editor.config?.entries ?? null, runtimeSettings)}
+            shortcuts={tabs
+              .filter((tab) => tab.key !== 'overview')
+              .map((tab) => ({ key: tab.key, label: tab.label, description: tab.description }))}
+            onOpen={openTab}
+          />
+        );
       case 'usage-insights':
         return (
           <UsageInsightsSettingsSection onToast={flashToast} onUnsavedChange={onUnsavedChange} />
@@ -656,6 +725,7 @@ export function SettingsTab({
             editor={editor}
             categoryId={sectionOfBlock(block)}
             tag={tag}
+            description={SECTION_DESCRIPTIONS[sectionOfBlock(block)]}
           />
         );
         break;
@@ -801,20 +871,7 @@ export function SettingsTab({
             Clear filters
           </button>
         </div>
-      ) : (
-        <AdminSubTabs
-          label="Settings sections"
-          tabs={tabs.map((tab) => ({
-            key: tab.key,
-            label: tab.label,
-            tabId: tabId(tab.key),
-            panelId: panelId(tab.key),
-            meta: tabMeta(tab),
-          }))}
-          active={currentTab}
-          onSelect={selectTab}
-        />
-      )}
+      ) : null}
 
       {/* Feedback for the sections on every tab. The live region is
           always there (so a screen reader announces each message) and takes
@@ -844,33 +901,67 @@ export function SettingsTab({
         />
       ) : null}
 
-      {/* No display class on an element that takes `hidden`: one would override it. */}
-      <div className="flex flex-col gap-8">
-        {tabs.map((tab) => {
-          const shown = filtering ? blocksOf(tab).some(matchesFilter) : tab.key === currentTab;
-          return (
-            <div
-              key={tab.key}
-              id={panelId(tab.key)}
-              data-settings-tab={tab.key}
-              role={filtering ? undefined : 'tabpanel'}
-              aria-labelledby={filtering ? undefined : tabId(tab.key)}
-              hidden={!shown}
-            >
-              {/* While a filter lists every tab's categories, each is tagged instead. */}
-              {tab.description && !filtering ? (
-                <p className="mb-6 max-w-3xl text-[12px] leading-relaxed text-gray-500">
-                  {tab.description}
-                </p>
-              ) : null}
-              {/* A section with nothing to show leaves an empty wrapper: no gap for it. */}
-              <div className="flex flex-col gap-8 [&>div:empty]:hidden">
-                {tab.blocks.map((block) => renderBlock(tab, block, null))}
-                {renderAdvanced(tab)}
+      {/* The tabs beside their panels on a wide screen, above them on a narrow
+          one; while a filter lists every tab's sections, the panels alone. */}
+      <div
+        ref={contentRef}
+        className={`scroll-mt-4 ${filtering ? '' : 'lg:grid lg:grid-cols-[12.5rem_minmax(0,1fr)] lg:gap-8'}`}
+      >
+        {filtering ? null : (
+          <div className="mb-6 lg:sticky lg:top-4 lg:mb-0 lg:max-h-[calc(100vh-2rem)] lg:self-start lg:overflow-y-auto">
+            <SettingsNav
+              label="Settings sections"
+              tabs={tabs.map((tab) => {
+                const counts = tabCounts(tab);
+                return {
+                  key: tab.key,
+                  label: tab.label,
+                  group: tab.group ? GROUP_LABELS.get(tab.group) : undefined,
+                  tabId: tabId(tab.key),
+                  panelId: panelId(tab.key),
+                  meta: counts.dirty || counts.missing ? <TabMeta {...counts} /> : undefined,
+                  status: tabStatus(counts),
+                };
+              })}
+              active={currentTab}
+              onSelect={selectTab}
+            />
+          </div>
+        )}
+
+        {/* No display class on an element that takes `hidden`: one would override it. */}
+        <div className="flex min-w-0 flex-col gap-8">
+          {tabs.map((tab) => {
+            const shown = filtering ? blocksOf(tab).some(matchesFilter) : tab.key === currentTab;
+            return (
+              <div
+                key={tab.key}
+                id={panelId(tab.key)}
+                data-settings-tab={tab.key}
+                role={filtering ? undefined : 'tabpanel'}
+                aria-labelledby={filtering ? undefined : tabId(tab.key)}
+                hidden={!shown}
+              >
+                {/* While a filter lists every tab's sections, each is tagged instead. */}
+                {filtering ? null : (
+                  <div className="mb-6">
+                    <p className="text-[16px] font-semibold tracking-tight text-gray-900">
+                      {tab.label}
+                    </p>
+                    <p className="mt-1 max-w-3xl text-[12px] leading-relaxed text-gray-500">
+                      {tab.description}
+                    </p>
+                  </div>
+                )}
+                {/* A section with nothing to show leaves an empty wrapper: no gap for it. */}
+                <div className="flex flex-col gap-8 [&>div:empty]:hidden">
+                  {tab.blocks.map((block) => renderBlock(tab, block, null))}
+                  {renderAdvanced(tab)}
+                </div>
               </div>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
 
       {confirmation.dialog}

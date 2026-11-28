@@ -148,7 +148,7 @@ Settings to review on a new deployment:
 |---|---|
 | `BASE_URL` | This gateway's public origin, used in signup and password-reset links. Set it behind a TLS proxy: the server ignores `X-Forwarded-*`, so a blank value builds `http://…` links |
 | `FRONTEND_URL` | Console URL your users click in emails |
-| `USER_AUTH_ENABLED` | `1` (default) requires an API key for inference; `0` allows anonymous inference but keeps account and admin sign-in. A runtime switch in **Admin → Settings → Access & Limits** |
+| `USER_AUTH_ENABLED` | `1` (default) requires an API key for inference; `0` allows anonymous inference but keeps account and admin sign-in. A runtime switch in **Admin → Settings → Sign-in & security** |
 | `DB_STORE_FULL_CONTENT` | `false` (default) stores no prompts or responses; see [Request logging and privacy](database.md#request-logging-and-privacy) |
 | `TRUST_PROXY_HEADERS` and the other proxy settings | Which proxies may report client addresses; see [Trusted Proxies and Client IPs](trusted-proxies-and-client-ips.md) |
 | `ADMIN_TOKEN` | Optional legacy bearer token for `/admin/*`; blank disables it |
@@ -179,7 +179,7 @@ literal.
 }
 ```
 
-**Admin → Settings → Providers & Routing** lists every variable the model
+**Admin → Settings → Providers** lists every variable the model
 catalog names, marks the ones a model needs, and stores their values; **Add
 variable** adds a name it does not list yet. Restart the backend after changing
 one. A provider key whose description mentions numbered extras, such as

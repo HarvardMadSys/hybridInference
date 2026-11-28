@@ -10,14 +10,14 @@ function open(params: { tab?: string; missing?: string }) {
 
 describe('the Admin → Settings address', () => {
   it('opens on the tab and the filter a link names', async () => {
-    const page = await open({ tab: 'operations', missing: '1' });
+    const page = await open({ tab: 'alerts', missing: '1' });
 
-    expect(page.props).toEqual({ initialTab: 'operations', initialMissingOnly: true });
+    expect(page.props).toEqual({ initialTab: 'alerts', initialMissingOnly: true });
   });
 
   it('opens on the default tab for anything else', async () => {
     const page = await open({ tab: 'nonsense' });
 
-    expect(page.props).toEqual({ initialTab: 'access', initialMissingOnly: false });
+    expect(page.props).toEqual({ initialTab: 'overview', initialMissingOnly: false });
   });
 });

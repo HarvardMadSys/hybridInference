@@ -859,16 +859,19 @@ def parse_vllm_prom(body: str) -> dict[str, Any]:
             break
     hits = prom_sum_any(samples, "vllm:prefix_cache_hits_total", "vllm:prefix_cache_hits")
     queries = prom_sum_any(samples, "vllm:prefix_cache_queries_total", "vllm:prefix_cache_queries")
-    cache_hit = round(hits / queries, 4) if hits is not None and queries else None
     token_usage = prom_gauge_any(samples, "vllm:kv_cache_usage_perc", "vllm:gpu_cache_usage_perc")
-    requests_total = prom_sum_any(samples, "vllm:request_success_total")
-    if requests_total is None:
-        requests_total = prom_gauge(samples, "vllm:e2e_request_latency_seconds_count")
+    requests_total = prom_sum_any(
+        samples, "vllm:request_success_total", "vllm:e2e_request_latency_seconds_count"
+    )
     cached_tokens = prom_sum_any(samples, "vllm:prompt_tokens_cached_total")
     if cached_tokens is None:
         cached_tokens = prom_sum_label(
             samples, "vllm:prompt_tokens_by_source_total", "source", "local_cache_hit"
         )
+    # Counters are summed over their series, as cached_tokens is: a
+    # data-parallel server has one per engine, and the uncached rate takes the
+    # cached counter from the prompt one.
+    generated = prom_sum_any(samples, "vllm:generation_tokens_total")
     # The KV pool size is a LABEL on cache_config_info, not a series.
     max_total = prom_info_label(samples, "vllm:cache_config_info", "kv_cache_size_tokens")
     # token_usage is a 0-1 fraction; sglang reports the absolute figure too.
@@ -886,10 +889,17 @@ def parse_vllm_prom(body: str) -> dict[str, Any]:
         "num_running_reqs": prom_gauge(samples, "vllm:num_requests_running"),
         "num_queue_reqs": prom_gauge(samples, "vllm:num_requests_waiting"),
         "token_usage": token_usage,
-        "prompt_tokens_total": prom_gauge(samples, "vllm:prompt_tokens_total"),
-        "generation_tokens_total": prom_gauge(samples, "vllm:generation_tokens_total"),
+        "prompt_tokens_total": prom_sum_any(samples, "vllm:prompt_tokens_total"),
+        "generation_tokens_total": generated,
         "requests_total": requests_total,
         "cached_tokens_total": cached_tokens,
+        # vLLM counts prompt and generated tokens as each engine step runs
+        # them, which is what the step counters hold (see snapshot_sglang()).
+        "step_generated_total": generated,
+        "step_computed_total": prom_sum_label(
+            samples, "vllm:prompt_tokens_by_source_total", "source", "local_compute"
+        ),
+        "step_cached_total": cached_tokens,
         "gen_throughput": prom_gauge_any(
             samples,
             "vllm:avg_generation_throughput_toks_per_s",
@@ -899,9 +909,11 @@ def parse_vllm_prom(body: str) -> dict[str, Any]:
         # vllm:avg_prompt_throughput_toks_per_s (gone since v0.7, never in V1),
         # counted cached prompt tokens too, and prefill_tps is the uncached
         # rate. snapshot_sglang() differences the prompt counters instead.
+        # No cache_hit_rate: hits over queries since the engine started is no
+        # sample's rate. snapshot_sglang() takes it over each window, and
+        # leaves a window with no prompts blank.
         "prefix_cache_hits": hits,
         "prefix_cache_queries": queries,
-        "cache_hit_rate": cache_hit,
         # Fields below were sglang-only, leaving the matching columns NULL for
         # every vLLM replica. vLLM does expose the underlying quantities, just
         # under different names -- or, for the KV pool, as a label.
@@ -1030,6 +1042,56 @@ def prom_status_sum(
     return sum(sum(vals) / len(vals) for vals in groups.values())
 
 
+def utilization_pct(ratio: Any) -> float | None:
+    """The percentage ``sglang_util_pct`` holds, from SGLang's ``utilization`` ratio.
+
+    SGLang reports the larger of its running requests over the most it may run
+    within its latency target and its KV fill over 90 %; -1 on the prefill
+    side of a disaggregated pair; and 0 while it has no latency target, which
+    nothing in 0.5.20 to 0.5.22 sets. Neither -1 nor 0 is a reading, so both
+    are left out, as vLLM, which has no such figure, leaves it out.
+    """
+    if not isinstance(ratio, (int, float)) or ratio <= 0:
+        return None
+    return round(float(ratio) * 100.0, 2)
+
+
+def _sglang_step_counters(samples: list[tuple[str, dict[str, str], float]]) -> dict[str, float]:
+    """The token counters SGLang moves as each step runs, under the names vLLM's fill.
+
+    SGLang's prompt, generation, cached and request counters move only when a
+    request finishes, so a rate taken from them puts a request's whole prompt
+    and generation into the second it ends, where vLLM's counters count them
+    as each engine step runs. These count them as SGLang's steps run:
+    ``prefill_effective_tokens_total`` (0.5.20 on) counts a retracted request's
+    prompt once, as vLLM does, and ``realtime_tokens_total`` (older releases)
+    counts it again on each re-prefill. A mode SGLang has not counted yet has
+    no series: ``prefill_cache`` before the first cache hit, for instance.
+    """
+    realtime = "sglang:realtime_tokens_total"
+    effective = "sglang:prefill_effective_tokens_total"
+    out: dict[str, float | None] = {
+        "step_generated_total": prom_grouped_sum(samples, realtime, {"mode": "decode"})
+    }
+    computed = prom_grouped_sum(samples, effective, {"mode": "input"})
+    if computed is not None:
+        device, host, storage = (
+            prom_grouped_sum(samples, effective, {"mode": mode})
+            for mode in ("device_hit", "host_hit", "storage_hit")
+        )
+        out["step_device_cached_total"] = device
+        out["step_host_cached_total"] = host
+        cached = sum(v for v in (device, host, storage) if v is not None)
+    else:
+        computed = prom_grouped_sum(samples, realtime, {"mode": "prefill_compute"})
+        cached = prom_grouped_sum(samples, realtime, {"mode": "prefill_cache"})
+        if cached is None and computed is not None:
+            cached = 0.0
+    out["step_computed_total"] = computed
+    out["step_cached_total"] = cached if computed is not None else None
+    return {k: v for k, v in out.items() if v is not None}
+
+
 def parse_sglang_prom(body: str) -> dict[str, Any]:
     """Engine metrics from SGLang's ``/metrics`` text; empty without ``sglang:`` series."""
     samples = parse_prom_samples(body)
@@ -1044,6 +1106,10 @@ def parse_sglang_prom(body: str) -> dict[str, Any]:
     requests_total = prom_grouped_sum(samples, "sglang:num_requests_total")
     prompt_tokens = prom_grouped_sum(samples, "sglang:prompt_tokens_total")
     gen_tokens = prom_grouped_sum(samples, "sglang:generation_tokens_total")
+    # SGLang reports 0 for both while speculative decoding is off, where vLLM
+    # has no series at all; a running speculator accepts at least one token a step.
+    spec_length = prom_gauge(samples, "sglang:spec_accept_length")
+    speculating = isinstance(spec_length, (int, float)) and spec_length > 0
     out: dict[str, Any] = {
         "engine": "sglang",
         "model_name": model,
@@ -1053,9 +1119,9 @@ def parse_sglang_prom(body: str) -> dict[str, Any]:
         "token_usage": prom_gauge(samples, "sglang:token_usage"),
         "gen_throughput": prom_gauge(samples, "sglang:gen_throughput"),
         "max_total_num_tokens": prom_gauge(samples, "sglang:max_total_num_tokens"),
-        "sglang_util_pct": prom_gauge(samples, "sglang:utilization"),
-        "spec_accept_length": prom_gauge(samples, "sglang:spec_accept_length"),
-        "spec_accept_rate": prom_gauge(samples, "sglang:spec_accept_rate"),
+        "sglang_util_pct": utilization_pct(prom_gauge(samples, "sglang:utilization")),
+        "spec_accept_length": spec_length if speculating else None,
+        "spec_accept_rate": prom_gauge(samples, "sglang:spec_accept_rate") if speculating else None,
         "hicache_host_used": prom_gauge(samples, "sglang:hicache_host_used_tokens"),
         "hicache_host_total": prom_gauge(samples, "sglang:hicache_host_total_tokens"),
         "retracts": prom_gauge(samples, "sglang:num_retracted_reqs"),
@@ -1106,6 +1172,7 @@ def parse_sglang_prom(body: str) -> dict[str, Any]:
         out["device_cached_tokens_total"] = device_cached
     if host_cached is not None:
         out["host_cached_tokens_total"] = host_cached
+    out.update(_sglang_step_counters(samples))
     loadback = prom_grouped_sum(samples, "sglang:load_back_tokens_total")
     evict = prom_grouped_sum(samples, "sglang:evicted_tokens_total")
     backup = prom_grouped_sum(samples, "sglang:hicache_backup_tokens_total")
@@ -1209,6 +1276,8 @@ def parse_sglang_body(body: str) -> dict[str, Any]:
     usage = load.get("token_usage")
     if usage is None and used is not None and max_tokens:
         usage = round(used / max_tokens, 4)
+    moments = load.get("decode_moments")
+    sampled = moments[5] if isinstance(moments, list) and len(moments) >= 6 else None
     return {
         "metrics": {
             "engine": "sglang",
@@ -1233,14 +1302,20 @@ def parse_sglang_body(body: str) -> dict[str, Any]:
             # prompts, cached tokens included.
             "uncached_tokens_total": load.get("total_prefill_uncached_tokens"),
             "generation_tokens_total": (
-                load["decode_moments"][5]
-                if isinstance(load.get("decode_moments"), list) and len(load["decode_moments"]) >= 6
+                sampled
+                if sampled is not None
                 else load.get("total_generated_tokens", load.get("generation_tokens"))
             ),
+            # The tokens of the decode steps SGLang timed: each that followed
+            # another decode step, which leaves out the first after a prefill.
+            # A step count, unlike the sibling /metrics' generation counter,
+            # which moves when a request ends; kept under a name of its own so
+            # that a rate is never taken between the two.
+            "loads_generated_total": sampled,
             "prefill_busy_us": load.get("total_prefill_busy_us"),
             "spec_accept_length": spec.get("accept_length"),
             "spec_accept_rate": spec_rate,
-            "sglang_util_pct": load.get("utilization"),
+            "sglang_util_pct": utilization_pct(load.get("utilization")),
             "max_running_requests": load.get("max_running_requests"),
             "weight_gb": memory.get("weight_gb"),
             "kv_cache_gb": memory.get("kv_cache_gb"),
@@ -1633,39 +1708,78 @@ def _counter_ratio(first_n: Any, last_n: Any, first_d: Any, last_d: Any) -> floa
     return round(num / den, 4)
 
 
+#: Each histogram's ``<prefix>_sum`` and ``_count``, and the average they give.
+_HISTOGRAMS = (
+    ("ttft", "ttft_avg_s"),
+    ("queue", "queue_avg_s"),
+    ("prefill", "prefill_avg_s"),
+    ("chunked", "chunked_prefill_avg_s"),
+    ("e2e", "e2e_latency_avg_s"),
+    ("itl", "tpot_avg_s"),
+    ("prompt_hist", "prompt_tokens_avg"),
+    ("uncached_hist", "uncached_prompt_tokens_avg"),
+    ("iter_hist", "num_active_tokens"),
+    ("gen_hist", "generation_tokens_avg"),
+)
+
+
+def _number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _shared_rate(
+    first: dict[str, Any], last: dict[str, Any], elapsed: float, *keys: str
+) -> tuple[str | None, float | None]:
+    """The first of *keys* the engine reports, and its rate over the window.
+
+    A counter both scrapes hold comes first, so that no rate is taken between
+    two different counters. The rate is None when the window gives none: the
+    first scrape, or a counter that went back (a restart).
+    """
+    for key in keys:
+        if _number(first.get(key)) and _number(last.get(key)):
+            return key, _counter_rate(first[key], last[key], elapsed)
+    for key in keys:
+        if _number(last.get(key)):
+            return key, None
+    return None, None
+
+
 def snapshot_sglang(
     last: dict[str, Any], prev: dict[str, Any] | None, elapsed: float
 ) -> dict[str, Any]:
-    """An engine's metrics for one flush, with rates from its counters since the previous scrape."""
+    """An engine's metrics for one flush, with rates from its counters since the previous scrape.
+
+    Every rate, ratio and average is the window's, the same on either engine:
+    token rates from counters that move as each step runs (vLLM's own, or
+    SGLang's ``realtime``/``prefill_effective`` ones, else SGLang's gauge),
+    averages from each histogram's growth. What a window gives none of is left
+    out, never filled with the average since the engine started, so an idle
+    second is blank. ``measured`` in the result names the metrics the
+    engine's own counters and histograms gave, which no log fallback replaces.
+    """
     last_m = last.get("metrics") or {}
     first_m = (prev or {}).get("metrics") or last_m
     metrics = dict(last_m)
+    measured: set[str] = set()
     # Half a second: a one-second flush may come a little early.
     can_rate = prev is not None and elapsed >= 0.5
     src_first = first_m if can_rate else last_m
     src_elapsed = elapsed if can_rate else 0.0
-    for prefix, dest in (
-        ("ttft", "ttft_avg_s"),
-        ("queue", "queue_avg_s"),
-        ("prefill", "prefill_avg_s"),
-        ("chunked", "chunked_prefill_avg_s"),
-        ("e2e", "e2e_latency_avg_s"),
-        ("itl", "tpot_avg_s"),
-        ("prompt_hist", "prompt_tokens_avg"),
-        ("uncached_hist", "uncached_prompt_tokens_avg"),
-        ("iter_hist", "num_active_tokens"),
-        ("gen_hist", "generation_tokens_avg"),
-    ):
+    for prefix, dest in _HISTOGRAMS:
+        if not _number(last_m.get(f"{prefix}_count")):
+            continue
+        measured.add(dest)
         win = _counter_ratio(
             src_first.get(f"{prefix}_sum"),
             last_m.get(f"{prefix}_sum"),
             src_first.get(f"{prefix}_count"),
             last_m.get(f"{prefix}_count"),
         )
-        if win is not None:
-            metrics[dest] = round(win, 6)
+        metrics[dest] = round(win, 6) if win is not None else None
     if (
-        metrics.get("prefill_avg_s") is None
+        "prefill_avg_s" not in measured
+        and metrics.get("prefill_avg_s") is None
         and metrics.get("ttft_avg_s") is not None
         and metrics.get("queue_avg_s") is not None
     ):
@@ -1674,98 +1788,53 @@ def snapshot_sglang(
             6,
         )
 
-    prefill_from_tokens = _counter_rate(
-        src_first.get("prompt_tokens_total"), last_m.get("prompt_tokens_total"), src_elapsed
-    )
-    if last_m.get("prompt_tokens_total") is not None:
-        metrics["prompt_tokens_total"] = last_m.get("prompt_tokens_total")
-    cached_from_tokens = _counter_rate(
-        src_first.get("cached_tokens_total"), last_m.get("cached_tokens_total"), src_elapsed
-    )
-    if cached_from_tokens is not None:
-        metrics["cached_prefill_tps"] = cached_from_tokens
-    # prefill_tps is the UNCACHED prompt rate (tokens the engine computed) on
-    # every path, and src/db.ts sums it as is. prompt_tokens_total counts
-    # whole prompts and cached_tokens_total their cached part, bumped together
-    # (sglang at finish, vLLM at first token), so the uncached rate is their
-    # difference. With no cached counter, a counter of uncached tokens stands
-    # in: the uncached-prompt histogram (vLLM 0.13-0.15 has no other), then
-    # /v1/loads' total_prefill_uncached_tokens (sglang without
-    # --enable-metrics). Only an engine reporting no cached tokens at all is
-    # left with the prompt rate: sglang before its first cache hit, where the
-    # two agree, and vLLM <= 0.12.
-    uncached_from_tokens = None
-    if prefill_from_tokens is not None and cached_from_tokens is not None:
-        uncached_from_tokens = round(max(0.0, prefill_from_tokens - cached_from_tokens), 1)
+    # Prompt tokens computed and read from the cache, as each step runs them
+    # (_sglang_step_counters(); vLLM's prompt counters move that way too).
+    # prefill_tps is the UNCACHED rate on every path, and the gateway sums it
+    # as is; the hit rate is the cached share of the window's prompt tokens.
+    # Only where the step counter gives the window a rate: one only the newer
+    # scrape holds (after a missed sibling /metrics, or in a series' first
+    # scrape) leaves the window to the counters both scrapes share.
+    _, step_computed = _shared_rate(src_first, last_m, src_elapsed, "step_computed_total")
+    if step_computed is not None:
+        _, step_cached = _shared_rate(src_first, last_m, src_elapsed, "step_cached_total")
+        metrics["prefill_tps"] = step_computed
+        metrics["cached_prefill_tps"] = step_cached
+        c0, c1 = src_first.get("step_cached_total"), last_m.get("step_cached_total")
+        u0, u1 = src_first.get("step_computed_total"), last_m.get("step_computed_total")
+        metrics["cache_hit_rate"] = (
+            _counter_ratio(c0, c1, c0 + u0, c1 + u1)
+            if all(_number(v) for v in (c0, c1, u0, u1))
+            else None
+        )
+        measured.update(("prefill_tps", "cached_prefill_tps", "cache_hit_rate"))
     else:
-        uncached_hist = _counter_rate(
-            src_first.get("uncached_hist_sum"), last_m.get("uncached_hist_sum"), src_elapsed
-        )
-        prompt_hist = _counter_rate(
-            src_first.get("prompt_hist_sum"), last_m.get("prompt_hist_sum"), src_elapsed
-        )
-        loads_uncached = _counter_rate(
-            src_first.get("uncached_tokens_total"), last_m.get("uncached_tokens_total"), src_elapsed
-        )
-        if uncached_hist is not None:
-            uncached_from_tokens = uncached_hist
-            if cached_from_tokens is None and prompt_hist is not None:
-                # Both histograms are observed as each request finishes, so
-                # what they differ by is the cached part of the same prompts.
-                metrics["cached_prefill_tps"] = round(max(0.0, prompt_hist - uncached_hist), 1)
-        elif loads_uncached is not None:
-            uncached_from_tokens = loads_uncached
-        else:
-            uncached_from_tokens = prefill_from_tokens
-    # Only /v1/loads could set this, and no sglang release has; sglang's own
-    # prefill figure, the log's "input throughput", is new tokens per second.
-    inst_prefill = last_m.get("prefill_tps")
-    if uncached_from_tokens is not None and uncached_from_tokens > 0:
-        metrics["prefill_tps"] = uncached_from_tokens
-    elif inst_prefill is not None:
-        metrics["prefill_tps"] = inst_prefill
-    elif uncached_from_tokens is not None:
-        metrics["prefill_tps"] = uncached_from_tokens
+        _legacy_prompt_rates(metrics, measured, src_first, last_m, src_elapsed, can_rate)
 
-    decode_from_tokens = _counter_rate(
-        src_first.get("generation_tokens_total"), last_m.get("generation_tokens_total"), src_elapsed
-    )
-    if last_m.get("generation_tokens_total") is not None:
-        metrics["generation_tokens_total"] = last_m.get("generation_tokens_total")
+    # Generated tokens: a counter that moves every step (vLLM's, SGLang's
+    # realtime one, or the steps /v1/loads timed). SGLang's generation counter
+    # moves only when a request ends, so the window a request ended in took
+    # its whole generation, which the windows before it, falling back to the
+    # gauge, had already counted: the served totals counted it twice. The
+    # gauge stands in only where no step counter gives the window a rate.
     inst_decode = last_m.get("gen_throughput")
-    if decode_from_tokens is not None and decode_from_tokens > 0:
-        metrics["gen_throughput"] = decode_from_tokens
-    elif inst_decode is not None:
-        metrics["gen_throughput"] = inst_decode
-    elif decode_from_tokens is not None:
-        metrics["gen_throughput"] = decode_from_tokens
-
-    vllm_hit = None
-    c0, c1 = src_first.get("cached_tokens_total"), last_m.get("cached_tokens_total")
-    p0, p1 = src_first.get("prompt_tokens_total"), last_m.get("prompt_tokens_total")
-    if (
-        can_rate
-        and isinstance(c0, (int, float))
-        and isinstance(c1, (int, float))
-        and isinstance(p0, (int, float))
-        and isinstance(p1, (int, float))
-        and p1 > p0
-        and c1 >= c0
-    ):
-        vllm_hit = round(min(1.0, max(0.0, (c1 - c0) / (p1 - p0))), 4)
-    window_hit = _counter_ratio(
-        src_first.get("prefix_cache_hits"),
-        last_m.get("prefix_cache_hits"),
-        src_first.get("prefix_cache_queries"),
-        last_m.get("prefix_cache_queries"),
+    decode_key, decode = _shared_rate(
+        src_first, last_m, src_elapsed, "step_generated_total", "loads_generated_total"
     )
-    if vllm_hit is not None:
-        metrics["cache_hit_rate"] = vllm_hit
-    elif window_hit is not None:
-        metrics["cache_hit_rate"] = window_hit
+    if decode_key is not None:
+        metrics["gen_throughput"] = decode if decode is not None else inst_decode
+        measured.add("gen_throughput")
+    elif inst_decode is None:
+        metrics["gen_throughput"] = _counter_rate(
+            src_first.get("generation_tokens_total"),
+            last_m.get("generation_tokens_total"),
+            src_elapsed,
+        )
     metrics.pop("cached_tokens_total", None)
     metrics.pop("prefix_cache_hits", None)
     metrics.pop("prefix_cache_queries", None)
+    if _number(last_m.get("requests_total")):
+        measured.add("req_per_min")
     first_req = src_first.get("requests_total")
     last_req = last_m.get("requests_total")
     if (
@@ -1776,16 +1845,14 @@ def snapshot_sglang(
         and last_req >= first_req
     ):
         metrics["req_per_min"] = round((last_req - first_req) / src_elapsed * 60.0, 1)
-    metrics["device_cached_tps"] = _counter_rate(
-        src_first.get("device_cached_tokens_total"),
-        last_m.get("device_cached_tokens_total"),
-        src_elapsed,
-    )
-    metrics["host_cached_tps"] = _counter_rate(
-        src_first.get("host_cached_tokens_total"),
-        last_m.get("host_cached_tokens_total"),
-        src_elapsed,
-    )
+    # SGLang before 0.5.20 counts cache tiers only as requests finish, so on
+    # its realtime counters device and host add up to the cached rate over a
+    # minute rather than in each second.
+    for dest, keys in (
+        ("device_cached_tps", ("step_device_cached_total", "device_cached_tokens_total")),
+        ("host_cached_tps", ("step_host_cached_total", "host_cached_tokens_total")),
+    ):
+        metrics[dest] = _shared_rate(src_first, last_m, src_elapsed, *keys)[1]
     metrics["loadback_tps"] = _counter_rate(
         src_first.get("loadback_tokens_total"), last_m.get("loadback_tokens_total"), src_elapsed
     )
@@ -1795,40 +1862,18 @@ def snapshot_sglang(
     metrics["backup_tps"] = _counter_rate(
         src_first.get("backup_tokens_total"), last_m.get("backup_tokens_total"), src_elapsed
     )
-    # --- vLLM-only derivations ------------------------------------------
-    #
-    # setdefault, never assignment: sglang publishes spec_accept_rate,
-    # spec_accept_length and retracts as native gauges, and this function is
-    # shared by both engines. Overwriting would degrade the sglang fleet's
-    # numbers into coarser counter-differences.
-    if metrics.get("spec_accept_rate") is None:
-        # Fraction of DRAFTED tokens the target model accepted.
-        rate = _counter_ratio(
-            src_first.get("spec_accepted_total"),
-            last_m.get("spec_accepted_total"),
-            src_first.get("spec_draft_tokens_total"),
-            last_m.get("spec_draft_tokens_total"),
-        )
-        if rate is not None:
-            metrics["spec_accept_rate"] = rate
-    if metrics.get("spec_accept_length") is None:
-        # Mean accepted tokens per DRAFT step -- a different denominator from
-        # the rate above, which is why both exist.
-        length = _counter_ratio(
-            src_first.get("spec_accepted_total"),
-            last_m.get("spec_accepted_total"),
-            src_first.get("spec_drafts_total"),
-            last_m.get("spec_drafts_total"),
-        )
-        if length is not None:
-            metrics["spec_accept_length"] = length
-    if metrics.get("retracts") is None:
+    _speculation(metrics, measured, src_first, last_m)
+    if _number(last_m.get("retracts_total")):
+        # Requests retracted (vLLM: preempted) in this window, from the
+        # counter either engine keeps. SGLang's num_retracted_reqs gauge, the
+        # fallback, counts those of its last report and holds that while idle.
+        measured.add("retracts")
         r0, r1 = src_first.get("retracts_total"), last_m.get("retracts_total")
-        if can_rate and isinstance(r0, (int, float)) and isinstance(r1, (int, float)) and r1 >= r0:
-            # A count for THIS window, matching sglang's gauge in spirit, not
-            # the cumulative total -- which would climb forever on a chart.
-            metrics["retracts"] = round(r1 - r0)
-    if metrics.get("uncached_prompt_tokens_avg") is None:
+        metrics["retracts"] = round(r1 - r0) if can_rate and _number(r0) and r1 >= r0 else None
+    if (
+        "uncached_prompt_tokens_avg" not in measured
+        and metrics.get("uncached_prompt_tokens_avg") is None
+    ):
         p0, p1 = src_first.get("prompt_tokens_total"), last_m.get("prompt_tokens_total")
         c0, c1 = src_first.get("cached_tokens_total"), last_m.get("cached_tokens_total")
         q0, q1 = src_first.get("requests_total"), last_m.get("requests_total")
@@ -1867,7 +1912,123 @@ def snapshot_sglang(
     ):
         metrics["http_error_per_min"] = round((err1 - err0) / src_elapsed * 60.0, 2)
     metrics.pop("requests_total", None)
-    return {**last, "metrics": metrics}
+    return {**last, "metrics": metrics, "measured": frozenset(measured)}
+
+
+def _legacy_prompt_rates(
+    metrics: dict[str, Any],
+    measured: set[str],
+    src_first: dict[str, Any],
+    last_m: dict[str, Any],
+    src_elapsed: float,
+    can_rate: bool,
+) -> None:
+    """Prompt-token rates and the hit rate for an engine without step counters.
+
+    An SGLang without ``realtime_tokens_total``, a vLLM without its by-source
+    prompt counter, and ``/v1/loads`` without its sibling ``/metrics``.
+    """
+    prefill_from_tokens = _counter_rate(
+        src_first.get("prompt_tokens_total"), last_m.get("prompt_tokens_total"), src_elapsed
+    )
+    cached_from_tokens = _counter_rate(
+        src_first.get("cached_tokens_total"), last_m.get("cached_tokens_total"), src_elapsed
+    )
+    if cached_from_tokens is not None:
+        metrics["cached_prefill_tps"] = cached_from_tokens
+    # prompt_tokens_total counts whole prompts and cached_tokens_total their
+    # cached part, bumped together (sglang at finish, vLLM at first token), so
+    # the uncached rate is their difference. With no cached counter, a counter
+    # of uncached tokens stands in: the uncached-prompt histogram (vLLM
+    # 0.13-0.15 has no other), then /v1/loads' total_prefill_uncached_tokens
+    # (sglang without --enable-metrics). Only an engine reporting no cached
+    # tokens at all is left with the prompt rate: sglang before its first
+    # cache hit, where the two agree, and vLLM <= 0.12.
+    uncached_from_tokens = None
+    if prefill_from_tokens is not None and cached_from_tokens is not None:
+        uncached_from_tokens = round(max(0.0, prefill_from_tokens - cached_from_tokens), 1)
+    else:
+        uncached_hist = _counter_rate(
+            src_first.get("uncached_hist_sum"), last_m.get("uncached_hist_sum"), src_elapsed
+        )
+        prompt_hist = _counter_rate(
+            src_first.get("prompt_hist_sum"), last_m.get("prompt_hist_sum"), src_elapsed
+        )
+        loads_uncached = _counter_rate(
+            src_first.get("uncached_tokens_total"), last_m.get("uncached_tokens_total"), src_elapsed
+        )
+        if uncached_hist is not None:
+            uncached_from_tokens = uncached_hist
+            if cached_from_tokens is None and prompt_hist is not None:
+                # Both histograms are observed as each request finishes, so
+                # what they differ by is the cached part of the same prompts.
+                metrics["cached_prefill_tps"] = round(max(0.0, prompt_hist - uncached_hist), 1)
+        elif loads_uncached is not None:
+            uncached_from_tokens = loads_uncached
+        else:
+            uncached_from_tokens = prefill_from_tokens
+    # Only /v1/loads could set this, and no sglang release has; sglang's own
+    # prefill figure, the log's "input throughput", is new tokens per second.
+    inst_prefill = last_m.get("prefill_tps")
+    if uncached_from_tokens is not None and uncached_from_tokens > 0:
+        metrics["prefill_tps"] = uncached_from_tokens
+    elif inst_prefill is not None:
+        metrics["prefill_tps"] = inst_prefill
+    elif uncached_from_tokens is not None:
+        metrics["prefill_tps"] = uncached_from_tokens
+
+    # The window's hit rate: the cached share of its prompt tokens, else
+    # vLLM's prefix-cache hits over queries. A window without prompts has none.
+    c0, c1 = src_first.get("cached_tokens_total"), last_m.get("cached_tokens_total")
+    p0, p1 = src_first.get("prompt_tokens_total"), last_m.get("prompt_tokens_total")
+    if _number(c1) and _number(p1):
+        measured.add("cache_hit_rate")
+        metrics["cache_hit_rate"] = (
+            round(min(1.0, max(0.0, (c1 - c0) / (p1 - p0))), 4)
+            if can_rate and _number(c0) and _number(p0) and p1 > p0 and c1 >= c0
+            else None
+        )
+    elif _number(last_m.get("prefix_cache_hits")) and _number(last_m.get("prefix_cache_queries")):
+        measured.add("cache_hit_rate")
+        metrics["cache_hit_rate"] = _counter_ratio(
+            src_first.get("prefix_cache_hits"),
+            last_m.get("prefix_cache_hits"),
+            src_first.get("prefix_cache_queries"),
+            last_m.get("prefix_cache_queries"),
+        )
+
+
+def _speculation(
+    metrics: dict[str, Any],
+    measured: set[str],
+    src_first: dict[str, Any],
+    last_m: dict[str, Any],
+) -> None:
+    """The window's speculative-decoding figures, as SGLang defines them, for either engine.
+
+    The accept length is tokens per verify step, the bonus token included:
+    SGLang's gauge, and vLLM's own mean acceptance length, one more than its
+    accepted tokens per draft. The rate is accepted draft tokens over those
+    proposed. SGLang's gauges cover its last report and hold through idle
+    time, so a window with nothing decoded has neither: a step counter's 0,
+    or SGLang's throughput gauge, which falls to 0 once decoding stops.
+    """
+    if _number(last_m.get("spec_accepted_total")):
+        measured.update(("spec_accept_rate", "spec_accept_length"))
+        accepted = (src_first.get("spec_accepted_total"), last_m.get("spec_accepted_total"))
+        metrics["spec_accept_rate"] = _counter_ratio(
+            *accepted,
+            src_first.get("spec_draft_tokens_total"),
+            last_m.get("spec_draft_tokens_total"),
+        )
+        per_draft = _counter_ratio(
+            *accepted, src_first.get("spec_drafts_total"), last_m.get("spec_drafts_total")
+        )
+        metrics["spec_accept_length"] = round(1.0 + per_draft, 4) if per_draft is not None else None
+    elif _number(last_m.get("spec_accept_length")):
+        measured.update(("spec_accept_rate", "spec_accept_length"))
+        if metrics.get("gen_throughput") == 0:
+            metrics["spec_accept_length"] = metrics["spec_accept_rate"] = None
 
 
 _DROP_COUNTERS = (
@@ -1909,6 +2070,13 @@ _DROP_COUNTERS = (
     "spec_accepted_total",
     "spec_draft_tokens_total",
     "spec_drafts_total",
+    # The token counters each step moves, differenced into the token rates.
+    "step_generated_total",
+    "step_computed_total",
+    "step_cached_total",
+    "step_device_cached_total",
+    "step_host_cached_total",
+    "loads_generated_total",
 )
 
 # What flush() fills in from an engine-log read. For a target with no request
@@ -1934,6 +2102,15 @@ _LOG_FIELDS = (
     "http_error_per_min",
 )
 _log_holds: dict[str, dict[str, Any]] = {}
+
+
+def _fillable(metrics: dict[str, Any], measured: frozenset[str], key: str, *empty: Any) -> bool:
+    """Whether a log read may fill *key*: the engine's counters did not measure it, and it is unset.
+
+    *empty* lists values that count as unset besides None, such as a 0.
+    """
+    value = metrics.get(key)
+    return key not in measured and (value is None or value in empty)
 
 
 def flush(
@@ -1993,11 +2170,12 @@ def flush(
         # http_error_per_min: sglang:http_responses_total has no series until
         # a restarted server has counted a response, and a build need not
         # export it. Such a target holds that field alone. The log block
-        # below fills others on it too (cache_hit_rate always, several more
-        # where the counter rate is 0), but its counters give those on every
-        # flush, and holding them would put an old window's value where there
-        # is now a live one. vLLM stays out: its access-log lines carry no
-        # timestamp, so no window can place its errors.
+        # below fills nothing its counters and histograms measure, a blank
+        # window included: the logs' minute would put an old window's value
+        # where there is a live one, or count again what the counter samples
+        # around it already hold. vLLM stays out: its access-log lines carry
+        # no timestamp, so no window can place its errors.
+        measured = agg.get("measured") or frozenset()
         scraped = payload.get("metrics") or {}
         has_req_counter = isinstance(scraped.get("requests_total"), (int, float))
         engine = metrics.get("engine") or target.get("engine") or "sglang"
@@ -2043,51 +2221,46 @@ def flush(
                 or (metrics.get("engine") or target.get("engine")) == "sglang"
             )
         ):
-            if metrics.get("req_per_min") is None:
+            if _fillable(metrics, measured, "req_per_min"):
                 metrics["req_per_min"] = round(log_stats["posts"] / log_elapsed * 60.0, 1)
             cached_tok = log_stats["cached_tokens"]
             new_tok = log_stats["new_tokens"]
             # #new-token is the uncached part, like prefill_tps. Only where no
-            # counter gave a rate: a counter's 0 is this sample's measurement,
-            # and the logs' minute would count again what the counter samples
-            # around it already hold.
-            if metrics.get("cached_prefill_tps") is None and cached_tok > 0:
+            # counter gave a rate: a counter's 0 is this sample's measurement.
+            if _fillable(metrics, measured, "cached_prefill_tps") and cached_tok > 0:
                 metrics["cached_prefill_tps"] = round(cached_tok / log_elapsed, 1)
-            if metrics.get("prefill_tps") is None and new_tok > 0:
+            if _fillable(metrics, measured, "prefill_tps") and new_tok > 0:
                 metrics["prefill_tps"] = round(new_tok / log_elapsed, 1)
-            if metrics.get("gen_throughput") in (None, 0) and log_stats.get("decode_tps"):
+            if _fillable(metrics, measured, "gen_throughput", 0) and log_stats.get("decode_tps"):
                 metrics["gen_throughput"] = round(float(log_stats["decode_tps"]), 1)
-            if cached_tok + new_tok > 0:
+            if "cache_hit_rate" not in measured and cached_tok + new_tok > 0:
                 metrics["cache_hit_rate"] = round(cached_tok / (cached_tok + new_tok), 4)
-            if metrics.get("prefill_avg_s") in (None, 0):
-                metrics["prefill_avg_s"] = log_stats.get("req_prefill_avg_s")
-            if metrics.get("tpot_avg_s") in (None, 0):
-                metrics["tpot_avg_s"] = log_stats.get("req_tpot_avg_s")
-            if metrics.get("e2e_latency_avg_s") in (None, 0):
-                metrics["e2e_latency_avg_s"] = log_stats.get("req_e2e_avg_s")
-            if metrics.get("prompt_tokens_avg") in (None, 0):
-                metrics["prompt_tokens_avg"] = log_stats.get("req_prompt_avg")
-            if metrics.get("uncached_prompt_tokens_avg") in (None, 0):
-                metrics["uncached_prompt_tokens_avg"] = log_stats.get("req_uncached_avg")
-            if metrics.get("generation_tokens_avg") in (None, 0):
-                metrics["generation_tokens_avg"] = log_stats.get("req_gen_avg")
-            if metrics.get("spec_accept_rate") in (None, 0):
-                metrics["spec_accept_rate"] = log_stats.get("req_spec_rate")
-            if metrics.get("spec_accept_length") in (None, 0):
-                metrics["spec_accept_length"] = log_stats.get("req_spec_len")
-            if metrics.get("chunked_prefill_avg_s") in (None, 0):
-                metrics["chunked_prefill_avg_s"] = log_stats.get("chunked_prefill_avg_s")
+            for key, stat in (
+                ("prefill_avg_s", "req_prefill_avg_s"),
+                ("tpot_avg_s", "req_tpot_avg_s"),
+                ("e2e_latency_avg_s", "req_e2e_avg_s"),
+                ("prompt_tokens_avg", "req_prompt_avg"),
+                ("uncached_prompt_tokens_avg", "req_uncached_avg"),
+                ("generation_tokens_avg", "req_gen_avg"),
+                ("spec_accept_rate", "req_spec_rate"),
+                ("spec_accept_length", "req_spec_len"),
+                ("chunked_prefill_avg_s", "chunked_prefill_avg_s"),
+                ("ttft_avg_s", "req_ttft_avg_s"),
+            ):
+                if _fillable(metrics, measured, key, 0):
+                    metrics[key] = log_stats.get(stat)
             if metrics.get("http_error_per_min") is None:
                 metrics["http_error_per_min"] = round(
                     float(log_stats.get("http_errors") or 0) / log_elapsed * 60.0, 2
                 )
-            if metrics.get("ttft_avg_s") in (None, 0):
-                metrics["ttft_avg_s"] = log_stats.get("req_ttft_avg_s")
             n_log = log_stats.get("posts") or log_stats.get("prefill_done")
-            if metrics.get("prefill_avg_s") in (None, 0) and n_log and log_stats.get("prefill_s"):
+            if (
+                _fillable(metrics, measured, "prefill_avg_s", 0)
+                and n_log
+                and log_stats.get("prefill_s")
+            ):
                 metrics["prefill_avg_s"] = round(float(log_stats["prefill_s"]) / n_log, 4)
-        ttft = metrics.get("ttft_avg_s")
-        if engine != "vllm" and (ttft is None or ttft == 0) and log_stats:
+        if engine != "vllm" and _fillable(metrics, measured, "ttft_avg_s", 0) and log_stats:
             n_req = log_stats["posts"] or log_stats["prefill_done"]
             if n_req > 0 and log_stats["prefill_s"] > 0:
                 metrics["ttft_avg_s"] = round(log_stats["prefill_s"] / n_req, 4)
@@ -2115,10 +2288,10 @@ def flush(
                 # fields held now, should a hold taken without a request
                 # counter meet a flush that has one.
                 for key in held:
-                    if metrics.get(key) is None and key in hold["values"]:
+                    if _fillable(metrics, measured, key) and key in hold["values"]:
                         metrics[key] = hold["values"][key]
         if (
-            metrics.get("queue_avg_s") is None
+            _fillable(metrics, measured, "queue_avg_s")
             and metrics.get("ttft_avg_s") is not None
             and metrics.get("prefill_avg_s") is not None
         ):

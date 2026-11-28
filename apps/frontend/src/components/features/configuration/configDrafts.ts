@@ -247,6 +247,8 @@ export interface ConfigSectionSplit {
   keys: ReadonlySet<string>;
   /** The section's title, made from its category's. */
   label: (categoryLabel: string) => string;
+  /** What the section is for, where its category's description does not say; that one otherwise. */
+  description?: string;
 }
 
 /** The category whose settings a group holds: its own id, or the one it was split from. */
@@ -280,7 +282,7 @@ export function splitGroups(
     const parts: ConfigGroup[] = own.map((split) => ({
       id: split.id,
       label: split.label(group.label),
-      description: group.description,
+      description: split.description ?? group.description,
       entries: group.entries.filter((entry) => split.keys.has(entry.key)),
       category: { id: group.id, label: group.label },
     }));
@@ -329,12 +331,20 @@ export function groupEntries(
   return groups.filter((group) => group.entries.length > 0);
 }
 
-/** Case-insensitive match on the name, description, category or models. */
-export function matchesQuery(entry: ConfigEntry, query: string, categoryLabel = ''): boolean {
+/**
+ * Case-insensitive match on the name, description, category or models, and on
+ * `also`: the label a page shows the setting under, say.
+ */
+export function matchesQuery(
+  entry: ConfigEntry,
+  query: string,
+  categoryLabel = '',
+  also: readonly string[] = [],
+): boolean {
   const needle = query.trim().toLowerCase();
   if (!needle) return true;
-  return [entry.key, entry.description, categoryLabel, ...(entry.used_by ?? [])].some((text) =>
-    text?.toLowerCase().includes(needle),
+  return [entry.key, entry.description, categoryLabel, ...(entry.used_by ?? []), ...also].some(
+    (text) => text?.toLowerCase().includes(needle),
   );
 }
 

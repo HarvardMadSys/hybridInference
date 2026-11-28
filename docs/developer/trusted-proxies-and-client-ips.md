@@ -14,8 +14,7 @@ forwarded address only from peers you authorize. Find your setup:
 | Clients on a private network (such as `10.x`) connecting directly | `TRUSTED_DIRECT_CLIENT_NETWORKS=<those client ranges>` |
 | The bundled Compose file's console, and your edge in front of it | Trust the console only for the header your edge sets; see [Behind the console](#behind-the-console) |
 
-These are settings in the **Network** section, under **Advanced** in
-**Admin → Settings → Site & Setup**. A new
+These are settings on the **Network** tab of **Admin → Settings**. A new
 deployment's first start copies them from the environment (the `NAME=value`
 forms on this page); after that the stored values win, so change them in Admin
 or with `python -m serving.config.manage set`, not in `.env`. The bundled
@@ -39,7 +38,7 @@ and a test fails if one stops. Under your own process manager, pass
 
 Because the server never reads forwarded headers, `peer_ip` is always the real
 TCP peer, and `request.url.scheme` is `http` behind a TLS-terminating proxy. Set
-`BASE_URL` (under **General** in **Admin → Settings → Site & Setup**) so the links in
+`BASE_URL` (on the **General** tab of **Admin → Settings**) so the links in
 signup and password-reset emails use the right scheme.
 
 ## Behind the console

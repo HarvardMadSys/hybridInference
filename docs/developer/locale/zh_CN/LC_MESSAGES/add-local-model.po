@@ -496,13 +496,8 @@ msgstr ""
 "`upstream_timeout` 的 `504`。调用方会看到它，但它同样不计入熔断，所以一个调用方的长时间生成不会让所有人都用不了这个模型。"
 
 #: ../developer/add-local-model.md:471
-msgid ""
-"To see the queue, have the proxy publish its status and give the gateway "
-"the address in **Admin → Settings → Providers & Routing → Advanced "
-"settings**:"
-msgstr ""
-"要查看队列，让代理发布自己的状态，并在 **Admin → Settings → Providers & Routing → Advanced "
-"settings** 中把地址告诉网关："
+msgid "To see the queue, have the proxy publish its status and give the gateway the address in **Admin → Settings → Providers → Advanced settings**:"
+msgstr "要查看队列，让代理发布自己的状态，并在 **Admin → Settings → Providers → Advanced settings** 中把地址告诉网关："
 
 #: ../developer/add-local-model.md
 msgid "Setting"

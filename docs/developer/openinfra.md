@@ -46,8 +46,8 @@ engine does not read these metrics.
    answer. Without the flag they answer `404` and the page says "OpenInfra is
    not published for this site".
 
-The OpenInfra settings are in **Admin → Settings → Site & Setup → Advanced
-settings**, Integrations section, and apply within seconds:
+The OpenInfra settings are in **Admin → Settings → Integrations** and apply
+within seconds:
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -124,6 +124,15 @@ What each source needs:
   `ops/openinfra/dcgm/`. The reporter reads `http://127.0.0.1:9400/metrics`
   when it answers. PCIe throughput comes from DCGM too, or from
   `nvidia-smi dmon` without it.
+
+The reporter gives each engine figure the same meaning on SGLang and vLLM.
+Token rates come from counters that move as each step runs: vLLM's own, and
+SGLang's `realtime_tokens_total` and (from 0.5.20)
+`prefill_effective_tokens_total`, because SGLang's per-request counters move
+only when a request ends. Latencies, request shapes, the cache hit rate and
+retractions (vLLM's preemptions) cover each second alone; a second without any
+is blank, not the average since the engine started. The speculative accept
+length counts the bonus token on both.
 
 The reporter sends a `curl` User-Agent, because some edges refuse Python's
 default; `OPENINFRA_USER_AGENT` overrides it. Command-line flags can replace

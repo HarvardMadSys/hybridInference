@@ -137,13 +137,8 @@ msgid "*(empty)*"
 msgstr "*（空）*"
 
 #: ../developer/database.md:26
-msgid ""
-"Three settings that govern what is kept are stored in the database, under"
-" **Privacy** in **Admin → Settings → Site & Setup** (the two "
-"`ERASURE_FENCE_*` settings under **Advanced**):"
-msgstr ""
-"决定保留哪些内容的三个设置项存储在数据库中，位于 **Admin → Settings → Site & Setup** 的 "
-"**Privacy** 下（两个 `ERASURE_FENCE_*` 设置项在 **Advanced** 下）："
+msgid "Three settings that govern what is kept are stored in the database, under **Privacy** in **Admin → Settings → Logging & privacy** (the two `ERASURE_FENCE_*` settings under **Advanced**):"
+msgstr "决定保留哪些内容的三个设置项存储在数据库中，位于 **Admin → Settings → Logging & privacy** 的 **Privacy** 下（两个 `ERASURE_FENCE_*` 设置项在 **Advanced** 下）："
 
 #: ../developer/database.md
 msgid "Setting"

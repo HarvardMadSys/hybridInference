@@ -56,7 +56,7 @@ started.
 
 Stage 2 stored the three `EXAMPLE_UPSTREAM_*` settings in the example database,
 where they outrank `deploy/backend.env` and your shell. In the Admin Console,
-open **Settings → Providers & Routing** and set `EXAMPLE_UPSTREAM_BASE_URL` to
+open **Settings → Providers** and set `EXAMPLE_UPSTREAM_BASE_URL` to
 `http://host.docker.internal:8000/v1`, `EXAMPLE_UPSTREAM_API_KEY` to
 `local-placeholder` and `EXAMPLE_UPSTREAM_MODEL` to the served model name. Then
 select **Save** and **Restart backend**. Clients still request `example-chat`.
