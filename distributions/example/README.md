@@ -1,99 +1,66 @@
 # Runnable local distribution example
 
-This directory is a complete, neutral HybridInference teaching distribution.
-It starts small enough to prove the routing chain deterministically, then grows
-the same running Compose project into a local Web/Admin Console with Postgres
-and authentication. No provider account, host `.env`, GPU, SMTP service, or
-paid API key is required.
-
-For the complete walkthrough, including the browser flow and a local
-vLLM/SGLang/Ollama endpoint, read the
-[Router Tutorial](../../docs/developer/router-tutorial.md).
+A complete, neutral HybridInference distribution for learning. It needs no
+provider account, host `.env`, GPU, SMTP service or paid API key. The
+[Quickstart](../../docs/developer/router-tutorial.md) walks through it; this
+page is a quick reference. Run every command from the repository root.
 
 ## Stage 1: prove the router works
-
-From the repository root:
 
 ```bash
 make up DISTRIBUTION=example
 make smoke DISTRIBUTION=example
 ```
 
-This starts only the deterministic `example-provider` and the backend. Postgres,
-the frontend, accounts, and API-key authentication remain disabled. A successful
-smoke prints:
+This starts only the deterministic `example-provider` and the backend, with no
+Postgres, frontend, accounts or API-key authentication, and prints
+`EXAMPLE_SMOKE_OK`. Leave it running for Stage 2.
 
-```text
-EXAMPLE_SMOKE_OK
-```
-
-Do not stop the project before Stage 2.
-
-## Stage 2: continue into the Web/Admin Console
-
-Extend the running project in place:
+## Stage 2: the Web and Admin Console
 
 ```bash
 make demo DISTRIBUTION=example
 ```
 
-`make demo` keeps the provider, starts an example-owned Postgres database,
-recreates the backend with authentication enabled, and starts the frontend. The
-same project now contains:
-
-```text
-example-provider + postgres + backend + frontend
-```
-
-The new database has no account. On its first start the backend generates its
-JWT and API-key secrets into that database, stores the settings from
-`deploy/docker-compose.demo.yml` there, and logs a one-time setup code:
+`make demo` keeps the provider, adds the frontend and a Postgres database of the
+example's own, and recreates the backend with authentication. On first start
+the backend generates its JWT and API-key secrets into that database, stores
+the settings from `deploy/docker-compose.demo.yml` there, and logs a one-time
+setup code:
 
 ```bash
 docker logs hybridinference-example-backend 2>&1 | grep 'setup code'
 ```
 
-Open <http://localhost:13001>; the console sends you to its setup page. Enter
-the code — it stays the same, and is printed again at every start, until setup
-is done — and create the administrator with the username `admin` and a
-demo-only password that you do not reuse elsewhere. After that the normal UI supports signup,
-login, API-key creation, the Playground, request history, and the application
-Admin Console, whose Settings tab now holds the example's settings. Other
-accounts come from public signup and are not administrators. Email
-verification is deliberately disabled for this loopback-only demo.
-
-Use the same password for the full smoke:
+Open <http://localhost:13001>, enter the code (reprinted at every start until
+setup is done), and create the administrator with the username `admin` and a
+demo-only password. Then run the full smoke with that password:
 
 ```bash
 EXAMPLE_DEMO_ADMIN_PASSWORD='<the same password>' \
 make demo-smoke DISTRIBUTION=example
 ```
 
-The full smoke uses the real auth and API routes, verifies the Admin Console and
-Playground backends, checks that a non-admin user gets `403`, and proves the
-account, refresh-cookie session, and API key survive an ordinary backend
-recreation. If setup is still pending, it completes it as `admin`, reading the
-code with `docker logs` from the container `EXAMPLE_BACKEND_CONTAINER_NAME`
-names (or `--backend-container`). Success prints:
+It exercises the real auth and API routes, the Admin Console and Playground
+backends and a non-admin `403`, checks that the account, session and API key
+survive a backend recreation, and prints `EXAMPLE_FULL_SMOKE_OK`. If setup is
+still pending, it completes it as `admin`, reading the code from the container
+named by `EXAMPLE_BACKEND_CONTAINER_NAME` (or `--backend-container`).
 
-```text
-EXAMPLE_FULL_SMOKE_OK
-```
-
-These checked-in defaults are intentionally local-only. They are not production
-credentials or a production security configuration.
+The checked-in defaults are local-only, not production credentials or a
+production security configuration. Email verification is off, public signups
+are not administrators, and the optional Agents and pgAdmin services are not
+started.
 
 ## Stage 3: use local inference
 
-The public gateway model remains `example-chat`; only its upstream changes.
-Stage 2 stored the three `EXAMPLE_UPSTREAM_*` settings in the example
-database, where they outrank `deploy/backend.env` and your shell, so change
-them in the Admin Console: **Configuration → Providers**, set
-`EXAMPLE_UPSTREAM_BASE_URL` to `http://host.docker.internal:8000/v1`,
-`EXAMPLE_UPSTREAM_API_KEY` to `local-placeholder` and `EXAMPLE_UPSTREAM_MODEL`
-to the served model name, save, and select **Restart backend**.
-
-The same change from a terminal, as CI makes it:
+Stage 2 stored the three `EXAMPLE_UPSTREAM_*` settings in the example database,
+where they outrank `deploy/backend.env` and your shell. In the Admin Console,
+open **Settings → Providers & Routing** and set `EXAMPLE_UPSTREAM_BASE_URL` to
+`http://host.docker.internal:8000/v1`, `EXAMPLE_UPSTREAM_API_KEY` to
+`local-placeholder` and `EXAMPLE_UPSTREAM_MODEL` to the served model name. Then
+select **Save** and **Restart backend**. Clients still request `example-chat`.
+To make the change from a terminal, as CI does:
 
 ```bash
 export EXAMPLE_UPSTREAM_BASE_URL=http://host.docker.internal:8000/v1
@@ -104,89 +71,48 @@ python3 distributions/example/full_smoke.py --configure-upstream
 make demo DISTRIBUTION=example
 ```
 
-`--configure-upstream` signs in as `admin` and stores the three exported values
-through the admin configuration API; `make demo` then recreates the backend so
-the model registry reads them.
+`--configure-upstream` signs in as `admin` and stores the exported values
+through the admin configuration API; `make demo` recreates the backend so the
+model registry reads them.
 
-This works with an OpenAI-compatible vLLM, SGLang, Ollama, or similar server.
-The host server must listen on a Docker-reachable address such as `0.0.0.0`.
-That bind may expose an unauthenticated model server to the LAN; use a host
-firewall or a Docker-reachable private interface when possible.
-The deterministic smoke expects the bundled provider's fixed response, so use a
-normal completion rather than `make demo-smoke` after selecting a real model.
-`EXAMPLE_UPSTREAM_API_KEY` is the gateway-to-provider credential; it is separate
-from the HybridInference user API key you create in the Web Console.
+The model server (vLLM, SGLang, Ollama or any OpenAI-compatible server) must
+listen on an address Docker can reach, such as `0.0.0.0`. That can expose an
+unauthenticated model server to your LAN, so use a host firewall or a private
+interface. The smoke checks expect the bundled provider's fixed reply; test a
+real model with a normal completion. `EXAMPLE_UPSTREAM_API_KEY` is the
+gateway's credential for the provider, not a HybridInference API key.
 
-The dashboard may show cards for optional Agents or pgAdmin services. This
-example does not start either service, so those routes remain unavailable.
+## Stop, resume and reset
 
-## Optional: learn quota reporting and quota-aware routing
+| Command | Effect |
+|---|---|
+| `make demo-down DISTRIBUTION=example` | Stops the full example and keeps its account, key, settings and history. `make demo DISTRIBUTION=example` resumes at the stage you stopped at. |
+| `make demo-reset DISTRIBUTION=example` | Deletes the example's data, including the administrator, generated secrets and stored settings; the next `make demo` starts setup again. It cannot remove the production `hybridinference_postgres_data` volume. |
+| `make down DISTRIBUTION=example` | Stops a project still at Stage 1. |
 
-The example also includes `quota_extension.py`, an explicitly enabled backend
-extension that reads a simulated account's daily request usage. The fixture's
-`--quota-limit` option enables its `/usage` endpoint and an in-memory counter;
-without it the original example provider behaves as before. No real provider
-account, cookie, paid key or GPU is involved.
-
-Follow [Quota reporting](../../docs/developer/backend-extensions.md#quota-reporting)
-for the complete three-terminal walkthrough using
-`config/examples/models.routewise.quota.json`. It demonstrates the same source
-feeding the admin quota API and RouteWise, a priced fallback on cold start or
-exhaustion, and how to replace the simulation with an authorized data source.
-The simulation is not production accounting and resets when its process
-restarts or at UTC midnight. It is not enabled by `make up` or `make demo`;
-the existing three-stage tutorial and its smoke checks are unchanged.
-
-## Stop, restart, and reset
-
-Stop the full example while keeping its account, key, and history:
-
-```bash
-make demo-down DISTRIBUTION=example
-```
-
-Run `make demo DISTRIBUTION=example` again to resume. Stage 3's upstream
-settings are stored in the database, so the same command resumes whichever
-stage you stopped at. To remove this example project's data and return to a
-fresh state:
-
-```bash
-make demo-reset DISTRIBUTION=example
-```
-
-The reset is destructive — the administrator, the generated secrets and every
-stored setting go with the data, and the next `make demo` starts first-run
-setup again — but it cannot remove the production
-`hybridinference_postgres_data` volume.
-
-If you stop after Stage 1, the original command is still available:
-
-```bash
-make down DISTRIBUTION=example
-```
-
-After Stage 2 has started, do not use plain `make up DISTRIBUTION=example` as a
-downgrade. Reset the example and begin again at Stage 1; otherwise the running
-frontend/Postgres and the Stage 1 backend inputs can form a mixed stack.
-
-At every stage, `make logs DISTRIBUTION=example` sees the services running in
-the shared Compose project. Add `s=backend`, `s=frontend`, or `s=postgres` to
-focus on one service.
+After Stage 2 has started, never go back with plain
+`make up DISTRIBUTION=example`: the running frontend and Postgres and the Stage
+1 backend inputs would form a mixed stack. Reset and start again at Stage 1.
+`make logs DISTRIBUTION=example` follows every service; add `s=backend`,
+`s=frontend` or `s=postgres` for one.
 
 ## Ports and isolation
 
-Defaults are loopback-only:
+Defaults are loopback-only: backend `18080`, frontend `13001`, Postgres
+`15432`. The example has its own Compose project, container names and
+project-scoped database volume, and ignores a host-local `.env`, so CI can
+override every port and name without colliding with another HybridInference
+stack.
 
-| Service | Host port |
-| --- | ---: |
-| Backend | `18080` |
-| Frontend | `13001` |
-| Postgres | `15432` |
+## Optional quota reporting
 
-The example has its own Compose project, parameterized container identities,
-and a project-scoped database volume. A host-local `.env` is ignored. CI can
-override all published ports and identities without colliding with another
-HybridInference stack.
+`quota_extension.py` is an opt-in backend extension that reads a simulated
+account's daily request usage from the fixture's `/usage` endpoint, which the
+fixture's `--quota-limit` option enables.
+[Quota reporting](../../docs/developer/backend-extensions.md#quota-reporting)
+walks through it with `config/examples/models.routewise.quota.json`. The
+simulation is not production accounting, resets when its process restarts or
+at UTC midnight, and is not enabled by `make up` or `make demo`.
 
 ## Directory contents
 
@@ -209,14 +135,13 @@ distributions/example/
 └── full_smoke.py
 ```
 
-`EXAMPLE_OVERLAY` only marks this directory as a teaching artifact so bare
-distribution discovery does not select it. It is not an auth/full-stack mode
-flag. A real project should copy the distribution shape, remove the teaching
-marker and fake provider, replace every local-only credential and identity,
-and add its own deployment controls.
+`EXAMPLE_OVERLAY` only marks this directory as a teaching example, so bare
+distribution discovery skips it; it is not an auth or stage flag. A real
+project copies the shape, removes the marker and the fake provider, replaces
+every local-only credential and identity, and adds its own deployment controls.
 
-`frontend/site-ui/` is the smallest useful Site UI module: it replaces the home
-page and nothing else. `make demo` does not use it; the Stage 2 frontend is the
-standard image. The **Site UI Containers** CI job compiles it, and
-[Site UI Modules](../../docs/developer/site-ui-modules.md)
-shows how to build it into a frontend image yourself.
+`frontend/site-ui/` is the smallest useful Site UI module: it replaces only the
+home page. `make demo` does not use it (Stage 2 runs the standard frontend
+image); the **Site UI Containers** CI job compiles it, and
+[Site UI Modules](../../docs/developer/site-ui-modules.md) shows how to build it
+into an image.

@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-16 22:57-0400\n"
+"POT-Creation-Date: 2026-11-28 06:23+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -25,19 +25,12 @@ msgstr "可信代理与客户端 IP"
 
 #: ../developer/trusted-proxies-and-client-ips.md:3
 msgid ""
-"Almost every deployment puts something in front of the gateway — a CDN, a"
-" reverse proxy, a tunnel, a load balancer. Once that is true, the socket "
-"peer the gateway sees is the proxy, not the caller, and the caller's "
-"address only survives in a request header that anyone can also set by "
-"hand."
-msgstr "几乎每个部署都会在网关前面再加一层：CDN、反向代理、隧道或负载均衡器。这样一来，网关看到的套接字对端就是这一层代理，而不是调用方；调用方的地址只能靠请求头带过来，而这个请求头任何人都可以手工伪造。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:8
-msgid ""
-"The gateway therefore believes a forwarded address only from peers you "
-"have authorized. Start with the row that matches what sits in front of "
-"your gateway:"
-msgstr "所以，网关只采信你授权过的对端转发来的地址。先看网关前面放的是什么，在下表中找到对应的那一行："
+"When something sits in front of the gateway (a CDN, a reverse proxy, a "
+"tunnel, a load balancer), the socket peer is the proxy, and the caller's "
+"address arrives only in a header that anyone can forge. The gateway "
+"therefore believes a forwarded address only from peers you authorize. "
+"Find your setup:"
+msgstr "网关前面一旦有东西（CDN、反向代理、隧道、负载均衡器），套接字对端就是代理，调用方的地址只出现在请求头里，而请求头谁都能伪造。因此网关只相信你授权过的对端转发来的地址。找到你的部署方式："
 
 #: ../developer/trusted-proxies-and-client-ips.md
 msgid "In front of the gateway"
@@ -52,8 +45,8 @@ msgid "Nothing: clients connect directly"
 msgstr "什么都没有：客户端直连"
 
 #: ../developer/trusted-proxies-and-client-ips.md
-msgid "Nothing. Forwarding headers are ignored by default."
-msgstr "什么都不用设。转发头默认会被忽略。"
+msgid "Nothing. Forwarding headers are ignored by default"
+msgstr "什么都不用设。默认忽略转发请求头"
 
 #: ../developer/trusted-proxies-and-client-ips.md
 msgid "A reverse proxy or load balancer at a known address"
@@ -96,845 +89,576 @@ msgstr "私有网络（如 `10.x`）上的客户端直连"
 msgid "`TRUSTED_DIRECT_CLIENT_NETWORKS=<those client ranges>`"
 msgstr ""
 
-#: ../developer/trusted-proxies-and-client-ips.md:20
-msgid ""
-"Each of these is a setting under **Network** on the admin console's "
-"**Configuration** tab; the `NAME=value` forms on this page are how they "
-"look in the environment, from which a new deployment's first start copies"
-" them. See [Settings stored in the database](configuration.md#settings-"
-"stored-in-the-database)."
-msgstr ""
-"这些都是管理控制台 **Configuration** 标签页里 **Network** 分类下的设置项；本页写成 `NAME=value` "
-"的形式，是它们在环境变量里的样子，新部署第一次启动时会从环境变量里把它们复制过去。见[存储在数据库中的设置项](configuration.md"
-"#settings-stored-in-the-database)。"
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "The bundled Compose file's console, and your edge in front of it"
+msgstr "仓库自带 Compose 文件里的控制台，以及它前面你的边缘层"
 
-#: ../developer/trusted-proxies-and-client-ips.md:25
+#: ../developer/trusted-proxies-and-client-ips.md
 msgid ""
-"After that first start the stored values win, so change proxy trust on "
-"the Settings tab or with `python -m serving.config.manage set`, not in "
-"`.env`. An environment value that conflicts with a stored one — "
-"`TRUST_X_REAL_IP=1` while the stored `TRUST_PROXY_HEADERS` is off, say — "
-"is set aside with a warning in the log, and its default applies. The "
-"bundled Compose file passes `TRUST_PROXY_HEADERS` and "
-"`TRUST_CLOUDFLARE_HEADERS` with a default of `0`, and the first start "
-"stores what it passes. If every client appears with your proxy's address,"
-" look at these settings on the Settings tab first: a stored `0` outranks "
-"a `1` in `.env`."
-msgstr ""
-"第一次启动之后，以存储的值为准，所以要在 Settings 标签页上或用 `python -m "
-"serving.config.manage set` 修改代理信任，而不是改 `.env`。"
-"与存储值冲突的环境变量值（比如存储的 `TRUST_PROXY_HEADERS` 是关闭的，而环境变量里是 "
-"`TRUST_X_REAL_IP=1`）会被搁置，日志里会有一条警告，并改用它的默认值。仓库自带的 "
-"Compose 文件透传 `TRUST_PROXY_HEADERS` 和 "
-"`TRUST_CLOUDFLARE_HEADERS` 时默认值是 `0`，第一次启动会把透传的值存下来。"
-"如果每个客户端都显示成你的代理的地址，先去 Settings 标签页上看看这些设置项：存储的 `0` 优先于 "
-"`.env` 里的 `1`。"
+"Trust the console only for the header your edge sets; see [Behind the "
+"console](#behind-the-console)"
+msgstr "只信任控制台转发的、由你的边缘设置的那个请求头；见[控制台之后](#behind-the-console)"
 
-#: ../developer/trusted-proxies-and-client-ips.md:35
+#: ../developer/trusted-proxies-and-client-ips.md:17
 msgid ""
-"The rest of this page explains each setting, how the address is resolved,"
-" and what is logged and stored. "
+"These are settings in the **Network** section, under **Advanced** in "
+"**Admin → Settings → Site & Setup**. A new deployment's first start "
+"copies them from the environment (the `NAME=value` forms on this page); "
+"after that the stored values win, so change them in Admin or with `python"
+" -m serving.config.manage set`, not in `.env`. The bundled Compose file "
+"passes `TRUST_PROXY_HEADERS` and `TRUST_CLOUDFLARE_HEADERS` as `0` unless"
+" `.env` sets them, and the first start stores that. If every client "
+"appears with your proxy's address, check these settings in Admin first."
+msgstr ""
+"这些设置项位于 **Admin → Settings → Site & Setup** 的 **Advanced** 下的 **Network**"
+" 部分。新部署首次启动时从环境变量（即本页的 `NAME=value` 写法）复制它们；此后以存储的值为准，所以请在 Admin 中或用 "
+"`python -m serving.config.manage set` 修改，不要改 `.env`。除非 `.env` 中设置了，自带的 "
+"Compose 文件会把 `TRUST_PROXY_HEADERS` 和 `TRUST_CLOUDFLARE_HEADERS` 作为 `0` "
+"传入，首次启动会存下这个值。如果所有客户端都显示为代理的地址，先去 Admin 检查这些设置项。"
+
+#: ../developer/trusted-proxies-and-client-ips.md:26
+msgid ""
 "`apps/backend/serving/utils/request_ip.py` is the one place in the code "
-"that makes this decision."
-msgstr ""
-"本页其余部分会解释每一项设置、地址是怎么解析出来的，以及哪些内容会写进日志、哪些会存下来。代码里做这个判断的只有 "
-"`apps/backend/serving/utils/request_ip.py` 这一处。"
+"that decides a client's address."
+msgstr "代码中只有 `apps/backend/serving/utils/request_ip.py` 一处决定客户端的地址。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:39
+#: ../developer/trusted-proxies-and-client-ips.md:29
 msgid "The server underneath"
 msgstr "底层服务器"
 
-#: ../developer/trusted-proxies-and-client-ips.md:41
+#: ../developer/trusted-proxies-and-client-ips.md:31
 msgid ""
-"For the module to be the single decision point, the server it runs inside"
-" must not make the same decision first. uvicorn carries its own proxy-"
-"header handling, and it defaults **on**: unless told otherwise, it "
-"rewrites `request.client` — the socket peer as the application sees it — "
-"and the URL scheme from `X-Forwarded-For` / `X-Forwarded-Proto` whenever "
-"the TCP peer is in `--forwarded-allow-ips` (default `127.0.0.1`, also "
-"settable through the `FORWARDED_ALLOW_IPS` environment variable). That "
-"rewrite happens before any application code runs, upstream of everything "
-"this page describes, so left enabled it hands `request_ip.py` an already-"
-"forged \"socket peer\" while `TRUST_PROXY_HEADERS=0` promises that no "
-"header influences the result. With `--forwarded-allow-ips \"*\"`, the "
-"leftmost `X-Forwarded-For` entry — whatever the caller wrote — would "
-"become the socket peer on every request."
+"uvicorn has its own proxy-header handling, on by default: it rewrites the"
+" socket peer and URL scheme from `X-Forwarded-For` and `X-Forwarded-"
+"Proto` for peers in `--forwarded-allow-ips` (default `127.0.0.1`, or "
+"`FORWARDED_ALLOW_IPS`), before the application sees the request. That "
+"would bypass every rule on this page. Every launch configuration in this "
+"repository passes `--no-proxy-headers` "
+"(`deploy/docker/Dockerfile.backend` and the systemd unit in "
+"`deploy/systemd/`), and a test fails if one stops. Under your own process"
+" manager, pass `--no-proxy-headers` too; leaving out `--proxy-headers` is"
+" not enough."
 msgstr ""
-"要让这个模块成为唯一做判断的地方，运行它的服务器就不能抢先做同样的判断。uvicorn "
-"自带一套代理头处理逻辑，而且默认**开启**：除非明确关掉，只要 TCP 对端在 `--forwarded-allow-ips` 之内（默认 "
-"`127.0.0.1`，也可以通过环境变量 `FORWARDED_ALLOW_IPS` 设置），它就会根据 `X-Forwarded-For` /"
-" `X-Forwarded-Proto` 改写 `request.client`（也就是应用看到的套接字对端）和 URL 的 "
-"scheme。这一步发生在任何应用代码运行之前，比本页介绍的所有逻辑都早。如果不关掉它，`request_ip.py` "
-"拿到的「套接字对端」就已经是伪造过的，而 `TRUST_PROXY_HEADERS=0` 承诺的恰恰是任何请求头都影响不了结果。要是再设成 "
-"`--forwarded-allow-ips \"*\"`，每个请求的套接字对端都会变成 `X-Forwarded-For` "
-"最左边的那一项，也就是调用方随便写的值。"
+"uvicorn 自带代理请求头处理，而且默认开启：对于 `--forwarded-allow-ips`（默认 `127.0.0.1`，也可用 "
+"`FORWARDED_ALLOW_IPS` 设置）中的对端，它会在应用看到请求之前，按 `X-Forwarded-For` 和 `X"
+"-Forwarded-Proto` 改写套接字对端和 URL "
+"scheme。这会绕过本页的所有规则。本仓库的每个启动配置（`deploy/docker/Dockerfile.backend` 和 "
+"`deploy/systemd/` 中的 systemd 单元）都传入了 `--no-proxy-"
+"headers`，少了它测试就会失败。用你自己的进程管理器运行时，也要传入 `--no-proxy-headers`；仅仅不写 `--proxy-"
+"headers` 是不够的。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:54
+#: ../developer/trusted-proxies-and-client-ips.md:40
 msgid ""
-"Every launch configuration in this repository therefore passes `--no-"
-"proxy-headers` explicitly — `deploy/docker/Dockerfile.backend` and both "
-"systemd units — and a test fails if one stops doing so. If you run the "
-"gateway under your own process manager, pass `--no-proxy-headers` there "
-"too: leaving out `--proxy-headers` is not enough, because the default is "
-"on."
+"Because the server never reads forwarded headers, `peer_ip` is always the"
+" real TCP peer, and `request.url.scheme` is `http` behind a TLS-"
+"terminating proxy. Set `BASE_URL` (under **General** in **Admin → "
+"Settings → Site & Setup**) so the links in signup and password-reset "
+"emails use the right scheme."
 msgstr ""
-"因此，本仓库的每一份启动配置（`deploy/docker/Dockerfile.backend` 和两个 systemd 单元）都显式传了 "
-"`--no-proxy-headers`，只要有一处漏掉，就会有测试失败。如果你用自己的进程管理器运行网关，也要在那里加上 `--no-"
-"proxy-headers`：光是不写 `--proxy-headers` 还不够，因为它默认就是开启的。"
+"由于服务器从不读取转发请求头，`peer_ip` 始终是真实的 TCP 对端，而在终止 TLS "
+"的代理之后，`request.url.scheme` 是 `http`。请设置 `BASE_URL`（位于 **Admin → Settings "
+"→ Site & Setup** 的 **General** 下），让注册和重置密码邮件中的链接使用正确的 scheme。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:61
-msgid "Two consequences of the server never interpreting forwarded headers:"
-msgstr "服务器从不解析转发头，这带来两个后果："
+#: ../developer/trusted-proxies-and-client-ips.md:45
+msgid "Behind the console"
+msgstr "在控制台后面"
 
-#: ../developer/trusted-proxies-and-client-ips.md:63
+#: ../developer/trusted-proxies-and-client-ips.md:47
 msgid ""
-"`request.url.scheme` is always `http` behind a TLS-terminating proxy. Set"
-" `BASE_URL` (under **General** on the **Configuration** tab) so absolute "
-"URLs — signup verification and password-reset email links — do not fall "
-"back to the request scheme."
+"In the bundled Compose file every request through the console reaches the"
+" gateway from the console's address. The console relays the caller's `X"
+"-Forwarded-For`, `X-Real-IP`, `CF-Connecting-IP` and `CF-Connecting-IPv6`"
+" unchanged, and adds no address of its own: a Next.js route handler "
+"cannot see the connection's address once the caller has sent `X"
+"-Forwarded-For`. (When the caller sent none, Next fills it in on the "
+"gateway's API paths, but not on the rewritten `/health`, `/site-updates`,"
+" `/site-config` and `/public-stats`.)"
 msgstr ""
-"在负责 TLS 终结的代理后面，`request.url.scheme` 始终是 `http`。请设置 `BASE_URL`（在 "
-"**Configuration** 标签页的 **General** 分类下），这样注册验证邮件、密码重置邮件里的绝对 URL "
-"才不会沿用请求本身的 scheme。"
+"在自带的 Compose 文件中，所有经过控制台的请求都从控制台的地址到达网关。控制台原样转发调用方的 `X-Forwarded-For`、`X"
+"-Real-IP`、`CF-Connecting-IP` 和 `CF-Connecting-IPv6`，不添加自己的地址：调用方一旦发送了 `X"
+"-Forwarded-For`，Next.js 路由处理器就看不到连接的地址。（调用方没有发送时，Next 会在网关的 API "
+"路径上补上它，但重写的 `/health`、`/site-updates`、`/site-config` 和 `/public-stats` "
+"不会。）"
 
-#: ../developer/trusted-proxies-and-client-ips.md:67
+#: ../developer/trusted-proxies-and-client-ips.md:55
 msgid ""
-"`peer_ip` below is the genuine TCP peer again, which is what makes it "
-"usable as the un-forgeable anchor the rest of this page treats it as."
-msgstr "下文的 `peer_ip` 又变回了真正的 TCP 对端。本页后面把它当作无法伪造的基准，靠的就是这一点。"
+"So trusting the console trusts whatever reached it. That is safe only "
+"when every request reaches the console through one edge that sets the "
+"header the gateway reads:"
+msgstr "所以信任控制台就等于信任到达控制台的一切。只有当每个请求都经过同一个边缘到达控制台，并且由这个边缘设置网关读取的那个请求头时，这才安全："
 
-#: ../developer/trusted-proxies-and-client-ips.md:70
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "In front of the console"
+msgstr "控制台前面是什么"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "What to trust"
+msgstr "信任什么"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "Why it holds"
+msgstr "为什么成立"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "Cloudflare, as a proxy or a tunnel"
+msgstr "Cloudflare（作为代理或隧道）"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid ""
+"`CF-Connecting-IP`: `TRUST_PROXY_HEADERS=1`, "
+"`TRUST_CLOUDFLARE_HEADERS=1`, `TRUSTED_CLOUDFLARE_NETWORKS=<the console's"
+" address>/32`"
+msgstr ""
+"`CF-Connecting-"
+"IP`：`TRUST_PROXY_HEADERS=1`、`TRUST_CLOUDFLARE_HEADERS=1`、`TRUSTED_CLOUDFLARE_NETWORKS=<the"
+" console's address>/32`"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "Cloudflare overwrites that header on every request"
+msgstr "Cloudflare 会在每个请求上覆盖这个头"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid ""
+"A reverse proxy that writes `X-Forwarded-For` (nginx's "
+"`$proxy_add_x_forwarded_for` or `$remote_addr`)"
+msgstr ""
+"会写 `X-Forwarded-For` 的反向代理（nginx 的 `$proxy_add_x_forwarded_for` 或 "
+"`$remote_addr`）"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid ""
+"`X-Forwarded-For`: `TRUST_PROXY_HEADERS=1`, `TRUSTED_PROXIES=<the "
+"console's address>/32`"
+msgstr ""
+"`X-Forwarded-For`：`TRUST_PROXY_HEADERS=1`、`TRUSTED_PROXIES=<the console's"
+" address>/32`"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid ""
+"The right-most entry, the one the gateway reads, is the one that proxy "
+"wrote"
+msgstr "网关读取的最右侧条目正是这个代理写入的"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "Nothing: clients reach the console directly"
+msgstr "什么都没有：客户端直接连到控制台"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "Nothing"
+msgstr "什么都不信任"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "A client chooses every header the console relays"
+msgstr "控制台转发的每个请求头都由客户端决定"
+
+#: ../developer/trusted-proxies-and-client-ips.md:65
+msgid ""
+"Keep the console's port reachable from that edge alone. Loopback "
+"publishing (`FRONTEND_HOST=127.0.0.1`) still lets every process on the "
+"host and every container on its network reach it and claim any address. "
+"Without such an edge, leave the console untrusted: every browser then "
+"resolves to `\"unknown\"` (see [The \"unknown\" outcome](#the-unknown-"
+"outcome)). An entry that sends `/v1` and `/anthropic` straight to the "
+"gateway is a second peer; trust it by its exact address, never a range "
+"(see [Splitting inference traffic at the entry](deployment.md#splitting-"
+"inference-traffic-at-the-entry))."
+msgstr ""
+"让控制台的端口只能从这个边缘访问。即使只发布在回环地址（`FRONTEND_HOST=127.0.0.1`），主机上的每个进程和同一网络中的每个容器仍能访问它，并声称任意地址。没有这样的边缘时，不要信任控制台：每个浏览器都会解析为"
+" `\"unknown\"`（见[\"unknown\" 结果](#the-unknown-outcome)）。把 `/v1` 和 "
+"`/anthropic` "
+"直接发给网关的入口是第二个对端；按它的确切地址信任它，不要用地址段（见[在入口处分流推理流量](deployment.md#splitting-"
+"inference-traffic-at-the-entry)）。"
+
+#: ../developer/trusted-proxies-and-client-ips.md:74
 msgid "Trust configuration"
 msgstr "信任配置"
 
-#: ../developer/trusted-proxies-and-client-ips.md:72
+#: ../developer/trusted-proxies-and-client-ips.md:76
 msgid ""
-"Forwarding headers (`X-Forwarded-For`, `CF-Connecting-IP`, etc.) are "
-"**attacker-controlled on every request** that reaches the origin without "
-"passing through a trusted proxy. The gateway requires explicit "
-"authorization before any header influences the result."
-msgstr ""
-"请求只要没有经过可信代理就到达了源站，其中的转发头（`X-Forwarded-For`、`CF-Connecting-IP` "
-"等）就**完全由攻击者控制**。因此，任何请求头要影响结果，都必须先经过显式授权。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:77
-msgid "Trusted proxies"
-msgstr "可信代理"
-
-#: ../developer/trusted-proxies-and-client-ips.md:79
-msgid ""
-"The `trusted_proxies` setting is a comma-separated list of CIDR ranges "
-"authorized to assert forwarding provenance via `X-Forwarded-For` / `X"
-"-Real-IP`:"
-msgstr ""
-"`trusted_proxies` 是一个逗号分隔的 CIDR 列表。只有落在这些网段里的对端，才能通过 `X-Forwarded-For` / "
-"`X-Real-IP` 告诉网关请求原本来自哪里："
-
-#: ../developer/trusted-proxies-and-client-ips.md:87
-msgid ""
-"Trust the narrowest possible addresses. Only the specific proxy IP(s) "
-"that terminate connections from the internet and forward to the gateway "
-"should be trusted. Do not trust broad internal subnets — that would allow"
-" any host within that subnet to assert client identity on any request."
-msgstr ""
-"信任的范围越窄越好。只信任那几个具体的代理 "
-"IP，也就是接收公网连接、再转发给网关的那几台代理。不要信任大片的内部子网，否则子网里的任何主机都能在任意请求里随意指定客户端身份。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:92
-msgid ""
-"An invalid CIDR is refused: the **Configuration** tab will not save it, "
-"and in the environment it stops the gateway at startup unless the "
-"database holds a valid value for the setting."
-msgstr ""
-"无效的 CIDR 会被拒绝：**Configuration** "
-"标签页不会保存它；如果写在环境变量里，除非数据库里存有这个设置项的有效值，否则网关启动时就会因此停止。"
+"Forwarding headers are attacker-controlled on every request that does not"
+" pass through a trusted proxy, so each source of them needs explicit "
+"authorization."
+msgstr "对于没有经过可信代理的请求，转发请求头完全由攻击者控制，所以每个来源都需要明确授权。"
 
 #: ../developer/trusted-proxies-and-client-ips.md
+msgid "Setting"
+msgstr "设置项"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "Effect"
+msgstr "作用"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "`TRUST_PROXY_HEADERS`"
+msgstr ""
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid ""
+"Master switch (default `0`). With it on, `X-Forwarded-For` is read from "
+"peers in `TRUSTED_PROXIES`"
+msgstr "总开关（默认 `0`）。开启后，从 `TRUSTED_PROXIES` 中的对端读取 `X-Forwarded-For`"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "`TRUSTED_PROXIES`"
+msgstr ""
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "Comma-separated CIDRs of the proxies that forward to the gateway"
+msgstr "转发到网关的代理的 CIDR，逗号分隔"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "`TRUST_CLOUDFLARE_HEADERS`"
+msgstr ""
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid ""
+"Reads `CF-Connecting-IP` from peers in `TRUSTED_CLOUDFLARE_NETWORKS`; "
+"needs `TRUST_PROXY_HEADERS`"
+msgstr ""
+"从 `TRUSTED_CLOUDFLARE_NETWORKS` 中的对端读取 `CF-Connecting-IP`；需要开启 "
+"`TRUST_PROXY_HEADERS`"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "`TRUSTED_CLOUDFLARE_NETWORKS`"
+msgstr ""
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "The immediate peers allowed to send Cloudflare's header"
+msgstr "允许发送 Cloudflare 请求头的直接对端"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "`TRUST_X_REAL_IP`"
+msgstr ""
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid ""
+"Also reads `X-Real-IP` from trusted proxies, only when no `X-Forwarded-"
+"For` is present; needs `TRUST_PROXY_HEADERS`"
+msgstr "还从可信代理读取 `X-Real-IP`，但只在没有 `X-Forwarded-For` 时；需要开启 `TRUST_PROXY_HEADERS`"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "`TRUSTED_DIRECT_CLIENT_NETWORKS`"
+msgstr ""
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid ""
+"Private client ranges whose socket peers count as clients; authorizes no "
+"headers"
+msgstr "私有网络中的客户端地址段，这些套接字对端算作客户端；不授权任何请求头"
+
+#: ../developer/trusted-proxies-and-client-ips.md:88
+msgid ""
+"A flag with an empty network list does nothing, so the default fails "
+"closed. Admin refuses a combination that breaks these rules, and an "
+"invalid CIDR. At startup, an environment value that conflicts with a "
+"stored one is set aside with a warning; a combination the environment "
+"breaks on its own, or an invalid CIDR with no valid stored value, stops "
+"the gateway."
+msgstr ""
+"网络列表为空时开关不起作用，所以默认是失败即关闭。Admin 会拒绝违反这些规则的组合以及无效的 "
+"CIDR。启动时，与已存储值冲突的环境变量值会被搁置并记录警告；环境变量本身就违反规则的组合，或者没有有效存储值可用的无效 "
+"CIDR，会让网关停止。"
+
+#: ../developer/trusted-proxies-and-client-ips.md:94
+msgid ""
+"Trust the narrowest addresses: only the proxies that accept connections "
+"from the internet. A broad internal subnet would let any host on it claim"
+" any client address."
+msgstr "只信任范围最小的地址：只信任接收互联网连接的代理。宽泛的内部子网会让其中任何主机都能声称任意客户端地址。"
+
+#: ../developer/trusted-proxies-and-client-ips.md:103
+msgid ""
+"`TRUSTED_CLOUDFLARE_NETWORKS` lists socket peers, not Cloudflare's ranges"
+" as such. With Cloudflare → nginx → gateway, list only nginx's exact "
+"address, and only when nginx is reachable from Cloudflare alone and "
+"overwrites the header. A generic trusted proxy never makes a client-"
+"supplied `CF-Connecting-IP` safe, which is why the two lists are "
+"separate."
+msgstr ""
+"`TRUSTED_CLOUDFLARE_NETWORKS` 列出的是套接字对端，不一定是 Cloudflare 的地址段。对于 "
+"Cloudflare → nginx → 网关，只列出 nginx 的确切地址，而且前提是 nginx 只能从 Cloudflare "
+"访问并会覆盖该请求头。通用的可信代理永远不会让客户端提供的 `CF-Connecting-IP` 变得安全，所以两个列表是分开的。"
+
+#: ../developer/trusted-proxies-and-client-ips.md:117
+msgid ""
+"Private (RFC 1918, CGNAT, ULA) socket peers stay unresolved by default, "
+"because a container bridge or shared proxy is not a client. If clients "
+"really connect directly over such a network, list only their ranges, "
+"never a shared proxy network:"
+msgstr ""
+"私有（RFC "
+"1918、CGNAT、ULA）套接字对端默认不解析，因为容器网桥或共享代理不是客户端。如果客户端确实通过这样的网络直接连接，只列出它们的地址段，绝不要包括共享代理所在的网络："
+
+#: ../developer/trusted-proxies-and-client-ips.md:126
 msgid "Kubernetes proxy discovery (optional)"
 msgstr "Kubernetes 代理发现（可选）"
 
-#: ../developer/trusted-proxies-and-client-ips.md
+#: ../developer/trusted-proxies-and-client-ips.md:128
 msgid ""
-"For a controlled Kubernetes proxy whose Pod addresses change, opt in with "
-"`TRUST_KUBERNETES_PROXY_DISCOVERY=true`. This mode defaults off; installing "
-"the code leaves existing deployments unchanged. This switch and the "
-"`KUBERNETES_PROXY_*` settings are **environment-only deployment wiring**: "
-"they require a gateway restart and cannot be edited through Admin "
-"Configuration or overridden by `app_config`. The effective database-backed "
-"`TRUST_PROXY_HEADERS` setting remains the master kill switch."
+"For a Kubernetes proxy whose Pod addresses change, set "
+"`TRUST_KUBERNETES_PROXY_DISCOVERY=true`. This switch and the "
+"`KUBERNETES_PROXY_*` settings are environment-only, need a restart, and "
+"cannot be changed in Admin; `TRUST_PROXY_HEADERS` stays the master "
+"switch."
 msgstr ""
-"如果受控的 Kubernetes 代理会更换 Pod 地址，可以通过 "
-"`TRUST_KUBERNETES_PROXY_DISCOVERY=true` 显式启用发现模式。该模式默认关闭，安装代码不会改变现有部署的行为。"
-"这个开关及 `KUBERNETES_PROXY_*` 设置都属于**只能通过环境变量配置的部署参数**：修改后需要重启网关，"
-"不能在管理控制台的 Configuration 页面编辑，也不能被 `app_config` 覆盖。数据库中实际生效的 "
-"`TRUST_PROXY_HEADERS` 仍是关闭转发头信任的总开关。"
+"对于 Pod 地址会变化的 Kubernetes 代理，设置 "
+"`TRUST_KUBERNETES_PROXY_DISCOVERY=true`。这个开关和 `KUBERNETES_PROXY_*` "
+"设置项只能通过环境变量配置，修改后需要重启，不能在 Admin 中更改；`TRUST_PROXY_HEADERS` 仍是总开关。"
 
-#: ../developer/trusted-proxies-and-client-ips.md
+#: ../developer/trusted-proxies-and-client-ips.md:133
 msgid ""
-"Read-only discovery pins a Service by immutable UID and checks matching Pods "
-"against their direct controller's UID. Only those Pods' exact `/32` or `/128` "
-"addresses are admitted. At runtime this set replaces the static proxy list "
-"for both the immediate peer and XFF chain traversal. Missing or expired "
-"discovery, unrecognized peers and a disabled master switch return `unknown` "
-"with `resolved=false`, even for public-looking Pod addresses; there is no "
-"fallback to static proxies, direct-client exemptions or the socket peer. "
-"Cloudflare trust is disabled in this mode; X-Real-IP remains a separate opt-in."
+"Discovery pins a Service by UID, admits only the exact addresses of Pods "
+"owned by the pinned controller, and replaces the static proxy list. "
+"Anything else (stale or failed discovery, an unknown peer, the master "
+"switch off) resolves to `unknown`, with no fallback; Cloudflare trust is "
+"disabled in this mode. Each worker refreshes its own snapshot, valid one "
+"second by default (`KUBERNETES_PROXY_MAX_AGE_SECONDS`, at most five), "
+"with three API GETs per refresh. More than 500 matching Pods or a "
+"response over 2,000,000 bytes fails closed. With `TRUST_PROXY_HEADERS` "
+"on, `/health/ready` fails until a fresh, nonempty set exists. This mode "
+"cannot serve an entry split."
 msgstr ""
-"只读发现通过不可变的 UID 固定一个 Service，并检查匹配 Pod 的直接控制器 UID，"
-"只接受这些 Pod 的精确 `/32` 或 `/128` 地址。运行时，直接对端的信任判断和 XFF 链遍历都会使用这组地址替代静态代理列表。"
-"发现结果缺失或过期、对端不在发现集合中，或总开关关闭时，都会返回 `unknown` 和 `resolved=false`，"
-"即使 Pod 地址看起来属于公网也一样；不会退回静态代理、直连客户端豁免或套接字对端地址。"
-"该模式不信任 Cloudflare 头；X-Real-IP 仍需单独启用。"
+"发现机制按 UID 固定一个 Service，只接纳由固定控制器拥有的 Pod "
+"的确切地址，并取代静态代理列表。其他情况（发现结果过期或失败、未知对端、总开关关闭）都解析为 `unknown`，没有回退；此模式下禁用 "
+"Cloudflare 信任。每个 worker "
+"各自刷新快照，默认有效期一秒（`KUBERNETES_PROXY_MAX_AGE_SECONDS`，最多五秒），每次刷新三次 API "
+"GET。匹配的 Pod 超过 500 个或响应超过 2,000,000 字节时失败即关闭。开启 `TRUST_PROXY_HEADERS` "
+"时，在拿到新鲜、非空的集合之前 `/health/ready` 一直失败。此模式不支持入口分流。"
 
-#: ../developer/trusted-proxies-and-client-ips.md
+#: ../developer/trusted-proxies-and-client-ips.md:143
+#, python-brace-format
 msgid ""
-"Each gateway worker refreshes independently. Membership can remain stale "
-"until its snapshot expires: one second by default, configurable up to five "
-"seconds. A failed refresh never extends that deadline. Requests arriving "
-"before a replacement is discovered can remain unresolved, so this is not a "
-"zero-window traffic gate. An admitted request keeps its identity throughout "
-"a stream; it is not reclassified when membership changes."
+"Before enabling it, check that the gateway sees the proxy Pods' real "
+"addresses, protect Service selectors and Pod ownership with RBAC, and "
+"isolate the network. Keep auth-failure blocking off during acceptance. "
+"The deployment guide {download}`README.md <../../deploy/kubernetes/proxy-"
+"discovery/README.md>` and the RBAC example {download}`rbac.example.yaml "
+"<../../deploy/kubernetes/proxy-discovery/rbac.example.yaml>` cover "
+"identity, TLS, tokens, limits and rollout."
 msgstr ""
-"每个网关 worker 独立刷新。快照过期前，集合仍可能保留旧成员：默认有效期为 1 秒，最长可配置为 5 秒。"
-"刷新失败不会延长这个期限。在替换后的 Pod 被发现之前到达的请求可能仍无法确定来源，因此它不能提供无切换窗口的流量准入。"
-"已接收的请求会在整个流式响应期间保持同一个身份，不会因代理集合变化而重新归因。"
+"启用之前，确认网关看到的是代理 Pod 的真实地址，用 RBAC 保护 Service 选择器和 Pod "
+"归属，并隔离网络。验收期间保持认证失败封禁关闭。部署指南 {download}`README.md "
+"<../../deploy/kubernetes/proxy-discovery/README.md>` 和 RBAC 示例 "
+"{download}`rbac.example.yaml <../../deploy/kubernetes/proxy-"
+"discovery/rbac.example.yaml>` 涵盖身份、TLS、令牌、限制和上线步骤。"
 
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid ""
-"With discovery enabled and the effective `TRUST_PROXY_HEADERS` on, "
-"`/health/ready` also requires a fresh, nonempty proxy set from the same "
-"per-worker cache. With `TRUST_PROXY_HEADERS` off, discovery makes no API "
-"reads, every identity is `unknown`, and readiness depends only on the store "
-"checks."
-msgstr ""
-"启用发现模式且实际生效的 `TRUST_PROXY_HEADERS` 为开启时，`/health/ready` "
-"还要求从同一个 worker 级缓存中取得新鲜且非空的代理集合。`TRUST_PROXY_HEADERS` "
-"关闭时，发现模式不会读取任何 API，所有身份都是 `unknown`，就绪状态只取决于存储检查。"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid ""
-"A refresh is three Kubernetes API GETs, so continuous traffic costs about "
-"`3 × total gateway workers / KUBERNETES_PROXY_MAX_AGE_SECONDS` GETs per "
-"second. After a failure each worker waits 0.25 seconds before trying again, "
-"at one to three GETs per attempt. More than 500 selector-matching Pods, "
-"counted before any are excluded, or an API response over 2,000,000 bytes "
-"fails closed. The deployment guide covers these limits, controller UIDs, Pod "
-"deletion and the `reason` and `proxy_discovery_ms` log fields."
-msgstr ""
-"每次刷新会发出三个 Kubernetes API GET 请求，因此在持续有流量时，开销约为每秒 "
-"`3 × total gateway workers / KUBERNETES_PROXY_MAX_AGE_SECONDS` 个 GET。"
-"刷新失败后，每个 worker 会等待 0.25 秒再重试，每次尝试发出一到三个 GET。"
-"匹配选择器的 Pod 超过 500 个（在排除任何 Pod 之前计数），或 API 响应超过 2,000,000 字节时，"
-"都会按失败关闭处理。部署指南进一步说明了这些限制、控制器 UID、Pod 删除，以及日志字段 `reason` 和 "
-"`proxy_discovery_ms`。"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid ""
-"Before enabling this mode, verify that the gateway sees the proxy Pod's "
-"actual socket address, protect Service selectors and Pod ownership with "
-"RBAC, and enforce network isolation and trusted ingress header handling. "
-"Metadata and exact IPs do not authenticate each connection or eliminate IP "
-"reuse during the cache window. Keep auth-failure blocking disabled during "
-"acceptance; discovery does not change its setting."
-msgstr ""
-"启用前，要验证网关实际看到的套接字对端就是代理 Pod，用 RBAC 保护 Service 选择器和 Pod 所有权，"
-"并确保网络隔离与可信入口的转发头处理真正生效。元数据和精确 IP 不能认证每条连接，也不能消除缓存窗口内的 IP 复用风险。"
-"验收期间保持认证失败封禁关闭；发现模式不会修改这项设置。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:184
-msgid ""
-"This mode does not support an entry that sends `/v1` and `/anthropic` "
-"straight to the gateway. An entry outside the discovered Service resolves"
-" to `unknown`, and with the frontend stopped the set is empty and "
-"readiness fails, so stopping the console would take the gateway out of "
-"rotation; see [Splitting inference traffic at the entry](deployment.md"
-"#splitting-inference-traffic-at-the-entry)."
-msgstr ""
-"这种模式不支持把 `/v1` 和 `/anthropic` 直接交给网关的入口。被发现的 Service 之外的入口解析为 "
-"`unknown`；前端停止时集合为空、就绪失败，于是停止控制台就会让网关被摘掉；见[在入口分流推理流量](deployment.md"
-"#splitting-inference-traffic-at-the-entry)。"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid ""
-"Download the deployment guide {download}`README.md <../../deploy/kubernetes/proxy-discovery/README.md>` "
-"and namespace-scoped RBAC example {download}`rbac.example.yaml <../../deploy/kubernetes/proxy-discovery/rbac.example.yaml>` "
-"for the required identity, TLS, token and rollout checks."
-msgstr ""
-"请下载部署与验收指南 {download}`README.md <../../deploy/kubernetes/proxy-discovery/README.md>` 和"
-"限定命名空间的 RBAC 示例 {download}`rbac.example.yaml <../../deploy/kubernetes/proxy-discovery/rbac.example.yaml>`，"
-"查看必要的身份、TLS、令牌与发布检查。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:96
-msgid "Direct private client networks"
-msgstr "私有网络里的直连客户端"
-
-#: ../developer/trusted-proxies-and-client-ips.md:98
-msgid ""
-"Private RFC1918, CGNAT, and ULA socket peers remain unresolved by default"
-" because a container bridge or shared internal proxy is not an individual"
-" client. If a deployment has clients connecting directly over one of "
-"these networks, authorize only those client CIDRs with "
-"`TRUSTED_DIRECT_CLIENT_NETWORKS`. This setting does not authorize "
-"forwarding headers and must not include shared proxy networks."
-msgstr ""
-"如果套接字对端是 RFC1918、CGNAT 或 ULA "
-"这类私有地址，默认不会把它解析成客户端地址，因为这类地址可能是容器桥接网络或共享的内部代理，而不是某一个具体的客户端。如果你的部署确实有客户端经由这些网络直连，就用"
-" `TRUSTED_DIRECT_CLIENT_NETWORKS` 只授权这些客户端所在的 "
-"CIDR。这项设置不会授权转发头，也不能包含共享代理所在的网络。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:109
-msgid "Cloudflare-header-authorized peers"
-msgstr "有权提供 Cloudflare 头的对端"
-
-#: ../developer/trusted-proxies-and-client-ips.md:111
-msgid ""
-"`CF-Connecting-IP` requires **separate** authorization. A generic trusted"
-" reverse proxy does NOT make a client-supplied `CF-Connecting-IP` safe — "
-"only operators who have verified a Cloudflare header-authority path "
-"should populate this:"
-msgstr ""
-"`CF-Connecting-IP` 需要**单独**授权。普通的可信反向代理，并不能让客户端自带的 `CF-Connecting-IP` "
-"变得可信。只有确认过这个头只可能由 Cloudflare 写入的运维人员，才应该填写这一项："
-
-#: ../developer/trusted-proxies-and-client-ips.md:124
-msgid ""
-"`TRUSTED_CLOUDFLARE_NETWORKS` means the immediate socket peers authorized"
-" to assert Cloudflare semantics; it does not have to contain Cloudflare's"
-" public ranges. If your topology is Cloudflare → nginx → HybridInference,"
-" then HybridInference sees nginx as the socket peer. In that case, list "
-"only nginx's exact address when nginx is exclusively reachable from "
-"Cloudflare and correctly sanitizes/overwrites the header. Cloudflare "
-"itself recommends restricting origin access to Cloudflare addresses to "
-"prevent direct-origin spoofing."
-msgstr ""
-"`TRUSTED_CLOUDFLARE_NETWORKS` 里列的是有权按 Cloudflare 的约定提供这些头的直接套接字对端，不一定要包含 "
-"Cloudflare 的公网网段。如果拓扑是 Cloudflare → nginx → "
-"HybridInference，HybridInference 看到的套接字对端就是 nginx。这种情况下只列 nginx "
-"的确切地址，而且前提是 nginx 只接受来自 Cloudflare 的访问，并且会正确清理或覆盖这个头。Cloudflare 自己也建议只允许 "
-"Cloudflare 的地址访问源站，以防有人绕过 Cloudflare 直连源站伪造请求头。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:132
-msgid ""
-"This separation ensures that a misconfigured generic proxy cannot "
-"accidentally authorize attacker-supplied Cloudflare headers."
-msgstr "把两者分开，是为了让一台配置错误的普通代理，不会意外地让攻击者伪造的 Cloudflare 头生效。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:135
-msgid "Trust flags"
-msgstr "信任开关"
-
-#: ../developer/trusted-proxies-and-client-ips.md:137
-msgid "Three settings control header processing:"
-msgstr "有三个设置项控制如何处理这些请求头："
-
-#: ../developer/trusted-proxies-and-client-ips.md:139
-msgid ""
-"`TRUST_PROXY_HEADERS=1`: enables processing of `X-Forwarded-For` and `X"
-"-Real-IP` headers, but **only** when the immediate peer is in "
-"`trusted_proxies`."
-msgstr ""
-"`TRUST_PROXY_HEADERS=1`：处理 `X-Forwarded-For` 和 `X-Real-IP` 头，但**只有**直接对端在"
-" `trusted_proxies` 里时才生效。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:142
-msgid ""
-"`TRUST_CLOUDFLARE_HEADERS=1`: enables processing of `CF-Connecting-IP`, "
-"but **only** when the immediate peer is in `trusted_cloudflare_networks`."
-msgstr ""
-"`TRUST_CLOUDFLARE_HEADERS=1`：处理 `CF-Connecting-IP`，但**只有**直接对端在 "
-"`trusted_cloudflare_networks` 里时才生效。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:144
-msgid ""
-"`TRUST_X_REAL_IP=1`: separately opts in to the `X-Real-IP` assertion "
-"scheme. It is ignored by default, and it is never consulted when XFF is "
-"present."
-msgstr "`TRUST_X_REAL_IP=1`：单独开启 `X-Real-IP` 这种声明方式。默认忽略这个头；只要请求里有 XFF，就根本不会看它。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:147
-msgid ""
-"All three flags default to `0` (disabled). Setting a flag alone does "
-"nothing if the corresponding network list is empty — this is the fail-"
-"closed default. `TRUST_CLOUDFLARE_HEADERS=1` additionally requires the "
-"master `TRUST_PROXY_HEADERS=1` flag and a non-empty Cloudflare-authorized"
-" network list. `TRUST_X_REAL_IP=1` likewise requires "
-"`TRUST_PROXY_HEADERS=1` and uses the same trusted-proxy network list, but"
-" it is consulted only when XFF is completely absent."
-msgstr ""
-"三个开关默认都是 `0`（关闭）。如果对应的网络列表为空，光打开开关不会有任何效果——这是默认的 fail-closed "
-"行为：配置不全，就什么都不信任。`TRUST_CLOUDFLARE_HEADERS=1` 还要求同时打开总开关 "
-"`TRUST_PROXY_HEADERS=1`，并且 Cloudflare 授权网络列表不能为空。`TRUST_X_REAL_IP=1` 同样要求"
-" `TRUST_PROXY_HEADERS=1`，用的也是同一份可信代理网络列表，但只在请求里完全没有 XFF 时才会看它。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:155
-msgid ""
-"The **Configuration** tab refuses to save a combination that breaks one "
-"of these rules. At startup, an environment value that breaks one with a "
-"stored value is set aside and its default applies; a combination the "
-"environment breaks on its own stops the gateway."
-msgstr ""
-"**Configuration** "
-"标签页会拒绝保存违反其中任一规则的组合。启动时，与存储值一起违反规则的环境变量值会被搁置，改用它的默认值；只有环境变量自己违反规则的组合才会让网关停下。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:160
-msgid "Why this matters"
-msgstr "为什么需要这些限制"
-
-#: ../developer/trusted-proxies-and-client-ips.md:162
-msgid ""
-"Without these gates, a client can send `X-Forwarded-For: <anything>` and "
-"the gateway logs and rate-limits on the address the client chose. Naming "
-"the exact peers that may forward an address closes that hole, and "
-"anything not named is ignored."
-msgstr ""
-"没有这些关卡，客户端就能发送 `X-Forwarded-For: "
-"<anything>`，而网关会按客户端自己挑的地址记日志、做限流。明确列出哪些对端可以转发地址，就堵上了这个漏洞；没列出的一律忽略。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:167
+#: ../developer/trusted-proxies-and-client-ips.md:151
 msgid "Resolution order"
 msgstr "解析顺序"
 
-#: ../developer/trusted-proxies-and-client-ips.md:169
+#: ../developer/trusted-proxies-and-client-ips.md:153
 msgid ""
-"`get_client_ip_info()` returns a frozen `ClientIpInfo` with the resolved "
-"`client_ip`, the `peer_ip` it was resolved against, and a `source` label "
-"naming the rung that won. The `trusted_proxy_headers` field describes "
-"whether any forwarding identity header was **actually authorized** for "
-"this request. The more specific `trusted_forwarded_headers` and "
-"`trusted_cloudflare_headers` fields identify which authority applied."
+"`get_client_ip_info()` returns a `ClientIpInfo` with the resolved "
+"`client_ip`, the `peer_ip`, a `source` naming the rule that won, and "
+"`resolved`. In static mode:"
 msgstr ""
-"`get_client_ip_info()` 返回一个不可变的 `ClientIpInfo`，包含解析出的 `client_ip`、解析时依据的 "
-"`peer_ip`，以及一个 `source` 标签，标明最终是哪一级胜出。`trusted_proxy_headers` "
-"字段表示这次请求里是否有转发身份头**真正得到了授权**；更细的 `trusted_forwarded_headers` 和 "
-"`trusted_cloudflare_headers` 字段则说明用的是哪一种授权。"
+"`get_client_ip_info()` 返回一个 `ClientIpInfo`，包含解析出的 "
+"`client_ip`、`peer_ip`、表示生效规则的 `source`，以及 `resolved`。静态模式下："
 
-#: ../developer/trusted-proxies-and-client-ips.md:176
-msgid "In the default static mode, resolution walks the trust boundary as follows:"
-msgstr "在默认的静态模式下，解析会按以下顺序遵守信任边界："
+#: ../developer/trusted-proxies-and-client-ips.md:157
+msgid ""
+"Peer not authorized: forwarding headers are ignored. The socket peer is "
+"the client if it is routable; otherwise the result is `\"unknown\"`."
+msgstr "对端未授权：忽略转发请求头。套接字对端可路由时就是客户端，否则结果为 `\"unknown\"`。"
+
+#: ../developer/trusted-proxies-and-client-ips.md:159
+msgid ""
+"`CF-Connecting-IP`, when the peer is in `TRUSTED_CLOUDFLARE_NETWORKS` and"
+" `TRUST_CLOUDFLARE_HEADERS=1` (see [Cloudflare Pseudo IPv4](#cloudflare-"
+"pseudo-ipv4) for `CF-Connecting-IPv6`)."
+msgstr ""
+"`CF-Connecting-IP`：当对端在 `TRUSTED_CLOUDFLARE_NETWORKS` 中且 "
+"`TRUST_CLOUDFLARE_HEADERS=1` 时（`CF-Connecting-IPv6` 见 [Cloudflare Pseudo "
+"IPv4](#cloudflare-pseudo-ipv4)）。"
+
+#: ../developer/trusted-proxies-and-client-ips.md:162
+msgid ""
+"`X-Forwarded-For`, when the peer is in `TRUSTED_PROXIES` and "
+"`TRUST_PROXY_HEADERS=1`. The chain is read right to left, skipping "
+"trusted proxies. The first untrusted hop ends the walk: it is the client "
+"if routable, and `\"unknown\"` otherwise. The walk never continues "
+"further left, where the values are the caller's."
+msgstr ""
+"`X-Forwarded-For`：当对端在 `TRUSTED_PROXIES` 中且 `TRUST_PROXY_HEADERS=1` "
+"时。从右向左读取链条，跳过可信代理。遇到第一个不可信的跳就停止：可路由则它就是客户端，否则为 "
+"`\"unknown\"`。绝不继续向左读取，那里的值是调用方写的。"
+
+#: ../developer/trusted-proxies-and-client-ips.md:167
+msgid ""
+"`X-Real-IP`, when `TRUST_X_REAL_IP=1` and no `X-Forwarded-For` is present"
+" at all. A malformed or overlong `X-Forwarded-For` never falls through to"
+" it."
+msgstr ""
+"`X-Real-IP`：当 `TRUST_X_REAL_IP=1` 且完全没有 `X-Forwarded-For` 时。格式错误或过长的 `X"
+"-Forwarded-For` 永远不会退而使用它。"
+
+#: ../developer/trusted-proxies-and-client-ips.md:169
+msgid "The socket peer, if routable; otherwise `\"unknown\"`."
+msgstr "套接字对端，如果可路由；否则为 `\"unknown\"`。"
+
+#: ../developer/trusted-proxies-and-client-ips.md:171
+msgid "For example, a caller who prepends fake addresses gains nothing:"
+msgstr "例如，在前面添加伪造地址的调用方什么也得不到："
 
 #: ../developer/trusted-proxies-and-client-ips.md:178
 msgid ""
-"**Peer not authorized** — forwarding headers are ignored entirely. The "
-"socket peer is used if routable; otherwise `\"unknown\"`."
-msgstr "**对端未经授权**——完全忽略转发头。套接字对端可路由就用它，否则返回 `\"unknown\"`。"
+"Reading from the right, `172.16.0.5` is trusted and skipped, and "
+"`8.8.4.4` is the client. `8.8.8.8` and `1.2.3.4` are never reached."
+msgstr "从右边读起，`172.16.0.5` 可信，跳过；`8.8.4.4` 就是客户端。`8.8.8.8` 和 `1.2.3.4` 根本不会被读到。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:180
+#: ../developer/trusted-proxies-and-client-ips.md:181
 msgid ""
-"**`CF-Connecting-IP`** — only when the peer is in "
-"`trusted_cloudflare_networks` **and** `TRUST_CLOUDFLARE_HEADERS=1`. The "
-"operator must explicitly configure which networks are Cloudflare-"
-"authorized; a generic reverse proxy does not make this header safe. A "
-"corroborated Pseudo IPv4 pair yields the real IPv6 address from `CF-"
-"Connecting-IPv6`."
+"Repeated `X-Forwarded-For` lines are joined in order; a repeated `X-Real-"
+"IP` or `CF-Connecting-*` header is rejected. At most 32 hops are "
+"inspected, and a chain that needs more fails closed. An unresolved "
+"request logs the `client_ip_resolution_unresolved` event, the signal to "
+"watch for malformed headers or missing trust settings."
 msgstr ""
-"**`CF-Connecting-IP`**——只有对端在 `trusted_cloudflare_networks` 里**并且** "
-"`TRUST_CLOUDFLARE_HEADERS=1` 时才使用。哪些网络有权提供 Cloudflare "
-"头，必须由运维人员显式配置；普通的反向代理并不能让这个头变得可信。如果 Pseudo IPv4 的两个头能互相印证，就从 `CF-"
-"Connecting-IPv6` 取真实的 IPv6 地址。"
+"重复的 `X-Forwarded-For` 行按顺序拼接；重复的 `X-Real-IP` 或 `CF-Connecting-*` "
+"请求头会被拒绝。最多检查 32 跳，需要更多跳的链条失败即关闭。未能解析的请求会记录 "
+"`client_ip_resolution_unresolved` 事件，可以据此发现格式错误的请求头或缺失的信任设置。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:185
-msgid ""
-"**`X-Forwarded-For`** — only when the peer is in `trusted_proxies` "
-"**and** `TRUST_PROXY_HEADERS=1`. Walked **right-to-left**: trusted-proxy "
-"hops are skipped. The **first untrusted hop terminates provenance**:"
-msgstr ""
-"**`X-Forwarded-For`**——只有对端在 `trusted_proxies` 里**并且** "
-"`TRUST_PROXY_HEADERS=1` 时才使用。**从右到左**逐个检查，跳过可信代理的地址，**遇到第一个不可信的地址就停下**："
-
-#: ../developer/trusted-proxies-and-client-ips.md:188
-msgid "if routable → it is the client;"
-msgstr "如果可路由 → 它就是客户端；"
-
-#: ../developer/trusted-proxies-and-client-ips.md:189
-msgid ""
-"if non-routable or malformed → return `\"unknown\"`. **Never continue "
-"leftward** — that would cross the trust boundary and consume attacker-"
-"controlled values."
-msgstr "如果不可路由或格式错误 → 返回 `\"unknown\"`。**绝不再往左读**——再往左就越过了信任边界，读到的是攻击者能控制的值。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:192
-msgid ""
-"**`X-Real-IP`** — only when `TRUST_X_REAL_IP=1`, trusted, and routable, "
-"and only when XFF is completely absent. A present XFF chain that is "
-"malformed, ambiguous, overlong, or contains only trusted hops terminates "
-"provenance; it never falls through to this second assertion scheme."
-msgstr ""
-"**`X-Real-IP`**——只有 `TRUST_X_REAL_IP=1`、对端可信、地址可路由，并且请求里完全没有 XFF "
-"时才使用。只要请求带了 XFF，即使这条链格式错误、有歧义、过长，或者只有可信代理的地址，解析也会就此终止，绝不会退而改用这第二种声明方式。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:196
-msgid ""
-"**The socket peer** — a direct connection, or the last resort when no "
-"forwarded hop is usable. If the peer itself is non-routable, the result "
-"is `\"unknown\"`."
-msgstr "**套接字对端**——用于直连的情况，或者在没有任何可用的转发地址时兜底。如果对端本身不可路由，结果就是 `\"unknown\"`。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:200
-msgid ""
-"Request logs carry `ip_source` together with the socket peer and raw "
-"forwarding fields. The structured `client_ip_resolution_unresolved` event"
-" is the canonical signal for malformed-header and degraded-enforcement "
-"spikes; its structured `event=\"client_ip_resolution\"` metadata "
-"identifies the resolution event without turning an unresolved peer into a"
-" client identity."
-msgstr ""
-"请求日志会把 `ip_source` 和套接字对端、原始转发字段记在一起。要监测格式错误的请求头或防护降级是否突然增多，以结构化事件 "
-"`client_ip_resolution_unresolved` 为准；它带的结构化元数据 "
-"`event=\"client_ip_resolution\"` 用来标识这次解析事件，但不会因此把未解析出的对端当成客户端身份。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:206
-msgid "Example: multi-hop chain"
-msgstr "示例：多跳链"
-
-#: ../developer/trusted-proxies-and-client-ips.md:213
-#: ../developer/trusted-proxies-and-client-ips.md:230
-msgid "Walking right-to-left:"
-msgstr "从右到左遍历："
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "Hop"
-msgstr "地址"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "Trusted?"
-msgstr "可信？"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "Routable?"
-msgstr "可路由？"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "Action"
-msgstr "处理"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "172.16.0.5"
-msgstr "172.16.0.5"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "yes (peer)"
-msgstr "是（对端）"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "no"
-msgstr "否"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "skip (trusted)"
-msgstr "跳过（可信）"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "10.0.0.1"
-msgstr "10.0.0.1"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "yes"
-msgstr "是"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "fdbd:dc02::153"
-msgstr "fdbd:dc02::153"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "no (ULA)"
-msgstr "否（ULA）"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "**provenance terminates → unknown**"
-msgstr "**停止追溯 → unknown**"
-
-#: ../developer/trusted-proxies-and-client-ips.md:221
-msgid "We do NOT continue to `1.2.3.4` — that would cross the trust boundary."
-msgstr "不会再往左读到 `1.2.3.4`——那就越过信任边界了。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:223
-msgid "Example: attacker prepends fake addresses"
-msgstr "示例：攻击者在前面添加伪造地址"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "8.8.4.4"
-msgstr "8.8.4.4"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "**return as client**"
-msgstr "**当作客户端返回**"
-
-#: ../developer/trusted-proxies-and-client-ips.md:237
-msgid ""
-"The attacker's prepended `8.8.8.8` and `1.2.3.4` are never reached. The "
-"old leftmost-trust model would have returned `8.8.8.8`."
-msgstr "攻击者塞在前面的 `8.8.8.8` 和 `1.2.3.4` 根本不会被读到。换成以前那种信任最左边地址的模型，返回的就是 `8.8.8.8`。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:240
-msgid ""
-"Duplicate field handling is fail closed. All physical `X-Forwarded-For` "
-"field lines are joined in wire order before parsing, preserving empty "
-"hops. The singleton `X-Real-IP` and `CF-Connecting-*` fields are rejected"
-" when repeated; the resolver never selects first or last based on "
-"framework ordering. At most 32 hops are inspected from the trusted side. "
-"Entries left of the first untrusted boundary are ignored, while a "
-"provenance chain that requires more than 32 inspected hops fails closed."
-msgstr ""
-"重复字段一律按 fail-closed 处理，宁可拒绝也不猜。请求里如果有多行 `X-Forwarded-"
-"For`，会先按它们在报文里的顺序拼接起来再解析，空条目也会保留。`X-Real-IP` 和 `CF-Connecting-*` "
-"这类只该出现一次的字段，一旦重复就直接拒绝；解析器不会按框架给出的顺序去挑第一个或最后一个。从可信一侧最多检查 32 "
-"跳。第一个不可信边界左边的条目一律忽略；如果要检查超过 32 跳才能走完来源链，同样按 fail-closed 处理，判为无法解析。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:248
+#: ../developer/trusted-proxies-and-client-ips.md:187
 msgid "What counts as routable"
 msgstr "什么算可路由"
 
-#: ../developer/trusted-proxies-and-client-ips.md:250
+#: ../developer/trusted-proxies-and-client-ips.md:189
 msgid ""
-"The resolver rejects anything unparseable, plus loopback, link-local, "
+"The resolver rejects anything unparseable, loopback, link-local, "
 "multicast and unspecified addresses, and these networks:"
-msgstr "解析器会拒绝所有格式不合法的值，以及回环、链路本地、组播和未指定地址，还有下面这些网段："
+msgstr "解析器拒绝任何无法解析的值、回环、链路本地、组播和未指定地址，以及以下网络："
 
-#: ../developer/trusted-proxies-and-client-ips.md:265
+#: ../developer/trusted-proxies-and-client-ips.md:205
 msgid ""
-"An IPv4-mapped IPv6 literal is judged by its embedded IPv4 address. A "
-"mapped private peer is accepted only when its embedded address falls "
-"inside `TRUSTED_DIRECT_CLIENT_NETWORKS`."
+"An IPv4-mapped IPv6 address is judged by its IPv4 address. The list is an"
+" explicit snapshot of the IANA registry, not Python's `is_private`, whose"
+" answer changes between releases; update it when the registry changes."
 msgstr ""
-"IPv4-mapped 形式的 IPv6 字面量，按其中内嵌的 IPv4 地址来判断。如果这样的对端映射的是私有地址，只有内嵌地址落在 "
-"`TRUSTED_DIRECT_CLIENT_NETWORKS` 里时才会接受。"
+"IPv4 映射的 IPv6 地址按其中的 IPv4 地址判断。这份列表是 IANA 注册表的显式快照，而不是 Python 的 "
+"`is_private`，后者的结果会随版本变化；注册表变化时请更新它。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:269
-msgid ""
-"The list is an explicit IANA-derived snapshot rather than a delegation to"
-" `ipaddress.is_private` / `is_global`, because those reclassify special-"
-"use ranges between CPython releases. It requires maintenance when the "
-"IANA special-purpose registry changes."
-msgstr ""
-"这份清单是根据 IANA 整理、明确写死的快照，没有直接交给 `ipaddress.is_private` / `is_global` "
-"判断，因为不同的 CPython 版本会对特殊用途网段重新归类。IANA 的特殊用途地址注册表有变化时，要同步更新这份清单。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:274
+#: ../developer/trusted-proxies-and-client-ips.md:209
 msgid "The \"unknown\" outcome"
 msgstr "返回「unknown」的情况"
 
-#: ../developer/trusted-proxies-and-client-ips.md:276
+#: ../developer/trusted-proxies-and-client-ips.md:211
 msgid ""
-"When the gateway cannot determine a trustworthy routable client address, "
-"it returns `\"unknown\"` — with `ClientIpInfo.resolved=False` — rather "
-"than passing off an internal address as the client. This is correct: if "
-"the socket peer is a Docker bridge and there is no trustworthy forwarding"
-" provenance, `\"unknown\"` is more useful than `172.19.0.1`."
+"When no trustworthy routable address exists, the result is `\"unknown\"` "
+"with `resolved=False`, not an internal address passed off as the client. "
+"Rate limits, the auth-failure blocklist and routing affinity must check "
+"`resolved`; never pass an unresolved result to `normalize_ip_bucket()`, "
+"which would merge unrelated callers into one key."
 msgstr ""
-"网关确定不了可信且可路由的客户端地址时，会返回 `\"unknown\"`（同时 "
-"`ClientIpInfo.resolved=False`），而不是拿一个内部地址冒充客户端地址。这样做是对的：如果套接字对端是 Docker "
-"网桥，又没有可信的转发来源，`\"unknown\"` 比 `172.19.0.1` 更有用。"
+"找不到可信、可路由的地址时，结果是 "
+"`\"unknown\"`，`resolved=False`，而不是把内部地址当成客户端。限流、认证失败封禁和路由亲和性都必须检查 "
+"`resolved`；绝不要把未解析的结果传给 `normalize_ip_bucket()`，否则会把不相关的调用方合并到同一个键上。"
 
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "Sign-in limits are a consumer you will notice. A resolved client is limited per address: five attempts per username from one address in 15 minutes, and twenty per address in an hour. An `\"unknown\"` one has no address to count by, and one window shared by every such browser would let anyone's wrong passwords lock everyone else out. So an unresolved sign-in is counted per account only: five per username in 15 minutes from all unresolved browsers together, plus the account-wide window. A signed-in user confirming a change with their password is counted under their own session instead, which someone else's guesses at the name cannot reach. Nothing refuses a sign-in for what other unresolved browsers did, so one source spreading single guesses over many accounts is bounded only per account and by the password hashing capacity. A browser that has signed in to the account before, with its device cookie, keeps attempts of its own; see [The first admin account](deployment.md#the-first-admin-account)."
-msgstr "登录限流是你一定会注意到的使用方。已解析的客户端按地址限流：同一地址对同一用户名每 15 分钟 5 次，每个地址每小时 20 次。`\"unknown\"` 客户端没有地址可计数，而让所有这类浏览器共用一个窗口，任何人的错误密码都会把其他所有人锁在门外。因此未解析的登录只按账号计数：所有未解析浏览器合计，每个用户名每 15 分钟 5 次，外加账号级窗口。已登录用户用密码确认修改时，改为按其自身会话计数，别人对该用户名的猜测碰不到这个窗口。不会因为其他未解析浏览器的行为而拒绝某次登录，所以同一来源跨多个账号逐一猜测，只受每账号窗口和密码哈希容量限制。曾经登录过该账号、持有设备 cookie 的浏览器有自己的尝试次数；参见[第一个管理员账号](deployment.md#the-first-admin-account)。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:293
+#: ../developer/trusted-proxies-and-client-ips.md:217
 msgid ""
-"Downstream consumers that key on `client_ip` (rate limits, auth-failure "
-"blocklist, routing affinity) must inspect `ClientIpInfo.resolved` and "
-"handle `\"unknown\"` explicitly — it is a legitimate outcome, not an "
-"error. New callers never pass unresolved provenance to "
-"`normalize_ip_bucket()`, because that would collapse unrelated callers "
-"onto one shared key."
+"Unresolved sign-ins have no address to count by, so they are limited per "
+"account only: five per username in 15 minutes from all unresolved "
+"browsers together, plus the account-wide limit. With no shared per-"
+"address window, one source's guesses cannot lock unresolved browsers out "
+"of other accounts; guessing across many accounts is bounded only per "
+"account and by the password-hashing capacity. A browser with the "
+"account's device cookie keeps its own attempts; see [The first admin "
+"account](deployment.md#the-first-admin-account). Phone codes to "
+"unresolved clients share their own budget "
+"(`SMS_OTP_SEND_UNRESOLVED_PER_HOUR`, 200, and "
+"`SMS_OTP_SEND_UNRESOLVED_PER_DAY`, 1000). This keeps users from locking "
+"each other out but cannot tell them apart; behind the bundled console, "
+"set up trust as described in [Behind the console](#behind-the-console)."
 msgstr ""
-"下游凡是以 `client_ip` 为键的逻辑（限流、认证失败黑名单、路由亲和性），都必须检查 "
-"`ClientIpInfo.resolved`，并显式处理 "
-"`\"unknown\"`——这是正常结果，不是错误。新的调用方一律不把未解析出的来源传给 "
-"`normalize_ip_bucket()`，否则互不相关的调用方会被归到同一个键上。"
+"未解析的登录没有地址可供计数，所以只按账号限制：所有未解析的浏览器合计每个用户名 15 分钟 5 "
+"次，外加账号级限制。由于没有共享的按地址窗口，一个来源的猜测不会让未解析的浏览器无法登录其他账号；跨大量账号的猜测只受每个账号的限制和密码哈希能力约束。持有该账号设备"
+" cookie 的浏览器保有自己的尝试次数；见[第一个管理员账号](deployment.md#the-first-admin-"
+"account)。发往未解析客户端的手机验证码共享单独的额度（`SMS_OTP_SEND_UNRESOLVED_PER_HOUR` 为 "
+"200，`SMS_OTP_SEND_UNRESOLVED_PER_DAY` 为 "
+"1000）。这能防止用户互相锁定，但无法区分他们；在自带控制台之后，请按[控制台之后](#behind-the-console)的说明配置信任。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:301
+#: ../developer/trusted-proxies-and-client-ips.md:230
 msgid "Cloudflare Pseudo IPv4"
 msgstr "Cloudflare Pseudo IPv4"
 
-#: ../developer/trusted-proxies-and-client-ips.md:303
+#: ../developer/trusted-proxies-and-client-ips.md:232
 msgid ""
-"Within rung 2, `CF-Connecting-IPv6` wins over `CF-Connecting-IP` — it is "
-"not a rung of its own — but **only when the two corroborate each other**."
+"With Cloudflare's [Pseudo IPv4](https://developers.cloudflare.com/network"
+"/pseudo-ipv4/) set to \"Overwrite headers\", `CF-Connecting-IP` holds a "
+"synthetic `240.0.0.0/4` address and the real one is in `CF-Connecting-"
+"IPv6`. The gateway uses `CF-Connecting-IPv6` only when it parses as IPv6 "
+"and `CF-Connecting-IP` is an IPv4 address inside `240.0.0.0/4`. A caller "
+"cannot forge that pair, because no real client address comes from that "
+"range; otherwise `CF-Connecting-IP` wins."
 msgstr ""
-"在第 2 级里，`CF-Connecting-IPv6` 优先于 `CF-Connecting-"
-"IP`（它本身不单独算一级），但**前提是两者能互相印证**。"
+"Cloudflare 的 [Pseudo IPv4](https://developers.cloudflare.com/network"
+"/pseudo-ipv4/) 设为 \"Overwrite headers\" 时，`CF-Connecting-IP` 中是一个合成的 "
+"`240.0.0.0/4` 地址，真实地址在 `CF-Connecting-IPv6` 中。只有当 `CF-Connecting-IPv6` "
+"能解析为 IPv6、且 `CF-Connecting-IP` 是 `240.0.0.0/4` 内的 IPv4 "
+"地址时，网关才使用它。调用方无法伪造这一对值，因为真实客户端地址不会来自这个地址段；其他情况下以 `CF-Connecting-IP` 为准。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:306
-msgid ""
-"Cloudflare emits `CF-Connecting-IPv6` solely when [Pseudo "
-"IPv4](https://developers.cloudflare.com/network/pseudo-ipv4/) is set to "
-"\"Overwrite headers\" — in that mode `CF-Connecting-IP` holds a synthetic"
-" Class E (`240.0.0.0/4`) address derived from the visitor rather than the"
-" visitor's real one. Preferring the synthetic would push an IPv6 client "
-"down the IPv4 bucketing path, handing every rotated privacy address its "
-"own rate-limit bucket and defeating the `/64` grouping below."
-msgstr ""
-"只有把 [Pseudo IPv4](https://developers.cloudflare.com/network/pseudo-ipv4/)"
-" 设为「Overwrite headers」时，Cloudflare 才会带上 `CF-Connecting-IPv6`。这种模式下，`CF-"
-"Connecting-IP` 里放的是根据访问者地址生成的一个合成 Class E "
-"地址（`240.0.0.0/4`），而不是访问者的真实地址。如果优先用这个合成地址，IPv6 客户端就会走 IPv4 "
-"的分桶逻辑，每个轮换出来的隐私地址都各占一个限流桶，下文按 `/64` 归组的做法也就失效了。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:314
-msgid ""
-"The corroboration matters because with Pseudo IPv4 off the header is "
-"*absent* rather than cleared, so any caller can supply one. The gateway "
-"therefore honours it only when the IPv6 header parses as IPv6 *and* `CF-"
-"Connecting-IP` parses as IPv4 *and* that IPv4 falls inside `240.0.0.0/4`."
-" Cloudflare controls that second value and a real client address is never"
-" drawn from the reserved Class E range, so the pairing cannot be forged "
-"from outside. Otherwise `CF-Connecting-IP` stays authoritative. Both raw "
-"headers are carried on `ClientIpInfo` and logged, so a synthetic — or a "
-"forgery attempt — stays visible after the fact."
-msgstr ""
-"互相印证之所以重要，是因为 Pseudo IPv4 "
-"关闭时这个头是*缺失*而不是被清空，于是任何调用方都能自己塞一个进来。因此网关只在三个条件同时成立时才采信它：IPv6 那个头能解析成 "
-"IPv6，*并且* `CF-Connecting-IP` 能解析成 IPv4，*并且*这个 IPv4 落在 `240.0.0.0/4` "
-"之内。第二个值由 Cloudflare 掌控，而真实的客户端地址绝不会取自保留的 Class E 段，所以这个组合无法从外部伪造。其余情况下仍以 "
-"`CF-Connecting-IP` 为准。两个原始请求头都会挂在 `ClientIpInfo` "
-"上并写进日志，这样事后无论是合成地址还是伪造尝试，都查得到。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:324
+#: ../developer/trusted-proxies-and-client-ips.md:239
 msgid "Bucketing: why IPv6 folds to a /64"
 msgstr "分桶：为什么 IPv6 按 /64 归组"
 
-#: ../developer/trusted-proxies-and-client-ips.md:326
+#: ../developer/trusted-proxies-and-client-ips.md:241
 msgid ""
-"A single IPv6 client is typically delegated an entire prefix (a `/64` at "
-"minimum, often a `/56` or `/48`), and RFC 4941 privacy addresses rotate "
-"within it. A full IPv6 address is therefore a poor identity key: a client"
-" can present effectively unlimited distinct ones."
+"An IPv6 client usually holds at least a `/64` and rotates privacy "
+"addresses within it, so `normalize_ip_bucket()` groups IPv6 addresses by "
+"their `/64` (`IPV6_BUCKET_PREFIXLEN = 64`). IPv4 addresses, and "
+"IPv4-mapped literals such as `::ffff:192.0.2.1`, stay whole; anything "
+"unparseable, including `\"unknown\"`, is returned unchanged. Signup and "
+"login rate limits, the auth-failure blocklist and routing affinity group "
+"callers this way; logs keep the full address. `derive_affinity_key()` "
+"keys sticky routing on the API key's hash, then an inference grant "
+"(`grant:<id>`), then `ip:<bucket>`."
 msgstr ""
-"一个 IPv6 客户端通常会被分到整段前缀（最少 `/64`，常常是 `/56` 或 `/48`），而 RFC 4941 "
-"的隐私地址就在这段前缀内不断轮换。因此完整的 IPv6 地址是个很差的身份键：一个客户端能拿出来的不同地址实际上是无限多的。"
+"一个 IPv6 客户端通常至少拥有一个 `/64`，并在其中轮换隐私地址，所以 `normalize_ip_bucket()` 按 `/64` 对"
+" IPv6 地址分组（`IPV6_BUCKET_PREFIXLEN = 64`）。IPv4 地址以及 `::ffff:192.0.2.1` 这样的"
+" IPv4 映射地址保持完整；无法解析的值（包括 "
+"`\"unknown\"`）原样返回。注册和登录限流、认证失败封禁和路由亲和性都这样对调用方分组；日志保留完整地址。`derive_affinity_key()`"
+" 依次按 API key 的哈希、推理授权（`grant:<id>`）、`ip:<bucket>` 生成粘性路由的键。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:331
+#: ../developer/trusted-proxies-and-client-ips.md:250
 msgid ""
-"`normalize_ip_bucket()` is the grouping key used wherever an address has "
-"to stand in for a caller:"
-msgstr "凡是需要用一个地址来代表某个调用方的地方，用的都是 `normalize_ip_bucket()` 给出的归组键："
+"Seeing IPv6 clients on an IPv4-only origin is normal: a CDN accepts the "
+"client over IPv6 and connects to the origin over IPv4."
+msgstr "在只有 IPv4 的源站上看到 IPv6 客户端是正常的：CDN 通过 IPv6 接收客户端，再通过 IPv4 连接源站。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:334
-msgid "IPv6 → the `/64` network it sits in (`IPV6_BUCKET_PREFIXLEN = 64`)."
-msgstr "IPv6 → 它所在的 `/64` 网段（`IPV6_BUCKET_PREFIXLEN = 64`）。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:335
-msgid "IPv4 → the address itself."
-msgstr "IPv4 → 地址本身。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:336
-msgid ""
-"IPv4-mapped literals (`::ffff:192.0.2.1`, which a dual-stack listener "
-"reports for IPv4 peers) → the embedded IPv4 address. Folding these by "
-"prefix would collapse every IPv4 client into a single `::/64`."
-msgstr ""
-"IPv4-mapped 字面量（`::ffff:192.0.2.1`，双栈监听器对 IPv4 对端报告的就是这种形式）→ 内嵌的那个 IPv4 "
-"地址。如果按前缀归组，所有 IPv4 客户端都会挤进同一个 `::/64`。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:339
-msgid ""
-"Anything unparseable (including the `\"unknown\"` fallback and scoped "
-"literals) → returned unchanged."
-msgstr "任何无法解析的值（包括 `\"unknown\"` 这个回退值和带 scope 的字面量）→ 原样返回。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:342
-msgid ""
-"Logs and analytics keep the full address; only the buckets fold. Signup "
-"rate limiting, login rate limiting, the repeated-auth-failure blocklist "
-"and routing affinity all group callers this way."
-msgstr "日志和分析数据里保留的是完整地址，只有分桶时才归并。注册限流、登录限流、重复认证失败黑名单以及路由亲和性，都是这样给调用方归组的。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:346
-msgid ""
-"`derive_affinity_key()` is the sticky-routing variant. It falls through "
-"caller identities in order of how precisely each names one caller: the "
-"presented API key's hash, then an inference-grant id (`grant:<id>`), then"
-" `ip:<bucket>` for traffic with no credential at all. It lives beside the"
-" IP helpers rather than on a router so that every surface dispatching to "
-"a pooled adapter derives the caller identity the same way."
-msgstr ""
-"`derive_affinity_key()` 是用于粘性路由的变体。它按精确程度从高到低，依次尝试几种调用方身份：先是请求出示的 API key"
-" 的哈希，其次是推理 grant 的 id（`grant:<id>`），对完全没带凭据的流量则用 `ip:<bucket>`。它放在这些 IP "
-"辅助函数旁边，而不是挂在某个 router 上，这样每个把请求分发给池化 adapter 的接口面，推导调用方身份的方式都一样。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:353
-msgid "An IPv6 client on an IPv4-only origin is normal"
-msgstr "纯 IPv4 源站上出现 IPv6 客户端是正常的"
-
-#: ../developer/trusted-proxies-and-client-ips.md:355
-msgid ""
-"Seeing IPv6 addresses in the logs does not mean the origin gained IPv6. A"
-" CDN that publishes an AAAA record accepts the client over IPv6 and then "
-"opens a separate IPv4 connection to the origin, carrying the original "
-"address in the forwarding header. The client's address family is "
-"decoupled from the origin's, so for an IPv4-only origin it is an IPv6 "
-"`peer_ip` — not an IPv6 `remote_ip` — that would be the genuine surprise."
-msgstr ""
-"日志里出现 IPv6 地址，并不意味着源站支持了 IPv6。发布了 AAAA 记录的 CDN 会用 IPv6 接下客户端，再另开一条 IPv4 "
-"连接回源，把原始地址放在转发头里带过来。客户端用哪种地址族，和源站用哪种无关。所以对纯 IPv4 源站来说，真正值得意外的是 IPv6 的 "
-"`peer_ip`，而不是 IPv6 的 `remote_ip`。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:362
+#: ../developer/trusted-proxies-and-client-ips.md:253
 msgid "What is logged"
 msgstr "会写进日志的内容"
 
-#: ../developer/trusted-proxies-and-client-ips.md:364
+#: ../developer/trusted-proxies-and-client-ips.md:255
 msgid ""
-"`apps/backend/serving/servers/middleware/request_log.py` emits one "
-"structured `http_request` line per request carrying the resolved address "
-"*and* its provenance: `remote_ip`, `peer_ip`, `ip_source`, "
-"`x_forwarded_for`, `x_real_ip`, `cf_connecting_ip`, `cf_connecting_ipv6`,"
-" alongside `user_agent`, `host`, `origin`, `referer`, `request_id` and "
-"`session_id`."
+"`apps/backend/serving/servers/middleware/request_log.py` writes one "
+"`http_request` line per request with the verdict and its inputs: "
+"`remote_ip`, `peer_ip`, `ip_source`, `x_forwarded_for`, `x_real_ip`, "
+"`cf_connecting_ip`, `cf_connecting_ipv6`, `user_agent`, `host`, `origin`,"
+" `referer`, `request_id` and `session_id`. Each value is cut to 256 "
+"characters (the path to 512) with control characters escaped, and "
+"`origin` and `referer` lose their query strings. At `DEBUG`, an "
+"`http_request_headers` line lists every header, with credentials "
+"(`authorization`, `cookie`, `x-api-key` and any header naming a key, "
+"token, secret, password, session, signature or auth) replaced by `***`."
 msgstr ""
-"`apps/backend/serving/servers/middleware/request_log.py` 为每个请求输出一行结构化的 "
-"`http_request`，其中既带解析出的地址，*也*带它的来历：`remote_ip`、`peer_ip`、`ip_source`、`x_forwarded_for`、`x_real_ip`、`cf_connecting_ip`、`cf_connecting_ipv6`，以及"
-" `user_agent`、`host`、`origin`、`referer`、`request_id` 和 `session_id`。"
+"`apps/backend/serving/servers/middleware/request_log.py` 为每个请求写一行 "
+"`http_request`，包含判定结果及其依据：`remote_ip`、`peer_ip`、`ip_source`、`x_forwarded_for`、`x_real_ip`、`cf_connecting_ip`、`cf_connecting_ipv6`、`user_agent`、`host`、`origin`、`referer`、`request_id`"
+" 和 `session_id`。每个值截断到 256 个字符（路径为 512），控制字符会被转义，`origin` 和 `referer` "
+"去掉查询字符串。在 `DEBUG` 级别，还会有一行 `http_request_headers` "
+"列出所有请求头，其中的凭据（`authorization`、`cookie`、`x-api-key`，以及名字中含 "
+"key、token、secret、password、session、signature 或 auth 的请求头）替换为 `***`。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:370
-msgid ""
-"Keeping the raw headers next to the verdict is what makes a wrong address"
-" diagnosable: you can see which rung fired and what the alternatives "
-"said."
-msgstr "原始请求头和判定结果记在一起，地址判错了才查得出原因：你能看到是哪一级命中的，其他几级又各自给出了什么。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:422
-msgid ""
-"The client chooses these values, so the line keeps a bounded copy of "
-"each: cut to 256 characters (the path to 512), with control characters "
-"escaped. `origin` and `referer` keep only the scheme, host and path: a "
-"page's address can carry a secret in its query, as a password-reset link "
-"does."
-msgstr ""
-"这些值由客户端决定，所以日志行只保留每个值的有界副本：截断到 256 个字符（路径为 512 个），并转义控制字符。`origin` 和 "
-"`referer` 只保留协议、主机和路径：页面地址的查询部分可能带着机密，密码重置链接就是这样。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:427
-msgid ""
-"At `DEBUG` the middleware additionally emits an `http_request_headers` "
-"line with every request header, cut and escaped the same way. A "
-"credential is replaced by `***`: `authorization`, `proxy-authorization`, "
-"`x-api-key`, `api-key`, `cookie`, `x-on-behalf-of`, and any header whose "
-"name mentions a key, token, secret, password, session, signature, cookie "
-"or auth."
-msgstr ""
-"在 `DEBUG` 级别下，中间件还会额外输出一行 `http_request_headers`，带上全部请求头，同样截断并转义。凭据会被替换成 "
-"`***`：`authorization`、`proxy-authorization`、`x-api-key`、`api-key`、`cookie`、`x-on-behalf-of`，以及名称中提到"
-" key、token、secret、password、session、signature、cookie 或 auth 的任何请求头。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:377
+#: ../developer/trusted-proxies-and-client-ips.md:265
 msgid "What is persisted"
 msgstr "会存进数据库的内容"
 
-#: ../developer/trusted-proxies-and-client-ips.md:379
+#: ../developer/trusted-proxies-and-client-ips.md:267
 msgid ""
-"The output of this module does not stay in the log file. It is written to"
-" the database."
-msgstr "这个模块的输出并不止步于日志文件，它还会写进数据库。"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid ""
-"**`api_logs.metadata`** (a JSONB column; see the insert in "
-"`apps/backend/serving/storage/postgres_log.py`) receives, per request:"
+"`api_logs.metadata` (written in "
+"`apps/backend/serving/storage/postgres_log.py`) stores per request:"
 msgstr ""
-"**`api_logs.metadata`**（JSONB 列；见 "
-"`apps/backend/serving/storage/postgres_log.py` 里的插入语句）为每个请求存下这些字段："
+"`api_logs.metadata`（在 `apps/backend/serving/storage/postgres_log.py` "
+"中写入）为每个请求保存："
 
 #: ../developer/trusted-proxies-and-client-ips.md
 msgid "Surface"
@@ -961,6 +685,18 @@ msgid "`ip`, `user_agent`, `referer`"
 msgstr ""
 
 #: ../developer/trusted-proxies-and-client-ips.md
+msgid "`/v1/embeddings`"
+msgstr ""
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "`apps/backend/serving/servers/routers/embeddings.py`"
+msgstr ""
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "`ip`, `peer_ip`, `ip_source`, `user_agent`, `referer`"
+msgstr ""
+
+#: ../developer/trusted-proxies-and-client-ips.md
 msgid "`/v1/messages`, `/anthropic/v1/messages`"
 msgstr ""
 
@@ -975,8 +711,8 @@ msgid ""
 msgstr ""
 
 #: ../developer/trusted-proxies-and-client-ips.md
-msgid "Rejected requests (when rejection logging is enabled)"
-msgstr "被拒绝的请求（在开启拒绝日志时）"
+msgid "Rejected requests (when rejection logging is on)"
+msgstr "被拒绝的请求（开启拒绝日志时）"
 
 #: ../developer/trusted-proxies-and-client-ips.md
 msgid "`apps/backend/serving/observability/rejection_log.py`"
@@ -986,250 +722,73 @@ msgstr ""
 msgid "`ip`"
 msgstr ""
 
-#: ../developer/trusted-proxies-and-client-ips.md:392
+#: ../developer/trusted-proxies-and-client-ips.md:277
 msgid ""
-"The Anthropic surface stores the full provenance, not just the verdict — "
-"so a disputed address can be re-derived from the row. The two `CF-"
-"Connecting-*` headers are logged but not persisted on any surface."
-msgstr ""
-"Anthropic 这个接口面存下的是完整来历，而不只是判定结果，所以对某个地址有疑问时，可以根据这一行重新推导。两个 `CF-"
-"Connecting-*` 头会写进日志，但在任何接口面上都不会存进数据库。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:396
-msgid ""
-"**`login_events`** "
+"The `CF-Connecting-*` headers are logged but not stored. `login_events` "
 "(`apps/backend/serving/storage/postgres_operational.py`) stores `ip` and "
-"`user_agent` per login attempt alongside the outcome."
+"`user_agent` for each sign-in attempt."
 msgstr ""
-"**`login_events`**（`apps/backend/serving/storage/postgres_operational.py`）为每次登录尝试存下"
-" `ip` 和 `user_agent`，以及这次尝试的结果。"
+"`CF-Connecting-*` "
+"请求头会写进日志，但不会存储。`login_events`（`apps/backend/serving/storage/postgres_operational.py`）为每次登录尝试保存"
+" `ip` 和 `user_agent`。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:399
+#: ../developer/trusted-proxies-and-client-ips.md:281
 msgid "Retention is yours to set"
 msgstr "保留期由你自己定"
 
-#: ../developer/trusted-proxies-and-client-ips.md:401
+#: ../developer/trusted-proxies-and-client-ips.md:283
 msgid ""
-"Nothing in this repository expires either table on a timer. The only "
-"deletions that exist are operator-initiated:"
-msgstr "本仓库不会定时清理这两张表。现有的删除操作都要由运维人员手动发起："
+"Nothing expires these tables on a timer. The deletions that exist are run"
+" by an administrator:"
+msgstr "没有任何机制按时间自动清理这些表。现有的删除操作都由管理员执行："
 
-#: ../developer/trusted-proxies-and-client-ips.md:404
+#: ../developer/trusted-proxies-and-client-ips.md:286
 msgid ""
-"`DELETE /admin/login-events?older_than_days=N` — purge `login_events` by "
+"`DELETE /admin/login-events?older_than_days=N` purges `login_events` by "
 "age."
-msgstr "`DELETE /admin/login-events?older_than_days=N`——按时间清理 `login_events`。"
+msgstr "`DELETE /admin/login-events?older_than_days=N` 按时间清理 `login_events`。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:405
-msgid "`DELETE /admin/login-events?user_id=...` — purge one user's login events."
-msgstr "`DELETE /admin/login-events?user_id=...`——清理某一个用户的登录事件。"
+#: ../developer/trusted-proxies-and-client-ips.md:287
+msgid "`DELETE /admin/login-events?user_id=...` purges one user's login events."
+msgstr "`DELETE /admin/login-events?user_id=...` 清理某个用户的登录事件。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:406
+#: ../developer/trusted-proxies-and-client-ips.md:288
 #, python-brace-format
 msgid ""
-"`POST /admin/users/{user_id}/hard-delete` — deletes the user, including "
-"their `api_logs` rows. It works only once permanent deletion is turned "
-"on; see [Secrets for deleting accounts](database.md#secrets-for-deleting-"
-"accounts)."
+"`POST /admin/users/{user_id}/hard-delete` deletes the user and their "
+"`api_logs` rows, once permanent deletion is on; see [Secrets for deleting"
+" accounts](database.md#secrets-for-deleting-accounts)."
 msgstr ""
-"`POST /admin/users/{user_id}/hard-delete`——删除这个用户，连同他的 `api_logs` "
-"行。只有开启了永久删除，这个接口才能用；见[删除账号相关的密钥](database.md#secrets-for-deleting-"
-"accounts)。"
+"`POST /admin/users/{user_id}/hard-delete` 删除用户及其 `api_logs` "
+"行，前提是已开启永久删除；见[删除账号所用的密钥](database.md#secrets-for-deleting-accounts)。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:409
-msgid "`POST /admin/recent-requests/clear-errors` — drops recent error rows."
-msgstr "`POST /admin/recent-requests/clear-errors`——删除最近的错误记录。"
+#: ../developer/trusted-proxies-and-client-ips.md:291
+msgid "`POST /admin/recent-requests/clear-errors` drops recent error rows."
+msgstr "`POST /admin/recent-requests/clear-errors` 删除最近的错误行。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:411
+#: ../developer/trusted-proxies-and-client-ips.md:293
 msgid ""
-"If your deployment is subject to a data-protection regime, or you simply "
-"do not want to hold client addresses indefinitely, you must decide on and"
-" implement a retention policy yourself. This project does not ship one "
-"and does not pick a default on your behalf."
-msgstr "如果你的部署要受某种数据保护法规约束，或者你只是不想无限期地保存客户端地址，那就必须自己决定并实现一套保留策略。本项目不附带这样的策略，也不替你选一个默认值。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:416
-msgid "Two knobs that reduce what there is to retain in the first place:"
-msgstr "有两个开关能从源头上减少需要保留的数据："
-
-#: ../developer/trusted-proxies-and-client-ips.md:418
-msgid ""
-"Leaving `trusted_proxies` empty where no proxy is in front means only the"
-" socket peer is ever recorded."
-msgstr "前面没有代理时，把 `trusted_proxies` 留空，这样记下来的就只有套接字对端。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:420
-msgid ""
-"Prompt and response content is governed separately by "
-"`DB_STORE_FULL_CONTENT`. At its default, `false`, prompts and responses "
-"are not stored at all; see [Request logging and privacy](database.md"
+"If you are subject to a data-protection regime, or do not want to keep "
+"client addresses indefinitely, set and run a retention policy yourself; "
+"the project ships none. Prompts and responses are stored only with "
+"`DB_STORE_FULL_CONTENT` on; see [Request logging and privacy](database.md"
 "#request-logging-and-privacy)."
 msgstr ""
-"prompt 和响应的内容另由 `DB_STORE_FULL_CONTENT` 控制。它默认是 `false`，这时 prompt "
-"和响应根本不会存储；见[请求日志与隐私](database.md#request-logging-and-privacy)。"
+"如果你受数据保护法规约束，或者不想无限期保存客户端地址，请自行制定并执行保留策略；本项目不提供。只有开启 "
+"`DB_STORE_FULL_CONTENT` 时才会存储提示词和响应；见[请求日志与隐私](database.md#request-"
+"logging-and-privacy)。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:425
+#: ../developer/trusted-proxies-and-client-ips.md:298
 msgid "Testing your setup"
 msgstr "验证你的配置"
 
-#: ../developer/trusted-proxies-and-client-ips.md:427
+#: ../developer/trusted-proxies-and-client-ips.md:304
 msgid ""
-"`tests/unit/utils/test_request_ip.py` covers the resolution table, the "
-"Pseudo IPv4 corroboration, the bucketing rules, and adversarial cases "
-"(spoofed headers, multi-hop chains, malformed inputs, all-private "
-"chains); `tests/unit/config/test_trusted_proxies.py` covers CIDR "
-"validation; `tests/unit/middleware/test_request_log.py` covers the log "
-"fields. Run them with:"
+"These cover resolution, Pseudo IPv4, bucketing and spoofing cases; CIDR "
+"validation; and the log fields. On a live gateway, send a request with an"
+" absurd forwarded header and read `ip_source` in its log line to see "
+"which rule the gateway believed."
 msgstr ""
-"`tests/unit/utils/test_request_ip.py` 覆盖解析表、Pseudo IPv4 "
-"互相印证、分桶规则以及对抗性用例（伪造头、多跳链、格式错误输入、全私有链）；`tests/unit/config/test_trusted_proxies.py`"
-" 覆盖 CIDR 校验；`tests/unit/middleware/test_request_log.py` 覆盖日志字段。运行方式："
+"这些测试覆盖地址解析、Pseudo IPv4、分组和伪造场景，CIDR "
+"校验，以及日志字段。在运行中的网关上，发送一个带荒唐转发请求头的请求，再查看对应日志行中的 `ip_source`，就能知道网关采信了哪条规则。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:438
-msgid ""
-"To check a live gateway, send a request with a deliberately absurd "
-"forwarded header and look at the `ip_source` in the resulting log line — "
-"it tells you which rung the gateway actually believed."
-msgstr "要检查正在运行的网关，可以故意发一个转发头明显离谱的请求，再看对应那行日志里的 `ip_source`：它会告诉你网关实际采信的是哪一级。"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "The bundled Compose file's console, and your edge in front of it"
-msgstr "仓库自带 Compose 文件里的控制台，以及它前面你的边缘层"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid ""
-"Trust the console only for the header your edge sets: see [Behind the "
-"console](#behind-the-console)"
-msgstr "只就你的边缘层所设置的那个头信任控制台：见[在控制台后面](#behind-the-console)"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "Behind the console"
-msgstr "在控制台后面"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid ""
-"In the bundled Compose file the Next.js console stands in front of the "
-"gateway, so every request through it reaches the gateway from the console's "
-"address. The console relays; it does not vouch:"
-msgstr ""
-"在仓库自带的 Compose 文件里，Next.js "
-"控制台站在网关前面，所以每个经过它的请求到达网关时，来源地址都是控制台的地址。控制台只转发，不担保："
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid ""
-"It forwards `X-Forwarded-For`, `X-Real-IP`, `CF-Connecting-IP` and "
-"`CF-Connecting-IPv6` exactly as it received them."
-msgstr ""
-"它把 `X-Forwarded-For`、`X-Real-IP`、`CF-Connecting-IP` 和 `CF-Connecting-IPv6` "
-"原样转发，收到什么就转发什么。"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid ""
-"It does not add the address it received the request from, and it cannot tell"
-" a request that came through your edge from one that did not: a Next.js "
-"route handler cannot see the connection's address once the caller has sent "
-"an `X-Forwarded-For`. When the caller sent none, Next fills in that address "
-"on the gateway's API paths (`/v1`, `/anthropic`, `/auth`, `/user`, `/admin` "
-"and the published `/internal` paths); the rewritten `/health`, "
-"`/site-updates`, `/site-config` and `/public-stats` carry none at all."
-msgstr ""
-"它不会加上自己收到请求时对端的地址，也分辨不出一个请求是不是经过了你的边缘层：调用方一旦带了 `X-Forwarded-For`，Next.js 的 "
-"route handler 就看不到这条连接的地址。调用方没带时，Next 会在网关的 API "
-"路径（`/v1`、`/anthropic`、`/auth`、`/user`、`/admin` 以及公开的那几条 `/internal` "
-"路径）上把这个地址补上；经 rewrite 转发的 `/health`、`/site-updates`、`/site-config` 和 "
-"`/public-stats` 则什么都不带。"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid ""
-"Naming the console in `TRUSTED_PROXIES` or `TRUSTED_CLOUDFLARE_NETWORKS` "
-"therefore trusts whatever reached the console, as it arrived. That is right "
-"only when every request reaches the console through one edge, and that edge "
-"sets the header the gateway reads:"
-msgstr ""
-"所以，把控制台写进 `TRUSTED_PROXIES` 或 "
-"`TRUSTED_CLOUDFLARE_NETWORKS`，就等于原样信任到达控制台的一切。只有当每个请求都经由同一个边缘层到达控制台，并且网关读取的那个头是由这个边缘层设置的，这样做才对："
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "In front of the console"
-msgstr "控制台前面是什么"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "What to trust"
-msgstr "信任什么"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "Why it holds"
-msgstr "为什么成立"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "Cloudflare, as a proxy or a tunnel"
-msgstr "Cloudflare（作为代理或隧道）"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid ""
-"`CF-Connecting-IP`: `TRUST_PROXY_HEADERS=1`, `TRUST_CLOUDFLARE_HEADERS=1`, "
-"`TRUSTED_CLOUDFLARE_NETWORKS=<the console's address>/32`"
-msgstr ""
-"`CF-Connecting-IP`：`TRUST_PROXY_HEADERS=1`、`TRUST_CLOUDFLARE_HEADERS=1`、`TRUSTED_CLOUDFLARE_NETWORKS=<the"
-" console's address>/32`"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "Cloudflare overwrites that header on every request"
-msgstr "Cloudflare 会在每个请求上覆盖这个头"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid ""
-"A reverse proxy that writes `X-Forwarded-For` (nginx's "
-"`$proxy_add_x_forwarded_for` or `$remote_addr`)"
-msgstr ""
-"会写 `X-Forwarded-For` 的反向代理（nginx 的 `$proxy_add_x_forwarded_for` 或 "
-"`$remote_addr`）"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid ""
-"`X-Forwarded-For`: `TRUST_PROXY_HEADERS=1`, `TRUSTED_PROXIES=<the console's "
-"address>/32`"
-msgstr ""
-"`X-Forwarded-For`：`TRUST_PROXY_HEADERS=1`、`TRUSTED_PROXIES=<the console's "
-"address>/32`"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid ""
-"the right-most entry, the one the gateway reads, is the one that proxy wrote"
-msgstr "网关读取的是最右边那一项，而它正是这个代理写进去的"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "Nothing: clients reach the console directly"
-msgstr "什么都没有：客户端直接连到控制台"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "Nothing"
-msgstr "什么都不信任"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "a client chooses every header the console relays"
-msgstr "控制台转发的每个头都由客户端自己决定"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "Keep the console's port reachable from that edge alone. The bundled Compose file publishes it on `127.0.0.1` (`FRONTEND_HOST`), which still leaves every process on the host and every container on its network able to reach it, and any of them can claim any address. Without such an edge, leave the console untrusted: every browser then resolves to `\"unknown\"`, with the per-account sign-in limits described under [The \"unknown\" outcome](#the-unknown-outcome)."
-msgstr "让控制台端口只允许该边缘代理访问。随附的 Compose 文件把它发布在 `127.0.0.1`（`FRONTEND_HOST`），这样主机上的每个进程、同一网络中的每个容器仍然都能访问它，并且可以声称任意地址。如果没有这样的边缘代理，就不要信任控制台：此时每个浏览器都会解析为 `\"unknown\"`，适用[\"unknown\" 结果](#the-unknown-outcome)中所述的按账号计算的登录限制。"
-
-#: ../developer/trusted-proxies-and-client-ips.md:105
-msgid ""
-"An entry that sends `/v1` and `/anthropic` straight to the gateway is a "
-"second peer beside the console, and its requests have to resolve without "
-"the console running. Trust it by its exact address alongside the "
-"console's, never by a wider range; see [Splitting inference traffic at "
-"the entry](deployment.md#splitting-inference-traffic-at-the-entry)."
-msgstr ""
-"把 `/v1` 和 `/anthropic` "
-"直接交给网关的入口，是控制台之外的第二个对端，它的请求必须在控制台没有运行时也能解析。按它的精确地址信任它，与控制台的并列，绝不用更宽的范围；见[在入口分流推理流量](deployment.md"
-"#splitting-inference-traffic-at-the-entry)。"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "Phone codes follow the same rule. Codes sent to unresolved clients share a budget of their own (`SMS_OTP_SEND_UNRESOLVED_PER_HOUR` 200 and `SMS_OTP_SEND_UNRESOLVED_PER_DAY` 1000), apart from any address. Verifying a code is limited by the number's own window and the code's attempts only."
-msgstr "手机验证码遵循同样的规则。发给未解析客户端的验证码共用一份独立预算（`SMS_OTP_SEND_UNRESOLVED_PER_HOUR` 200、`SMS_OTP_SEND_UNRESOLVED_PER_DAY` 1000），与任何地址的配额分开。校验验证码只受该号码自身的窗口和该验证码的尝试次数限制。"
-
-#: ../developer/trusted-proxies-and-client-ips.md
-msgid "This keeps users behind an unresolved proxy from locking one another out, but it does not tell them apart. Behind the bundled Compose file's console, unless the gateway trusts the header your edge sets (see [Behind the console](#behind-the-console)), every browser is unresolved: configure the trust there."
-msgstr "这样可以避免同一未解析代理后的用户互相锁死，但并不能区分他们。在随附 Compose 文件的控制台之后，除非网关信任你的边缘代理设置的请求头（见[控制台之后](#behind-the-console)），每个浏览器都是未解析的：请在那里配置信任。"

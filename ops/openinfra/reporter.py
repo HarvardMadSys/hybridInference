@@ -476,17 +476,43 @@ def parse_engine_log_text(
     }
 
 
+_no_logs_noted: set[tuple[int, str]] = set()
+
+
+def note_no_engine_logs(port: int, why: str) -> None:
+    """Say once per port and reason that an engine's container logs cannot be read.
+
+    Everything else is still reported, so without this the only sign is a
+    page whose recent requests stay empty.
+    """
+    if (port, why) in _no_logs_noted:
+        return
+    _no_logs_noted.add((port, why))
+    print(
+        f"engine logs for port {port}: {why}; its request events (the page's recent "
+        "requests) are not reported",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
 def summarize_engine_logs(
     port: int | None, since_s: float, start: float | None = None, end: float | None = None
 ) -> dict[str, Any] | None:
     """Request shapes and rates from the engine's container logs over the last *since_s* seconds, or None."""
     if not port:
         return None
-    name = container_for_port(port)
-    if not name:
-        return None
     cmd = docker_cmd()
     if not cmd:
+        note_no_engine_logs(
+            port,
+            "this account cannot run docker (tried `docker` and `sudo -n docker`) -- "
+            "add it to the docker group and restart the reporter",
+        )
+        return None
+    name = container_for_port(port)
+    if not name:
+        note_no_engine_logs(port, "no running container publishes that port")
         return None
     seconds = max(90, int(since_s) + 20)
     try:
@@ -496,7 +522,12 @@ def summarize_engine_logs(
             text=True,
             timeout=40,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        note_no_engine_logs(port, f"`docker logs {name}` failed: {exc}")
+        return None
+    if result.returncode != 0:
+        tail = (result.stderr or "").strip().splitlines()[-1:] or [f"exit {result.returncode}"]
+        note_no_engine_logs(port, f"`docker logs {name}` failed: {tail[0]}")
         return None
     text = (result.stdout or "") + (result.stderr or "")
     return parse_engine_log_text(text, since_s, start, end)

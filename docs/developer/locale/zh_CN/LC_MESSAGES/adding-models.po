@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  HybridInference\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-16 19:08-0400\n"
+"POT-Creation-Date: 2026-11-28 06:22+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -26,218 +26,96 @@ msgstr "添加新模型"
 
 #: ../developer/adding-models.md:3
 msgid ""
-"This guide is for operators who want a gateway to serve another model. If"
-" the provider is one the gateway already supports — any OpenAI-compatible"
-" API, OpenRouter, Anthropic, Claude on Vertex or Gemini — this is "
-"configuration only: add an entry to the model registry, set its "
-"credential, and restart."
+"Add a model in **Admin → Routing → Create model**: choose its router, "
+"pricing, context and output limits, input capabilities, required role and"
+" first provider route, then verify the route and save. Route edits apply "
+"across all backend processes without a restart."
 msgstr ""
-"本指南写给想让网关多提供一个模型的运维人员。如果网关已经支持这个 provider（任何 OpenAI 兼容 "
-"API、OpenRouter、Anthropic、Vertex 上的 Claude 或 "
-"Gemini），只需要改配置：在模型注册表里加一个条目，配好凭据，然后重启。"
+"在 **Admin → Routing → Create model** 中添加模型：选择它的 "
+"router、价格、上下文和输出上限、输入能力、所需角色和第一条 provider "
+"路由，然后验证路由并保存。路由的修改无需重启即可在所有后端进程生效。"
 
 #: ../developer/adding-models.md:8
 msgid ""
-"For a model you serve yourself on vLLM, SGLang, or Ollama, see [Adding a "
-"New Local Model](add-local-model.md)."
-msgstr "如果是你自己用 vLLM、SGLang 或 Ollama 部署的模型，见[添加新的本地模型](add-local-model.md)。"
-
-#: ../developer/adding-models.md:10
-msgid ""
-"For a provider with its own, non-OpenAI API, you need an adapter first; "
-"see [Writing a Provider Adapter](provider-adapters.md)."
+"A provider with its own protocol needs an adapter first; see [Writing a "
+"Provider Adapter](provider-adapters.md). Local inference servers use the "
+"OpenAI-compatible adapter; see [Adding a New Local Model](add-local-"
+"model.md)."
 msgstr ""
-"如果 provider 有自己的一套非 OpenAI API，需要先写一个 adapter；见[编写 provider adapter"
-"](provider-adapters.md)。"
+"使用自有协议的 provider 需要先写一个 adapter，见[编写 provider adapter](provider-"
+"adapters.md)。本地推理服务器使用兼容 OpenAI 的 adapter，见[添加新的本地模型](add-local-"
+"model.md)。"
 
 #: ../developer/adding-models.md:12
-msgid ""
-"When a database is configured, a model, a route or a key can also be "
-"added from the admin console while the gateway runs; see [Runtime "
-"configuration from the admin console](configuration.md#runtime-"
-"configuration-from-the-admin-console). A model created there has no "
-"catalog metadata, so a model that needs a context length, modalities or "
-"aliases still belongs in the registry."
-msgstr ""
-"配置了数据库时，也可以在网关运行期间从管理控制台添加模型、路由或 key；见[从管理控制台做运行时配置](configuration.md"
-"#runtime-configuration-from-the-admin-"
-"console)。不过在控制台创建的模型没有模型目录所需的元数据，所以需要设置上下文长度、模态或别名的模型，还是要写进注册表。"
-
-#: ../developer/adding-models.md:18
 msgid "Where your model registry lives"
 msgstr "模型注册表在哪里"
 
-#: ../developer/adding-models.md:20
+#: ../developer/adding-models.md:14
 msgid ""
-"The gateway uses the file named by `MODELS_CONFIG_PATH`; failing that, "
-"the one named by an active distribution manifest; failing both, the "
-"bundled example `config/examples/models.openrouter.yaml`. [How a gateway "
-"finds its config](configuration.md#how-a-gateway-finds-its-config) has "
-"the details."
+"The model registry is the `MODEL_CATALOG` JSON setting in PostgreSQL, "
+"edited in **Admin → Routing → Models**. Edit it for aliases or other "
+"metadata that **Create model** does not offer. No model file is read, and"
+" a fresh gateway has no models."
 msgstr ""
-"网关使用 `MODELS_CONFIG_PATH` 指定的文件；没设置时，用已启用的发行版 manifest "
-"指定的文件；两者都没有时，用自带的示例 "
-"`config/examples/models.openrouter.yaml`。详见[网关如何找到自己的配置](configuration.md#how-a"
-"-gateway-finds-its-config)。"
+"模型注册表就是 PostgreSQL 中的 `MODEL_CATALOG` JSON 设置项，在 **Admin → Routing → "
+"Models** 中编辑。别名以及 **Create model** "
+"不提供的其他元数据都在这里编辑。网关不读取任何模型文件，全新的网关没有任何模型。"
 
-#: ../developer/adding-models.md:26
-msgid "That leaves two ways to set up your own:"
-msgstr "因此，要使用自己的注册表，有两种做法："
-
-#: ../developer/adding-models.md:28
-msgid ""
-"**Point at a file.** Keep your registry wherever you like and set "
-"`MODELS_CONFIG_PATH=/path/to/models.yaml`. This is what the quickstart in"
-" `README.md` does."
-msgstr ""
-"**指向一个文件**。注册表放在任意位置，设置 `MODELS_CONFIG_PATH=/path/to/models.yaml` "
-"即可。`README.md` 里的快速开始就是这么做的。"
-
-#: ../developer/adding-models.md:31
-msgid ""
-"**Ship a distribution.** Create `distributions/<name>/` containing a "
-"`distribution.yaml` manifest and a `config/models.yaml`, then set "
-"`DISTRIBUTION_CONFIG_PATH=distributions/<name>/distribution.yaml` and "
-"`DISTRIBUTION_CONFIG_MODE=active`. `distributions/example/` is a working "
-"distribution you can copy; `config/examples/distribution.example.yaml` is"
-" an annotated manifest."
-msgstr ""
-"**建一个发行版**。创建 `distributions/<name>/`，里面放一份 `distribution.yaml` manifest "
-"和一份 `config/models.yaml`，然后设置 "
-"`DISTRIBUTION_CONFIG_PATH=distributions/<name>/distribution.yaml` 和 "
-"`DISTRIBUTION_CONFIG_MODE=active`。`distributions/example/` "
-"是一个可以直接复制的可用发行版；`config/examples/distribution.example.yaml` 是一份带注释的 "
-"manifest。"
-
-#: ../developer/adding-models.md:38
-msgid ""
-"Throughout this guide, \"your model registry\" means whichever file that "
-"resolution picks."
-msgstr "本指南中所说的「你的模型注册表」，指的就是上述解析过程最终选中的那个文件。"
-
-#: ../developer/adding-models.md:41
-msgid ""
-"If no registry is found at the resolved path, the backend logs an error, "
-"serves an empty `/v1/models`, and reports every model as not found."
-msgstr "如果解析出的路径上没有注册表，后端会记一条错误日志，`/v1/models` 返回空列表，请求任何模型都会报 not found。"
-
-#: ../developer/adding-models.md:44
-msgid "Adding a model"
-msgstr "添加模型"
-
-#: ../developer/adding-models.md:46
-msgid "**Add a model entry** to your model registry:"
-msgstr "在模型注册表中**添加一条模型条目**："
-
-#: ../developer/adding-models.md:76
-msgid ""
-"The route inherits `base_url` and `api_key` from the model, so it only "
-"has to carry what differs. Repeat them on a route entry when a second "
-"route points somewhere else."
-msgstr ""
-"路由会继承模型的 `base_url` 和 "
-"`api_key`，所以路由上只需写不一样的部分。如果第二条路由指向别的地址，就在那条路由上把这两项再写一遍。"
-
-#: ../developer/adding-models.md:80
-msgid ""
-"**Set the variables.** On a gateway with a database, add each one on the "
-"admin console's **Configuration** tab with **Add variable**, and mark the"
-" API key secret. Without a database, put them in `.env` at the repository"
-" root, which the backend's settings loader reads:"
-msgstr ""
-"**设置这些变量**。有数据库的网关上，在管理控制台的 **Configuration** 标签页里用 **Add variable** "
-"逐个添加，并把 API key 标为 secret。没有数据库时，把它们写进仓库根目录的 `.env`，后端的配置加载器读的就是这个文件："
-
-#: ../developer/adding-models.md:90
-msgid ""
-"A value in `.env` also reaches a gateway with a database: at startup the "
-"backend copies it into the database, unless the database already has a "
-"value of that name."
-msgstr "有数据库的网关同样会用到 `.env` 里的值：启动时后端会把它复制进数据库，除非数据库里已经有同名的值。"
-
-#: ../developer/adding-models.md:94
+#: ../developer/adding-models.md:19
 #, python-brace-format
 msgid ""
-"If a `${VAR}` used for `api_key`, `api_keys` or `base_url` is empty, or "
-"unset with no default registered for that setting, the gateway skips the "
-"whole model and logs which variable was missing. Mark a route `optional: "
-"true` to skip only that route instead. Until such a variable has a value,"
-" the console also reports it as a missing setting to every signed-in "
-"user, so mark a route you leave unconfigured on purpose `optional: true` "
-"as well."
+"Store credentials as secret settings and reference them as `${NAME}`; the"
+" catalog refuses inline credentials. A catalog change is marked **Restart"
+" required** and applies after `make restart s=backend`. A minimal entry "
+"is in [The model registry](configuration.md#the-model-registry), and "
+"every field is in the [Configuration Reference](#configuration-"
+"reference)."
 msgstr ""
-"如果 `api_key`、`api_keys` 或 `base_url` 用到的某个 `${VAR}` "
-"值为空，或者没有设置、而这个设置项也没有注册默认值，网关会跳过整个模型，并在日志里写明缺的是哪个变量。给路由加上 `optional: "
-"true`，就只跳过那一条路由。在这样的变量有值之前，控制台还会把它作为缺失的设置项报告给每个已登录的用户，所以故意不配置的路由也要标上 "
-"`optional: true`。"
+"把凭据存为秘密设置项，用 `${NAME}` 引用；模型目录不接受内联凭据。修改模型目录会被标记为 **Restart "
+"required**，在执行 `make restart s=backend` "
+"后生效。最小的条目示例见[模型注册表](configuration.md#the-model-registry)，全部字段见[配置参考"
+"](#configuration-reference)。"
 
-#: ../developer/adding-models.md:101
-msgid "**Restart the backend** to load the new model."
-msgstr "**重启后端**以加载新模型。"
+#: ../developer/adding-models.md:25
+msgid "Removing a model"
+msgstr "移除模型"
 
-#: ../developer/adding-models.md:103
-msgid "**Verify** it, as described below."
-msgstr "按下文的方法**验证**它。"
-
-#: ../developer/adding-models.md:105
+#: ../developer/adding-models.md:27
 msgid ""
-"Note on aliases: to let clients also call the model under a second name —"
-" an OpenRouter-style vendor slug, or the raw model path your serving "
-"runtime uses — list those names in `aliases`. They resolve to the same "
-"routes."
+"Delete the model's last route in **Admin → Routing**. That removes the "
+"model from `MODEL_CATALOG`: it stops serving at once, other processes "
+"drop it at their next refresh, and the next start does not register it. "
+"Deleting a route while others remain only hides that route until you "
+"**Restore** it."
 msgstr ""
-"关于别名：如果想让客户端也能用另一个名字调用这个模型，比如 OpenRouter 风格的厂商 "
-"slug，或者你的推理运行时使用的原始模型路径，就把这些名字列进 `aliases`。它们会解析到同一组路由。"
+"在 **Admin → Routing** 中删除模型的最后一条路由。这会把模型从 `MODEL_CATALOG` "
+"中移除：它立即停止服务，其他进程在下次刷新时将其去掉，下次启动也不会再注册它。如果模型还有其他路由，删除一条路由只是把它隐藏起来，直到你点击 "
+"**Restore** 恢复。"
 
-#: ../developer/adding-models.md:109
+#: ../developer/adding-models.md:32
 msgid "Verify it through the gateway"
 msgstr "通过网关验证"
 
-#: ../developer/adding-models.md:111
-msgid "Start the backend. From a source checkout:"
-msgstr "启动后端。直接从源码运行时："
-
-#: ../developer/adding-models.md:118
+#: ../developer/adding-models.md:39
 msgid ""
-"With the bundled Docker Compose setup, `make build s=backend` rebuilds "
-"and restarts the backend instead."
-msgstr "如果用仓库自带的 Docker Compose，则改用 `make build s=backend` 重新构建并重启后端。"
+"Set `GATEWAY_API_KEY` first when authentication is on. The smoke test "
+"uses the real inference path and quota; check streaming separately if "
+"clients need it."
+msgstr "开启认证时，先设置 `GATEWAY_API_KEY`。冒烟测试走真实的推理路径并消耗配额；如果客户端依赖流式响应，请单独检查。"
 
-#: ../developer/adding-models.md:121
-msgid ""
-"`GET /v1/models` accepts an anonymous request — it resolves an API key "
-"only to decide whether to include admin-visible entries:"
-msgstr "`GET /v1/models` 接受匿名请求——它解析 API key 只是为了决定要不要包含仅管理员可见的条目："
-
-#: ../developer/adding-models.md:128
-msgid ""
-"`POST /v1/chat/completions` **returns 401 without a valid gateway API "
-"key** unless the backend is running with `USER_AUTH_ENABLED=false`. Send "
-"the key you issued for your own gateway (this is the gateway's key, not "
-"the upstream provider's):"
-msgstr ""
-"`POST /v1/chat/completions` **没有有效的网关 API key 就会返回 401**，除非后端以 "
-"`USER_AUTH_ENABLED=false` 运行。请求时要带上你在自己网关上签发的 key（是网关的 key，不是上游 provider "
-"的）："
-
-#: ../developer/adding-models.md:144
-msgid "Streaming test:"
-msgstr "流式测试："
-
-#: ../developer/adding-models.md:158
+#: ../developer/adding-models.md:42
 msgid "Configuration Reference"
 msgstr "配置参考"
 
-#: ../developer/adding-models.md:160
+#: ../developer/adding-models.md:44
 msgid "Model fields"
 msgstr "模型字段"
 
-#: ../developer/adding-models.md:162
+#: ../developer/adding-models.md:46
 msgid ""
-"These keys can appear on a model entry. Most of them can also be set on a"
-" route entry, where the route value wins; `id` and `name` identify the "
-"model itself and are read only at the model level."
-msgstr "这些键可以写在模型条目上。其中大多数也可以写在路由条目上，此时以路由上的值为准；`id` 和 `name` 标识的是模型本身，只在模型层级读取。"
+"Most fields can also be set on a route, where the route's value wins. "
+"`id` and `name` are read only on the model."
+msgstr "大多数字段也可以写在路由上，此时以路由上的值为准。`id` 和 `name` 只在模型上读取。"
 
 #: ../developer/adding-models.md
 msgid "Field"
@@ -248,8 +126,8 @@ msgid "Type"
 msgstr "类型"
 
 #: ../developer/adding-models.md
-msgid "Required"
-msgstr "必填"
+msgid "Default"
+msgstr "默认值"
 
 #: ../developer/adding-models.md
 msgid "Description"
@@ -257,348 +135,616 @@ msgstr "说明"
 
 #: ../developer/adding-models.md
 msgid "`id`"
-msgstr ""
+msgstr "`id`"
 
 #: ../developer/adding-models.md
 msgid "string"
-msgstr ""
+msgstr "string"
 
 #: ../developer/adding-models.md
-msgid "Yes"
-msgstr "是"
+msgid "required"
+msgstr "必填"
 
 #: ../developer/adding-models.md
-msgid "Unique model identifier; the name clients send"
-msgstr "唯一的模型标识；客户端发送的就是这个名字"
+msgid "The name clients send"
+msgstr "客户端发送的名称"
 
 #: ../developer/adding-models.md
 msgid "`name`"
-msgstr ""
+msgstr "`name`"
 
 #: ../developer/adding-models.md
 msgid "Display name"
 msgstr "展示名称"
 
 #: ../developer/adding-models.md
-msgid "Display name; defaults to `id`"
-msgstr "显示名称；默认为 `id`"
-
-#: ../developer/adding-models.md
 msgid "`provider`"
-msgstr ""
+msgstr "`provider`"
 
 #: ../developer/adding-models.md
 msgid ""
-"Provider/adapter kind; also the default `route[].kind` when no `route:` "
-"list is given. Note the collision: at the model level `provider:` selects"
-" an adapter, while `provider:` on a *route* is only an analytics label — "
-"see the route-fields table"
-msgstr ""
-"provider/adapter 的 kind；没有写 `route:` 列表时，它也是 `route[].kind` "
-"的默认值。注意这里有个同名的坑：模型层级的 `provider:` 用来选 adapter，而*路由*上的 `provider:` "
-"只是统计用的标签——见路由字段表"
+"Adapter kind, and the default `route[].kind`. On a route, `provider` is "
+"only a dashboard label"
+msgstr "adapter kind，也是 `route[].kind` 的默认值。在路由上，`provider` 只是仪表盘标签"
 
 #: ../developer/adding-models.md
 msgid "`base_url`"
-msgstr ""
+msgstr "`base_url`"
 
 #: ../developer/adding-models.md
-msgid "Yes, here or on every route"
-msgstr "是，写在这里或每条路由上"
+msgid "required here or on every route"
+msgstr "在这里或每条路由上必填"
 
 #: ../developer/adding-models.md
-msgid "API endpoint base URL"
-msgstr "API 端点的 base URL"
+msgid "API base URL"
+msgstr "API base URL"
 
 #: ../developer/adding-models.md
 msgid "`api_key`"
-msgstr ""
+msgstr "`api_key`"
 
 #: ../developer/adding-models.md
-msgid "No"
-msgstr "否"
-
-#: ../developer/adding-models.md
-msgid "API authentication key"
-msgstr "API 鉴权密钥"
+#, python-brace-format
+msgid "API key, as a `${NAME}` reference"
+msgstr "API key，以 `${NAME}` 引用"
 
 #: ../developer/adding-models.md
 msgid "`provider_model_id`"
-msgstr ""
+msgstr "`provider_model_id`"
 
 #: ../developer/adding-models.md
-msgid "Provider's model identifier (overrides `id` on the wire)"
-msgstr "provider 那边的模型标识（实际发给上游时用它代替 `id`）"
+msgid "Model name sent upstream"
+msgstr "发给上游的模型名称"
 
 #: ../developer/adding-models.md
 msgid "`model_type`"
-msgstr ""
+msgstr "`model_type`"
+
+#: ../developer/adding-models.md
+msgid "`chat`"
+msgstr "`chat`"
 
 #: ../developer/adding-models.md
 msgid ""
-"`\"chat\"` (default) or `\"embedding\"`. The alias `type:` is equivalent;"
-" embedding models bypass the weighted router and use their routes as an "
-"ordered fallback chain"
-msgstr ""
-"`\"chat\"`（默认）或 `\"embedding\"`。也可以写成 `type:`，两者等价；embedding 模型不走加权 "
-"router，而是按顺序把自己的路由当作回退链"
+"`chat` or `embedding` (alias `type`). Embedding models skip the weighted "
+"router and try their routes in order"
+msgstr "`chat` 或 `embedding`（别名 `type`）。embedding 模型不经过加权 router，而是按顺序尝试各条路由"
 
 #: ../developer/adding-models.md
 msgid "`aliases`"
-msgstr ""
+msgstr "`aliases`"
 
 #: ../developer/adding-models.md
 msgid "list[string]"
-msgstr ""
+msgstr "list[string]"
 
 #: ../developer/adding-models.md
-msgid "Alternative names for routing"
-msgstr "可用于路由的其他名称"
+msgid "Other names for the model"
+msgstr "模型的其他名称"
 
 #: ../developer/adding-models.md
 msgid "`quantization`"
-msgstr ""
+msgstr "`quantization`"
 
 #: ../developer/adding-models.md
-msgid "Quantization format (default: `\"bf16\"`)"
-msgstr "量化格式（默认：`\"bf16\"`）"
+msgid "`bf16`"
+msgstr "`bf16`"
+
+#: ../developer/adding-models.md
+msgid "Quantization format"
+msgstr "量化格式"
 
 #: ../developer/adding-models.md
 msgid "`input_modalities`"
-msgstr ""
+msgstr "`input_modalities`"
 
 #: ../developer/adding-models.md
-msgid "Input types: `\"text\"`, `\"image\"`"
-msgstr "输入类型：`\"text\"`、`\"image\"`"
+msgid "`[\"text\"]`"
+msgstr "`[\"text\"]`"
+
+#: ../developer/adding-models.md
+msgid "`text`, `image`"
+msgstr "`text`, `image`"
 
 #: ../developer/adding-models.md
 msgid "`output_modalities`"
-msgstr ""
+msgstr "`output_modalities`"
 
 #: ../developer/adding-models.md
-msgid "Output types: `\"text\"`"
-msgstr "输出类型：`\"text\"`"
+msgid "`text`"
+msgstr "`text`"
 
 #: ../developer/adding-models.md
 msgid "`context_length`"
-msgstr ""
+msgstr "`context_length`"
 
 #: ../developer/adding-models.md
 msgid "int"
-msgstr ""
+msgstr "int"
 
 #: ../developer/adding-models.md
-msgid "Maximum context window (default: 8192)"
-msgstr "最大上下文窗口（默认：8192）"
+msgid "8192"
+msgstr "8192"
+
+#: ../developer/adding-models.md
+msgid "Context window"
+msgstr "上下文窗口"
 
 #: ../developer/adding-models.md
 msgid "`max_output_length`"
-msgstr ""
+msgstr "`max_output_length`"
 
 #: ../developer/adding-models.md
-msgid "Maximum output tokens (default: 4096); `max_tokens` is clamped to it"
-msgstr "最大输出 token 数（默认：4096）；`max_tokens` 超过它时会被压到这个值"
+msgid "4096"
+msgstr "4096"
+
+#: ../developer/adding-models.md
+msgid "`max_tokens` is clamped to it"
+msgstr "`max_tokens` 会被截断到这个值"
 
 #: ../developer/adding-models.md
 msgid "`supports_tools`"
-msgstr ""
+msgstr "`supports_tools`"
 
 #: ../developer/adding-models.md
 msgid "bool"
-msgstr ""
+msgstr "bool"
 
 #: ../developer/adding-models.md
-msgid "Function calling support (default: false)"
-msgstr "是否支持 function calling（默认：false）"
+msgid "false"
+msgstr "false"
+
+#: ../developer/adding-models.md
+msgid "Function calling"
+msgstr "函数调用"
 
 #: ../developer/adding-models.md
 msgid "`supports_structured_output`"
-msgstr ""
+msgstr "`supports_structured_output`"
 
 #: ../developer/adding-models.md
-msgid "JSON mode support (default: false)"
-msgstr "是否支持 JSON mode（默认：false）"
+msgid "JSON mode"
+msgstr "JSON 模式"
 
 #: ../developer/adding-models.md
 msgid "`supported_params`"
-msgstr ""
+msgstr "`supported_params`"
 
 #: ../developer/adding-models.md
-msgid "Allowed parameter names (default: `temperature`, `top_p`, `max_tokens`)"
-msgstr "允许的参数名（默认：`temperature`、`top_p`、`max_tokens`）"
+msgid "`temperature`, `top_p`, `max_tokens`"
+msgstr "`temperature`, `top_p`, `max_tokens`"
+
+#: ../developer/adding-models.md
+msgid "Parameters forwarded upstream"
+msgstr "转发给上游的参数"
 
 #: ../developer/adding-models.md
 msgid "`reasoning_efforts`"
-msgstr ""
+msgstr "`reasoning_efforts`"
 
-#: ../developer/adding-models.md:0
-msgid "The values this model's `reasoning_effort` accepts. Meaningful only when `reasoning_effort` is in `supported_params`; empty means \"not offered\". It has no default, because the accepted values differ from model to model. The model listings publish it; see [Reasoning effort in the model listings](#reasoning-effort-in-the-model-listings)"
-msgstr "这个模型的 `reasoning_effort` 接受哪些取值。只有当 `reasoning_effort` 在 `supported_params` 里时才有意义；为空表示「不提供」。它没有默认值，因为各模型接受的取值不同。模型列表会公布它；见[模型列表中的推理强度](#reasoning-effort-in-the-model-listings)"
+#: ../developer/adding-models.md
+msgid ""
+"Values `reasoning_effort` accepts; read only when `supported_params` "
+"includes `reasoning_effort`. No default, because models differ. See "
+"[Reasoning effort in the model listings](#reasoning-effort-in-the-model-"
+"listings)"
+msgstr ""
+"`reasoning_effort` 接受的取值；只有 `supported_params` 包含 `reasoning_effort` "
+"时才读取。因为各模型不同，所以没有默认值。见[模型列表中的推理强度](#reasoning-effort-in-the-model-"
+"listings)"
 
 #: ../developer/adding-models.md
 msgid "`on_demand`"
-msgstr ""
+msgstr "`on_demand`"
 
 #: ../developer/adding-models.md
 msgid ""
-"Model is lazily loaded on shared GPUs (started on first request, stopped "
-"when idle). Exposed in `/v1/models`, and the RouteWise background latency"
-" prober never probes such endpoints (default: false)"
-msgstr ""
-"模型在共享 GPU 上按需加载（首次请求时启动，空闲时停止）。这个标记会在 `/v1/models` 中返回，RouteWise "
-"的后台延迟探测器也从不探测这类端点（默认：false）"
+"Loaded on demand on shared GPUs. Shown in `/v1/models`; RouteWise's "
+"latency prober skips it"
+msgstr "在共享 GPU 上按需加载。会在 `/v1/models` 中标出；RouteWise 的延迟探测会跳过它"
 
 #: ../developer/adding-models.md
 msgid "`processor`"
-msgstr ""
+msgstr "`processor`"
+
+#: ../developer/adding-models.md
+msgid "auto"
+msgstr "自动检测"
 
 #: ../developer/adding-models.md
 msgid ""
-"Output-processor override for `OpenAICompatAdapter`, bypassing model-ID "
-"auto-detection. Accepted: `\"default\"`, `\"glm\"`, `\"qwen_coder\"`, "
-"`\"think_block\"`"
-msgstr ""
-"为 `OpenAICompatAdapter` 指定输出处理器，绕过按模型 id "
-"的自动识别。可取值：`\"default\"`、`\"glm\"`、`\"qwen_coder\"`、`\"think_block\"`"
+"Output processor for `OpenAICompatAdapter`: `default`, `glm`, "
+"`qwen_coder` or `think_block`"
+msgstr "`OpenAICompatAdapter` 的输出处理器：`default`、`glm`、`qwen_coder` 或 `think_block`"
 
 #: ../developer/adding-models.md
 msgid "`extra_body`"
-msgstr ""
+msgstr "`extra_body`"
 
 #: ../developer/adding-models.md
 msgid "dict"
-msgstr ""
+msgstr "dict"
 
 #: ../developer/adding-models.md
 msgid ""
-"Default fields merged into OpenAI-compatible upstream request bodies. "
-"Core fields and validated client parameters win"
-msgstr "合并进 OpenAI 兼容上游请求体的默认字段。核心字段和已校验的客户端参数优先"
+"Fields merged into OpenAI-compatible request bodies; core fields and "
+"client parameters win"
+msgstr "合并到兼容 OpenAI 的请求体中的字段；核心字段和客户端参数优先"
 
 #: ../developer/adding-models.md
 msgid "`priority_scheduling`"
-msgstr ""
+msgstr "`priority_scheduling`"
 
 #: ../developer/adding-models.md
 msgid ""
-"The endpoint runs an sglang server started with `--enable-priority-"
-"scheduling`; see [Prioritizing decode on an sglang route](add-local-"
-"model.md#prioritizing-decode-on-an-sglang-route). Normally set per route,"
-" not per model"
+"Normally set per route; see [Prioritizing decode on an sglang route](add-"
+"local-model.md#prioritizing-decode-on-an-sglang-route)"
 msgstr ""
-"该端点上的 sglang 服务器是带 `--enable-priority-scheduling` 启动的；见[在 sglang 路由上优先调度 "
-"decode](add-local-model.md#prioritizing-decode-on-an-sglang-"
-"route)。通常按路由设置，而不是按模型设置"
+"通常按路由设置；见[在 sglang 路由上优先保障解码](add-local-model.md#prioritizing-decode-on-"
+"an-sglang-route)"
 
 #: ../developer/adding-models.md
 msgid "`route_metadata`"
-msgstr ""
+msgstr "`route_metadata`"
 
 #: ../developer/adding-models.md
-msgid "Free-form per-route metadata consumed by routing strategies"
-msgstr "每条路由上的自由格式元数据，供路由策略读取"
+msgid "Free-form metadata for routing strategies"
+msgstr "供路由策略使用的自由格式元数据"
 
 #: ../developer/adding-models.md
 msgid "`pricing`"
-msgstr ""
+msgstr "`pricing`"
+
+#: ../developer/adding-models.md
+msgid "zeros"
+msgstr "全部为 0"
 
 #: ../developer/adding-models.md
 msgid ""
-"Base cost information. `prompt`, `completion`, `input_cache_reads` and "
-"`input_cache_writes` are USD per 1M tokens; `request` is USD per request "
-"and `image` USD per image"
+"`prompt`, `completion`, `input_cache_reads` and `input_cache_writes` per "
+"1M tokens; `request` per request; `image` per image"
 msgstr ""
-"基础价格。`prompt`、`completion`、`input_cache_reads` 和 `input_cache_writes` "
-"的单位是美元/100 万 token；`request` 的单位是美元/次请求，`image` 是美元/张图片"
+"`prompt`、`completion`、`input_cache_reads` 和 `input_cache_writes` 按每 100 万"
+" token 计；`request` 按每个请求计；`image` 按每张图片计"
+
+#: ../developer/adding-models.md
+msgid "`pricing_currency`"
+msgstr "`pricing_currency`"
+
+#: ../developer/adding-models.md
+msgid "`USD`"
+msgstr "`USD`"
+
+#: ../developer/adding-models.md
+msgid ""
+"`USD` or `CNY`, for `pricing` and `pricing_schedule`; see [Accounting "
+"Currency](accounting.md)"
+msgstr "`USD` 或 `CNY`，用于 `pricing` 和 `pricing_schedule`；见[记账币种](accounting.md)"
 
 #: ../developer/adding-models.md
 msgid "`pricing_schedule`"
-msgstr ""
+msgstr "`pricing_schedule`"
 
 #: ../developer/adding-models.md
 msgid ""
-"UTC-only activation time plus recurring price windows: `pricing` "
-"stays active before `effective_at`; afterwards `default` applies outside "
-"each half-open `[start, end)` window, and a window's own `pricing` "
-"overrides the base fields. Optional `weekdays` (ISO integers 1=Monday "
-"through 7=Sunday) and `excluded_dates` (`YYYY-MM-DD`) restrict which UTC "
-"dates can use windows"
+"Price windows by time of day; see [Calendar-aware prices](#calendar-"
+"aware-prices)"
+msgstr "按一天中的时段设置价格窗口；见[按日历定价](#calendar-aware-prices)"
+
+#: ../developer/adding-models.md
+msgid "`pricing_source`"
+msgstr "`pricing_source`"
+
+#: ../developer/adding-models.md
+msgid ""
+"Follow a provider's published prices; see [Automatic DeepSeek prices"
+"](#automatic-deepseek-prices). `null` on a route keeps that route's own "
+"prices"
 msgstr ""
-"一个生效时间（只支持 UTC），加上循环的价格时段：`effective_at` 之前一直用 `pricing`；之后，不在任何左闭右开的 "
-"`[start, end)` 时段内时用 `default`，落在某个时段内时，用该时段自己的 `pricing` 覆盖基础字段。可选的 "
-"`weekdays`（ISO 整数，1 为星期一，7 为星期日）和 `excluded_dates`（`YYYY-MM-DD`）限定哪些 UTC 日期可以使用这些时段"
+"跟随 provider 公布的价格；见[自动同步 DeepSeek 价格](#automatic-deepseek-prices)。在路由上设为 "
+"`null` 时，该路由使用自己的价格"
+
+#: ../developer/adding-models.md:78
+msgid ""
+"A model also takes `route` (below), `router` and `router_params` (see "
+"[Choosing a router per model](routing.md#choosing-a-router-per-model)), "
+"and `required_role`, the lowest user role that can see and call the "
+"model."
+msgstr ""
+"模型还可以设置 `route`（见下文）、`router` 和 `router_params`（见[为每个模型选择 "
+"router](routing.md#choosing-a-router-per-model)），以及 "
+"`required_role`，即能看到并调用该模型的最低用户角色。"
+
+#: ../developer/adding-models.md:82
+#, python-brace-format
+msgid ""
+"Without `required_role`, a model defaults to `free` only if it has no "
+"price and every route is a `sglang`, `vllm` or `ollama` engine on "
+"`localhost`, `127.0.0.1`, `0.0.0.0` or `host.docker.internal`. Every "
+"other model defaults to `pro`, because a zero price does not prove the "
+"upstream is free: an `openai_compat` route on localhost can forward to a "
+"paid API, and a `${VAR}` URL cannot be classified. Set `required_role` to"
+" choose another tier. `admin_only: true` is an older way to write "
+"`required_role: admin`; an explicit `required_role` replaces it, except "
+"that `required_role: free` with `admin_only: true` stays admin-only."
+msgstr ""
+"没有设置 `required_role` 时，只有在模型没有定价、且每条路由都是位于 "
+"`localhost`、`127.0.0.1`、`0.0.0.0` 或 `host.docker.internal` 上的 "
+"`sglang`、`vllm` 或 `ollama` 引擎时，才默认为 `free`。其他模型都默认为 "
+"`pro`，因为价格为零并不能证明上游免费：localhost 上的 `openai_compat` 路由可能转发到付费 API，`${VAR}`"
+" 形式的 URL 也无法判断。要使用其他等级，请设置 `required_role`。`admin_only: true` 是 "
+"`required_role: admin` 的旧写法；显式的 `required_role` 会取代它，但 `required_role: "
+"free` 与 `admin_only: true` 同时出现时仍然只对管理员开放。"
+
+#: ../developer/adding-models.md:92
+msgid "Reasoning effort in the model listings"
+msgstr "模型列表中的推理强度"
+
+#: ../developer/adding-models.md:94
+#, python-brace-format
+msgid ""
+"`/v1/models` lists the `reasoning_effort` values each model accepts, so a"
+" client can offer only those. The OpenAI shape carries `reasoning: "
+"{\"supported_efforts\": [...]}`. The Anthropic shape (an `anthropic-"
+"version` header, or `/anthropic/v1/models`) carries "
+"`capabilities.effort`: `supported`, plus one `{\"supported\": "
+"true|false}` for each of `low`, `medium`, `high`, `xhigh` and `max`."
+msgstr ""
+"`/v1/models` 列出每个模型接受的 `reasoning_effort` 取值，客户端可以只提供这些选项。OpenAI 格式带有 "
+"`reasoning: {\"supported_efforts\": [...]}`。Anthropic 格式（带 `anthropic-"
+"version` 请求头，或请求 `/anthropic/v1/models`）带有 `capabilities.effort`：一个 "
+"`supported`，以及 `low`、`medium`、`high`、`xhigh` 和 `max` 各一个 `{\"supported\":"
+" true|false}`。"
+
+#: ../developer/adding-models.md:101
+msgid ""
+"A value is listed only when every route of the model delivers it. A route"
+" delivers:"
+msgstr "只有模型的每条路由都能传递某个取值时，才会列出它。一条路由传递的取值是："
+
+#: ../developer/adding-models.md:104
+msgid "the keys of its `reasoning_effort_map`;"
+msgstr "它的 `reasoning_effort_map` 的键；"
+
+#: ../developer/adding-models.md:105
+msgid ""
+"otherwise, on the OpenAI-compatible adapter (OpenRouter included) with "
+"`reasoning_effort` in `supported_params`, its `reasoning_efforts`;"
+msgstr ""
+"否则，如果使用兼容 OpenAI 的 adapter（包括 OpenRouter）且 `supported_params` 中有 "
+"`reasoning_effort`，取它的 `reasoning_efforts`；"
+
+#: ../developer/adding-models.md:107
+msgid ""
+"otherwise the levels of a matching [deployment preset](#deployment-"
+"presets);"
+msgstr "否则取匹配的[部署预设](#deployment-presets)中的级别；"
+
+#: ../developer/adding-models.md:108
+msgid ""
+"otherwise nothing, if `supported_params` leaves `reasoning_effort` out; "
+"the model is then listed with no values (`supported: false`)."
+msgstr ""
+"否则，如果 `supported_params` 中没有 "
+"`reasoning_effort`，则不传递任何取值，模型会以空列表列出（`supported: false`）。"
+
+#: ../developer/adding-models.md:111
+msgid ""
+"No effort information is listed (`reasoning: null`) when a route's "
+"adapter does not forward the parameter (`anthropic`, `claude`, `gemini`) "
+"or names `reasoning_effort` without a valid `reasoning_efforts` list. "
+"Auto models list none."
+msgstr ""
+"如果某条路由的 adapter 不转发该参数（`anthropic`、`claude`、`gemini`），或者声明了 "
+"`reasoning_effort` 却没有有效的 `reasoning_efforts` 列表，就不列出任何推理强度信息（`reasoning:"
+" null`）。自动模型也不列出。"
+
+#: ../developer/adding-models.md:116
+msgid "Mapping reasoning-effort levels on a route"
+msgstr "在路由上映射推理强度档位"
+
+#: ../developer/adding-models.md:118
+msgid ""
+"When the level clients send differs from the value a server takes, "
+"declare the translation with `reasoning_effort_map` on the route. Each "
+"key is a public level (what clients send as `reasoning_effort`, "
+"`reasoning.effort` on Responses or `output_config.effort` on Messages, "
+"and what `/v1/models` lists). Each value is what this server receives as "
+"`reasoning_effort`."
+msgstr ""
+"如果客户端发送的级别与服务器接受的取值不同，就在路由上用 `reasoning_effort_map` "
+"声明转换关系。每个键是一个公开级别（客户端以 `reasoning_effort`、Responses 中的 `reasoning.effort`"
+" 或 Messages 中的 `output_config.effort` 发送的值，也是 `/v1/models` "
+"列出的值）。每个值是这台服务器收到的 `reasoning_effort`。"
+
+#: ../developer/adding-models.md:139
+msgid "On that route:"
+msgstr "在这条路由上："
+
+#: ../developer/adding-models.md:141
+msgid ""
+"Only the keys are accepted, in their order (`low`, `high`, `max` above). "
+"Any other level, including a switch such as `none`, is refused with `400`"
+" before anything is sent."
+msgstr ""
+"只接受这些键，并按它们的顺序列出（上例中为 `low`、`high`、`max`）。其他任何级别，包括 `none` "
+"这类开关，都会在发送任何内容之前以 `400` 拒绝。"
+
+#: ../developer/adding-models.md:144
+msgid ""
+"The level is translated once, by the route that serves the request. A "
+"retry or fallback starts again from the client's level."
+msgstr "级别只由实际处理请求的路由转换一次。重试或回退会重新从客户端发送的级别开始。"
+
+#: ../developer/adding-models.md:146
+msgid ""
+"The route forwards `reasoning_effort` whatever `supported_params` says, "
+"and ignores `reasoning_efforts`."
+msgstr ""
+"无论 `supported_params` 如何设置，该路由都会转发 `reasoning_effort`，并忽略 "
+"`reasoning_efforts`。"
+
+#: ../developer/adding-models.md:148
+msgid ""
+"A request without a level sends none, and the gateway adds no default. "
+"Claude Code, for one, sends `output_config.effort: high` when its user "
+"chose nothing."
+msgstr ""
+"没有指定级别的请求不会发送级别，网关也不添加默认值。例如，用户什么都没选时，Claude Code 会发送 "
+"`output_config.effort: high`。"
+
+#: ../developer/adding-models.md:151
+msgid ""
+"The map is allowed only on a route, and only on an OpenAI-compatible "
+"kind; on `anthropic`, `claude` or `gemini` it is a configuration error. "
+"Keys and values are up to 32 letters, digits, `_`, `.` or `-`. Admins can"
+" set a route's map in the console; see [Routing tab](configuration.md"
+"#routing-tab)."
+msgstr ""
+"这个映射只能写在路由上，且只能用于兼容 OpenAI 的 kind；在 `anthropic`、`claude` 或 `gemini` "
+"上属于配置错误。键和值最多 32 个字符，由字母、数字、`_`、`.` 或 `-` 组成。管理员可以在控制台中设置路由的映射；见 [Routing"
+" 标签页](configuration.md#routing-tab)。"
+
+#: ../developer/adding-models.md:156
+msgid "Deployment presets"
+msgstr "部署预设"
+
+#: ../developer/adding-models.md:158
+msgid ""
+"A trusted backend extension can register a verified mapping with "
+"`register_reasoning_effort_preset` (from "
+"`serving.config.reasoning_effort_presets`) in its `register()` hook. A "
+"preset names the upstream provider, adapter kind, exact upstream model ID"
+" and base URL it was tested against, plus a display label and an "
+"`effort_map`. It applies only to that exact target. The provider is the "
+"route's real upstream, not its dashboard label; for an OpenRouter pin, "
+"use provider `openrouter` and kind `openrouter[<pin>]`. Admin overrides, "
+"route maps and a route's own effort declarations take precedence over a "
+"preset."
+msgstr ""
+"受信任的后端扩展可以在它的 `register()` 钩子中用 `register_reasoning_effort_preset`（来自 "
+"`serving.config.reasoning_effort_presets`）注册经过验证的映射。预设写明测试时使用的上游 "
+"provider、adapter kind、准确的上游模型 ID 和 base URL，以及显示标签和 "
+"`effort_map`。它只适用于这个确切的目标。这里的 provider 是路由真正的上游，而不是它的仪表盘标签；对固定的 "
+"OpenRouter 上游，使用 provider `openrouter` 和 kind "
+"`openrouter[<pin>]`。管理员覆盖、路由映射以及路由自己的推理强度声明都优先于预设。"
+
+#: ../developer/adding-models.md:168
+msgid "Automatic DeepSeek prices"
+msgstr "自动同步 DeepSeek 价格"
+
+#: ../developer/adding-models.md:170
+msgid ""
+"To follow DeepSeek's published prices, set the official model as the "
+"pricing source. It works for any route, self-hosted ones included. It "
+"needs PostgreSQL, cannot be combined with `pricing_schedule`, and "
+"supports `deepseek-flash` and `deepseek-v4-pro`."
+msgstr ""
+"要跟随 DeepSeek 公布的价格，把官方模型设为价格来源。它适用于任何路由，包括自托管的路由。它需要 PostgreSQL，不能与 "
+"`pricing_schedule` 同时使用，支持 `deepseek-flash` 和 `deepseek-v4-pro`。"
+
+#: ../developer/adding-models.md:184
+msgid ""
+"Every five minutes the gateway reads DeepSeek's [English price "
+"page](https://api-docs.deepseek.com/quick_start/pricing/) (USD "
+"accounting) or [Chinese price page](https://api-docs.deepseek.com/zh-"
+"cn/quick_start/pricing/) (CNY accounting), and Chinese public holidays "
+"for this year and next from [holiday-cn](https://github.com/NateScarlet"
+"/holiday-cn), a third-party dataset. No API key is sent to either. Peak "
+"windows are resolved in UTC and switch locally at their boundaries. "
+"Workers reload the stored prices every ten seconds, and each request "
+"keeps the prices it started with."
+msgstr ""
+"网关每五分钟读取一次 DeepSeek 的[英文价格页](https://api-"
+"docs.deepseek.com/quick_start/pricing/)（按 USD 记账）或[中文价格页](https://api-"
+"docs.deepseek.com/zh-cn/quick_start/pricing/)（按 CNY 记账），并从第三方数据集 "
+"[holiday-cn](https://github.com/NateScarlet/holiday-cn) "
+"读取今明两年的中国法定节假日。两者都不会收到任何 API key。高峰时段按 UTC 计算，并在边界时刻于本地切换。worker "
+"每十秒重新加载一次已存储的价格，每个请求都沿用开始时的价格。"
 
 #: ../developer/adding-models.md:193
 msgid ""
-"A model entry also accepts `route` (below), `router` and `router_params` "
-"(see [Choosing a router per model](routing.md#choosing-a-router-per-"
-"model)), and `required_role`, the lowest user role that can see and call "
-"the model (`admin_only: true` is an older way to write `required_role: "
-"admin`)."
+"A failed fetch or parse keeps the last validated prices and is logged. A "
+"first start needs stored prices or a successful fetch. An unrecognized "
+"page or calendar never turns into zero prices or an empty holiday list. "
+"The parser accepts DeepSeek's weekday schedule only while its UTC peak "
+"windows stay within one Chinese calendar day."
 msgstr ""
-"模型条目还接受 `route`（见下文）、`router` 和 `router_params`（见[为每个模型选择 "
-"router](routing.md#choosing-a-router-per-model)），以及 "
-"`required_role`——能看到并调用该模型的最低用户角色（`admin_only: true` 是 `required_role: "
-"admin` 的旧写法）。"
+"获取或解析失败时，保留上一次验证过的价格并记录日志。首次启动需要已存储的价格或一次成功的获取。无法识别的页面或日历绝不会变成零价格或空的节假日列表。只有当"
+" UTC 高峰时段都落在同一个中国日历日内时，解析器才接受 DeepSeek 的工作日价格安排。"
 
-#: ../developer/adding-models.md:197
+#: ../developer/adding-models.md:199
 msgid "Calendar-aware prices"
 msgstr "按日历调整价格"
 
-#: ../developer/adding-models.md:199
-msgid "For example, apply higher prices on weekdays except configured public holidays:"
-msgstr "例如，在星期一至星期五使用较高价格，但排除已配置的公共假日："
+#: ../developer/adding-models.md:201
+msgid ""
+"`pricing_schedule` sets prices by UTC time. Before `effective_at`, "
+"`pricing` applies. After it, each window's `pricing` applies inside its "
+"half-open `[start, end)` range and `default` applies outside. `weekdays` "
+"(ISO numbers, 1 = Monday) and `excluded_dates` (`YYYY-MM-DD`) limit the "
+"UTC dates that use windows; other dates use `default` all day, and an "
+"overnight window checks the current UTC date. You maintain these holidays"
+" and prices yourself. A request keeps the prices selected at its start, "
+"even if its stream crosses a boundary."
+msgstr ""
+"`pricing_schedule` 按 UTC 时间设置价格。`effective_at` 之前使用 "
+"`pricing`。之后，在各窗口左闭右开的 `[start, end)` 区间内使用窗口自己的 `pricing`，区间外使用 "
+"`default`。`weekdays`（ISO 编号，1 表示周一）和 `excluded_dates`（`YYYY-MM-DD`）限定哪些 "
+"UTC 日期使用窗口；其他日期全天使用 `default`，跨夜窗口按当前 UTC "
+"日期判断。这些节假日和价格需要你自己维护。请求沿用开始时选定的价格，即使流式响应跨过了边界。"
 
-#: ../developer/adding-models.md:218
-msgid "Omitting the calendar fields preserves daily schedules. On excluded dates and non-selected weekdays, all windows are skipped and `default` applies. Overnight windows use the current UTC date for both restrictions. For these manually configured schedules, deployment owners maintain holiday exclusions and prices; use `pricing_source` above for automatic updates. A request keeps the prices selected at its start, even if a stream finishes across a boundary."
-msgstr "省略日历字段时，价格时段仍然每天生效。在排除的日期或未选中的星期几，所有时段都会跳过，使用 `default`。跨越午夜的时段也按当前 UTC 日期判断这两项限制。这类手工配置的时段由部署维护者更新假日和价格；需要自动更新时，使用上面的 `pricing_source`。每个请求始终使用开始时选定的价格，即使流式响应结束时已经跨过价格切换边界。"
+#: ../developer/adding-models.md:209
+msgid ""
+"For example, higher prices on weekday mornings, except on a listed "
+"holiday:"
+msgstr "例如，工作日早间提高价格，但列出的节假日除外："
 
-#: ../developer/adding-models.md:225
+#: ../developer/adding-models.md:260
 msgid "Route configuration"
 msgstr "路由配置"
 
-#: ../developer/adding-models.md:200
-msgid "Routes give one model several endpoints with weighted distribution:"
-msgstr "路由让一个模型拥有多个端点，并按权重分配流量："
+#: ../developer/adding-models.md:262
+msgid "Routes give one model several endpoints and split its traffic by weight:"
+msgstr "路由为一个模型提供多个端点，并按权重分配流量："
 
-#: ../developer/adding-models.md:217
-msgid "Beyond the model fields above, a route entry accepts:"
-msgstr "除上面的模型字段之外，路由条目还接受："
+#: ../developer/adding-models.md:283
+msgid "A route takes the model fields above, plus:"
+msgstr "路由可以使用上面的模型字段，此外还有："
 
 #: ../developer/adding-models.md
 msgid "`kind`"
-msgstr ""
+msgstr "`kind`"
 
 #: ../developer/adding-models.md
-msgid "Adapter kind (see below). Defaults to the model's `provider`"
-msgstr "adapter 的 kind（见下）。默认取模型的 `provider`"
+msgid ""
+"Adapter kind ([below](#supported-adapter-kinds)); defaults to the model's"
+" `provider`"
+msgstr "adapter kind（[见下文](#supported-adapter-kinds)）；默认为模型的 `provider`"
 
 #: ../developer/adding-models.md
 msgid "`weight`"
-msgstr ""
+msgstr "`weight`"
 
 #: ../developer/adding-models.md
 msgid "float"
-msgstr ""
+msgstr "float"
 
 #: ../developer/adding-models.md
 msgid ""
-"Relative share of traffic (default 1.0). `0` keeps the route configured "
-"but unused: it is not tried even as a fallback"
-msgstr "流量的相对占比（默认 1.0）。`0` 表示保留这条路由的配置但不使用：连回退时都不会尝试它"
+"Share of traffic (default 1.0). `0` keeps the route configured but "
+"unused, even as a fallback"
+msgstr "流量份额（默认 1.0）。`0` 表示保留路由配置但不使用，回退时也不用"
 
 #: ../developer/adding-models.md
 msgid "`api_keys`"
-msgstr ""
+msgstr "`api_keys`"
 
 #: ../developer/adding-models.md
 msgid ""
-"Key pool for this endpoint, instead of `api_key`. Setting both is an "
-"error. The whole pool is one endpoint for latency and quota accounting; "
-"split genuinely separate resources into separate routes"
-msgstr ""
-"这个端点的 key 池，用来替代 "
-"`api_key`。两者同时设置会报错。在延迟统计和配额记账上，整个池算作一个端点；真正互相独立的资源要拆成不同的路由"
+"A key pool instead of `api_key` (not both). The pool counts as one "
+"endpoint, so put separate resources on separate routes"
+msgstr "代替 `api_key` 的 key 池（两者不能同时设置）。整个池算作一个端点，所以彼此独立的资源要放在不同的路由上"
 
 #: ../developer/adding-models.md
 msgid "`embeddings_path`"
@@ -606,129 +752,139 @@ msgstr "`embeddings_path`"
 
 #: ../developer/adding-models.md
 msgid ""
-"OpenAI-compatible embeddings path appended to this route's `base_url`; a "
-"leading slash is optional. Omitted, null, or empty keeps the default URL "
-"inference"
-msgstr ""
-"拼在该路由 `base_url` 后面的 OpenAI 兼容 embeddings 路径；开头的斜杠可有可无。不写、写 null "
-"或空字符串时，仍按默认规则推导 URL"
+"Embeddings path under `base_url`; see [Custom embeddings paths](#custom-"
+"embeddings-paths)"
+msgstr "`base_url` 下的 embeddings 路径；见[自定义 embeddings 路径](#custom-embeddings-paths)"
 
 #: ../developer/adding-models.md
 msgid "`optional`"
-msgstr ""
+msgstr "`optional`"
 
 #: ../developer/adding-models.md
 #, python-brace-format
 msgid ""
-"Skip this route with a warning when a `${VAR}`-backed key, `base_url`, or"
-" `embeddings_path` resolves unset or blank"
-msgstr "如果 key、`base_url` 或 `embeddings_path` 引用的 `${VAR}` 未设置或解析为空白，就跳过这条路由并记一条警告"
+"Skip only this route, with a warning, when a `${VAR}` key, `base_url` or "
+"`embeddings_path` is unset or blank"
+msgstr "当 `${VAR}` 形式的 key、`base_url` 或 `embeddings_path` 未设置或为空时，只跳过这条路由并发出警告"
 
 #: ../developer/adding-models.md
-msgid "`provider` / `provider_display_name`"
-msgstr ""
+msgid "`provider`, `provider_display_name`"
+msgstr "`provider`, `provider_display_name`"
 
 #: ../developer/adding-models.md
 msgid ""
-"Analytics label override only — it renames the row in the dashboard and "
-"does **not** select an adapter; that is `kind`. See [Naming a route in "
-"the dashboard](add-local-model.md#naming-a-route-in-the-dashboard)"
+"Dashboard label and display name; they do not select an adapter. See "
+"[Naming a route in the dashboard](add-local-model.md#naming-a-route-in-"
+"the-dashboard)"
 msgstr ""
-"只覆盖分析统计里的标签——它重命名的是仪表盘里的那一行，**不会**选择 adapter，选 adapter 的是 "
-"`kind`。见[在仪表盘中给路由命名](add-local-model.md#naming-a-route-in-the-dashboard)"
+"仪表盘标签和显示名称；它们不决定 adapter。见[在仪表盘中命名路由](add-local-model.md#naming-a-route-"
+"in-the-dashboard)"
 
 #: ../developer/adding-models.md
 msgid "`provider_type`"
-msgstr ""
+msgstr "`provider_type`"
 
 #: ../developer/adding-models.md
-msgid "RouteWise cost category: `on_demand`, `quota`, or `concurrency`"
-msgstr "RouteWise 的成本类别：`on_demand`、`quota` 或 `concurrency`"
+msgid "RouteWise cost category: `on_demand`, `quota` or `concurrency`"
+msgstr "RouteWise 成本类别：`on_demand`、`quota` 或 `concurrency`"
+
+#: ../developer/adding-models.md
+msgid "`deployment_type`"
+msgstr "`deployment_type`"
+
+#: ../developer/adding-models.md
+msgid ""
+"Admission class: `auto` (default; recognizes loopback and Docker-host "
+"addresses), `self_hosted` (an engine you run, also on a LAN) or "
+"`provider_api` (provider-key concurrency, even through a loopback proxy)."
+" See [Outbound concurrency](routing.md#outbound-concurrency)"
+msgstr ""
+"准入类别：`auto`（默认；识别回环地址和 Docker 宿主机地址）、`self_hosted`（你自己运行的引擎，局域网上的也算）或 "
+"`provider_api`（按 provider key 限制并发，即使经过回环代理）。见[出站并发](routing.md#outbound-"
+"concurrency)"
+
+#: ../developer/adding-models.md
+msgid "`include_usage_in_stream`"
+msgstr "`include_usage_in_stream`"
+
+#: ../developer/adding-models.md
+msgid ""
+"Ask an OpenAI-compatible upstream for a final usage chunk, so cached and "
+"tool-call tokens are measured, not estimated. On by default for "
+"`deepseek`, `zai`, `kimi`, `minimax`, `vllm` and `sglang`. Set `false` "
+"for an endpoint that rejects unknown fields. Route-only, and must be a "
+"real boolean. OpenRouter always asks for usage"
+msgstr ""
+"要求兼容 OpenAI 的上游返回最后的用量块，这样缓存 token 和工具调用 token "
+"是实测值而不是估算值。`deepseek`、`zai`、`kimi`、`minimax`、`vllm` 和 `sglang` "
+"默认开启。对会拒绝未知字段的端点设为 `false`。只能写在路由上，且必须是真正的布尔值。OpenRouter 总会请求用量"
 
 #: ../developer/adding-models.md
 msgid ""
 "`routewise_pool`, `quota_pool`, `concurrency_pool`, `quota_source`, "
 "`quota`, `concurrency`"
 msgstr ""
-
-#: ../developer/adding-models.md
-msgid "—"
-msgstr ""
+"`routewise_pool`, `quota_pool`, `concurrency_pool`, `quota_source`, "
+"`quota`, `concurrency`"
 
 #: ../developer/adding-models.md
 msgid "RouteWise pool and budget metadata"
 msgstr "RouteWise 的资源池与预算元数据"
 
-#: ../developer/adding-models.md:230
-msgid ""
-"A route reports its `kind` as the provider label — the value recorded in "
-"`api_logs.provider` and grouped on by every provider-scoped admin view. "
-"Two routes of the same kind therefore share one dashboard row; "
-"`provider:` splits them."
-msgstr ""
-"一条路由用自己的 `kind` 作为 provider 标签上报——这个值记录在 `api_logs.provider` 里，所有按 "
-"provider 划分的管理视图都以它分组。因此同一个 kind 的两条路由会共用仪表盘上的同一行；用 `provider:` 才能把它们分开。"
+#: ../developer/adding-models.md
+msgid "`reasoning_effort_map`"
+msgstr "`reasoning_effort_map`"
 
-#: ../developer/adding-models.md:235
+#: ../developer/adding-models.md
+msgid ""
+"Route-only; see [Mapping reasoning-effort levels on a route](#mapping-"
+"reasoning-effort-levels-on-a-route)"
+msgstr "只能写在路由上；见[在路由上映射推理强度级别](#mapping-reasoning-effort-levels-on-a-route)"
+
+#: ../developer/adding-models.md:299
+msgid ""
+"Without `provider:`, a route's dashboard label is its `kind`, so two "
+"routes of the same kind share one row."
+msgstr "没有 `provider:` 时，路由的仪表盘标签就是它的 `kind`，所以同一 kind 的两条路由会共用一行。"
+
+#: ../developer/adding-models.md:302
 msgid "Custom embeddings paths"
 msgstr "自定义 embeddings 路径"
 
-#: ../developer/adding-models.md:237
+#: ../developer/adding-models.md:304
 msgid ""
-"An OpenAI-compatible gateway may use an API prefix other than `/v1`. Set "
-"`embeddings_path` on that route to avoid appending an unwanted `/v1` "
-"segment:"
+"A base URL ending in `/v1` gets `/embeddings`, and any other base gets "
+"`/v1/embeddings` (trailing slashes are removed first). For a gateway with"
+" another prefix, set `embeddings_path` on the route:"
 msgstr ""
-"有些 OpenAI 兼容网关的 API 前缀不是 `/v1`。在对应的路由上设置 `embeddings_path`，就不会被多拼上一段 "
-"`/v1`："
+"以 `/v1` 结尾的 base URL 会加上 `/embeddings`，其他 base URL 会加上 "
+"`/v1/embeddings`（先去掉末尾的斜杠）。对于使用其他前缀的网关，在路由上设置 `embeddings_path`："
 
-#: ../developer/adding-models.md:253
-msgid ""
-"This sends requests to `https://gateway.example/api/v2/embeddings`. The "
-"override belongs to one route and does not affect its fallbacks. Without "
-"it, a base URL ending in `/v1` gets `/embeddings`; any other base gets "
-"`/v1/embeddings`. Trailing slashes on the base URL are removed before "
-"joining the path."
-msgstr ""
-"这样请求会发送到 "
-"`https://gateway.example/api/v2/embeddings`。这个覆盖只属于这一条路由，不影响它的回退路由。不设置时，以"
-" `/v1` 结尾的 base URL 追加 `/embeddings`，其他 base URL 追加 "
-"`/v1/embeddings`。拼接路径前会先去掉 base URL 末尾的斜杠。"
-
-#: ../developer/adding-models.md:258
-msgid ""
-"Declare `embeddings_path` only inside `route:`. A model-level "
-"declaration, including on a shorthand model without a route list, is "
-"rejected. Surrounding whitespace is trimmed, but whitespace-only strings,"
-" non-string values other than `null`, and parent (`..`) path segments are"
-" rejected. Explicit `null` and `\"\"` still select the default URL "
-"inference."
-msgstr ""
-"`embeddings_path` 只能写在 `route:` "
-"里。写在模型层级会被拒绝，没有路由列表的简写模型也一样。路径前后的空白会被去掉，但纯空白字符串、除 `null` "
-"以外的非字符串值，以及父级路径段（`..`）都会被拒绝。显式写 `null` 或 `\"\"` 时，仍按默认规则推导 URL。"
-
-#: ../developer/adding-models.md:264
+#: ../developer/adding-models.md:329
 #, python-brace-format
-msgid "A whole-value `${VAR}` reference must resolve to a non-blank path; it is not an instruction to use the default if the variable is missing. For a required route, a missing or blank variable means the catalog registers no models, with an error naming the model, route, and variable. With `optional: true`, only that route is skipped, with a warning naming the same."
-msgstr "整个值写成 `${VAR}` 时，它必须解析成非空白的路径；变量缺失并不意味着改用默认值。对于不是可选的路由，变量未设置或为空白时，整个目录都不会注册任何模型，并记录一条写明模型、路由和变量名的错误。设置了 `optional: true` 时，只跳过这一条路由，并记一条写明同样信息的警告。"
+msgid ""
+"This route then calls `https://gateway.example/api/v2/embeddings`; its "
+"fallbacks are unaffected. `null` or `\"\"` keeps the default. The field "
+"is route-only, and Admin refuses a whitespace-only value, a non-string or"
+" a `..` segment. A `${VAR}` value must resolve to a non-blank path: if it"
+" does not, the catalog registers no models, unless the route is "
+"`optional: true`, in which case only that route is skipped."
+msgstr ""
+"这条路由于是请求 `https://gateway.example/api/v2/embeddings`；它的回退路由不受影响。`null` 或 "
+"`\"\"` 表示使用默认规则。该字段只能写在路由上，Admin 会拒绝只含空白的值、非字符串值或包含 `..` 的路径段。`${VAR}` "
+"形式的值必须解析为非空路径：否则整个模型目录都不会注册任何模型；如果路由设置了 `optional: true`，则只跳过这条路由。"
 
-#: ../developer/adding-models.md:269
-msgid "Admin refuses a catalog with any other invalid `embeddings_path`, even on an optional route. A stored catalog with one registers no catalog model and logs an error naming the model, so the gateway never serves part of the registry."
-msgstr "其他任何非法的 `embeddings_path`（可选路由也不例外）都会让 Admin 拒绝保存该目录。已保存的目录若含有这样的值，不会注册任何目录模型，并记录一条写明模型的错误，因此网关绝不会只提供注册表的一部分。"
-
-#: ../developer/adding-models.md:272
+#: ../developer/adding-models.md:336
 msgid "Supported adapter kinds"
 msgstr "支持的 adapter kind"
 
-#: ../developer/adding-models.md:274
+#: ../developer/adding-models.md:338
 msgid ""
-"The `kind` field in each route entry selects the backend adapter. All "
-"kinds marked **OpenAI-compat** share the same `OpenAICompatAdapter` "
-"implementation, with provider-specific profiles applied automatically."
+"Every kind marked OpenAI-compat uses `OpenAICompatAdapter`, with the "
+"provider's profile applied."
 msgstr ""
-"路由条目里的 `kind` 字段决定用哪个 adapter。所有标为**OpenAI 兼容**的 kind 共用同一个 "
-"`OpenAICompatAdapter` 实现，并自动套用各 provider 专属的 profile。"
+"所有标为 OpenAI-compat 的 kind 都使用 `OpenAICompatAdapter`，并应用该 provider 的 "
+"profile。"
 
 #: ../developer/adding-models.md
 msgid "Kind"
@@ -744,7 +900,7 @@ msgstr "备注"
 
 #: ../developer/adding-models.md
 msgid "`openai_compat`"
-msgstr ""
+msgstr "`openai_compat`"
 
 #: ../developer/adding-models.md
 msgid "OpenAI-compat"
@@ -756,17 +912,17 @@ msgstr "通用的 OpenAI 兼容端点；没有更贴切的 kind 时用它"
 
 #: ../developer/adding-models.md
 msgid "`staging`"
-msgstr ""
+msgstr "`staging`"
 
 #: ../developer/adding-models.md
 msgid ""
-"Clone of `openai_compat` with its own provider label, so a second generic"
-" endpoint can be tracked separately in metrics"
-msgstr "`openai_compat` 的克隆，但有自己的 provider 标签，便于在指标里单独跟踪第二个通用端点"
+"Same as `openai_compat` with its own label, to track a second generic "
+"endpoint separately"
+msgstr "与 `openai_compat` 相同，但有自己的标签，用于单独统计第二个通用端点"
 
 #: ../developer/adding-models.md
 msgid "`vllm`"
-msgstr ""
+msgstr "`vllm`"
 
 #: ../developer/adding-models.md
 msgid "Local vLLM inference server"
@@ -774,7 +930,7 @@ msgstr "本地 vLLM 推理服务器"
 
 #: ../developer/adding-models.md
 msgid "`sglang`"
-msgstr ""
+msgstr "`sglang`"
 
 #: ../developer/adding-models.md
 msgid "Local SGLang inference server"
@@ -782,7 +938,7 @@ msgstr "本地 SGLang 推理服务器"
 
 #: ../developer/adding-models.md
 msgid "`ollama`"
-msgstr ""
+msgstr "`ollama`"
 
 #: ../developer/adding-models.md
 msgid "Local or remote Ollama server"
@@ -790,7 +946,7 @@ msgstr "本地或远程的 Ollama 服务器"
 
 #: ../developer/adding-models.md
 msgid "`chutes`"
-msgstr ""
+msgstr "`chutes`"
 
 #: ../developer/adding-models.md
 msgid "Chutes.ai hosted inference"
@@ -798,7 +954,7 @@ msgstr "Chutes.ai 托管推理"
 
 #: ../developer/adding-models.md
 msgid "`featherless`"
-msgstr ""
+msgstr "`featherless`"
 
 #: ../developer/adding-models.md
 msgid "Featherless.ai hosted inference"
@@ -806,7 +962,7 @@ msgstr "Featherless.ai 托管推理"
 
 #: ../developer/adding-models.md
 msgid "`cliproxy`"
-msgstr ""
+msgstr "`cliproxy`"
 
 #: ../developer/adding-models.md
 msgid "CLI proxy endpoint for OpenAI-compatible models"
@@ -814,45 +970,41 @@ msgstr "面向 OpenAI 兼容模型的 CLI 代理端点"
 
 #: ../developer/adding-models.md
 msgid "`deepseek`"
-msgstr ""
+msgstr "`deepseek`"
 
 #: ../developer/adding-models.md
-msgid "DeepSeek API (applies the DeepSeek usage profile)"
-msgstr "DeepSeek API（套用 DeepSeek 用量 profile）"
+msgid "DeepSeek API (DeepSeek usage profile)"
+msgstr "DeepSeek API（DeepSeek 用量 profile）"
 
 #: ../developer/adding-models.md
 msgid "`kimi`"
-msgstr ""
+msgstr "`kimi`"
 
 #: ../developer/adding-models.md
-msgid ""
-"Moonshot/Kimi pay-per-token API under `/v1` (applies the Kimi usage "
-"profile)"
-msgstr "Moonshot/Kimi 位于 `/v1` 下的按 token 计费 API（套用 Kimi 用量 profile）"
+msgid "Moonshot/Kimi pay-per-token API under `/v1` (Kimi usage profile)"
+msgstr "`/v1` 下按 token 计费的 Moonshot/Kimi API（Kimi 用量 profile）"
 
 #: ../developer/adding-models.md
 msgid "`zai`"
-msgstr ""
+msgstr "`zai`"
 
 #: ../developer/adding-models.md
 msgid ""
-"Z.AI's ordinary API under `/api/paas/v4/`; the Z.AI profile appends "
-"`/chat/completions` without adding another version segment"
-msgstr ""
-"Z.AI 位于 `/api/paas/v4/` 下的普通 API；Z.AI profile 追加 "
-"`/chat/completions`，不再添加版本段"
+"Z.AI's API under `/api/paas/v4/`; the profile appends `/chat/completions`"
+" without another version segment"
+msgstr "`/api/paas/v4/` 下的 Z.AI API；profile 会追加 `/chat/completions`，不再添加版本段"
 
 #: ../developer/adding-models.md
 msgid "`minimax`"
-msgstr ""
+msgstr "`minimax`"
 
 #: ../developer/adding-models.md
-msgid "MiniMax API (applies the MiniMax usage profile)"
-msgstr "MiniMax API（套用 MiniMax 用量 profile）"
+msgid "MiniMax API (MiniMax usage profile)"
+msgstr "MiniMax API（MiniMax 用量 profile）"
 
 #: ../developer/adding-models.md
 msgid "`openrouter`"
-msgstr ""
+msgstr "`openrouter`"
 
 #: ../developer/adding-models.md
 msgid "Custom"
@@ -860,21 +1012,23 @@ msgstr "自定义"
 
 #: ../developer/adding-models.md
 msgid ""
-"OpenRouter aggregator. Use the bracket form `openrouter[<slug>]` to pin a"
-" sub-provider"
-msgstr "OpenRouter 聚合器。用方括号形式 `openrouter[<slug>]` 锁定某个 sub-provider"
+"OpenRouter; `openrouter[<slug>]` pins one upstream. See [OpenRouter "
+"routes](#openrouter-routes)"
+msgstr ""
+"OpenRouter；`openrouter[<slug>]` 固定一个上游。见 [OpenRouter 路由](#openrouter-"
+"routes)"
 
 #: ../developer/adding-models.md
 msgid "`gemini`"
-msgstr ""
+msgstr "`gemini`"
 
 #: ../developer/adding-models.md
-msgid "Google Gemini API (message format translation)"
-msgstr "Google Gemini API（需要转换消息格式）"
+msgid "Google Gemini API"
+msgstr "Google Gemini API"
 
 #: ../developer/adding-models.md
 msgid "`claude`"
-msgstr ""
+msgstr "`claude`"
 
 #: ../developer/adding-models.md
 msgid "Anthropic Claude via Google Vertex"
@@ -882,331 +1036,205 @@ msgstr "经 Google Vertex 访问的 Anthropic Claude"
 
 #: ../developer/adding-models.md
 msgid "`anthropic`"
-msgstr ""
+msgstr "`anthropic`"
 
 #: ../developer/adding-models.md
-msgid "Direct Anthropic Messages API client"
-msgstr "直连 Anthropic Messages API 的客户端"
+msgid "Anthropic Messages API directly"
+msgstr "直接调用 Anthropic Messages API"
 
-#: ../developer/adding-models.md:297
+#: ../developer/adding-models.md:360
 msgid ""
 "Any other kind needs a [backend extension](backend-extensions.md) that "
-"registers it; otherwise registry loading fails with `ValueError: Unknown "
-"adapter kind`."
+"registers it. Otherwise Admin refuses the catalog: the kind \"names no "
+"adapter kind this gateway has\"."
 msgstr ""
-"其他 kind 需要由[后端扩展](backend-extensions.md)注册，否则加载注册表时会报 `ValueError: "
-"Unknown adapter kind`。"
+"其他任何 kind 都需要由[后端扩展](backend-extensions.md)注册。否则 Admin 会拒绝该模型目录，并提示该 kind"
+" \"names no adapter kind this gateway has\"。"
 
-#: ../developer/adding-models.md:300
+#: ../developer/adding-models.md:364
 msgid "Weights across routes"
 msgstr "路由之间的权重"
 
-#: ../developer/adding-models.md:302
+#: ../developer/adding-models.md:366
 msgid ""
-"A model's routes share its traffic by the weights written in the "
-"registry, and the admin console can override a weight without editing the"
-" file. A routing file can also shift weights between local and remote "
-"routes, but only on a gateway without a database; see [The routing "
-"file](configuration.md#the-routing-file). [Routing](routing.md) explains "
-"how a route is chosen for each request."
+"Traffic splits by the catalog weights, and Admin can override a weight "
+"per endpoint without editing the catalog. On a gateway without a "
+"database, the routing policy can also shift weights between local and "
+"remote routes. See [Routing](routing.md)."
 msgstr ""
-"一个模型的各条路由按注册表里写的权重分摊它的流量；管理控制台可以覆盖某个权重，而不必改文件。路由配置文件也可以在本地路由和远程路由之间调整权重，但只在没有数据库的网关上生效；见[路由配置文件](configuration.md"
-"#the-routing-file)。每个请求如何选定路由，见[路由](routing.md)。"
+"流量按模型目录中的权重分配，Admin "
+"可以按端点覆盖权重，而无需编辑模型目录。在没有数据库的网关上，路由策略还可以在本地和远程路由之间调整权重。见[路由](routing.md)。"
 
-#: ../developer/adding-models.md:308
+#: ../developer/adding-models.md:371
+msgid "OpenRouter routes"
+msgstr "OpenRouter 路由"
+
+#: ../developer/adding-models.md:373
+msgid ""
+"Add the OpenRouter key in **Admin → Providers** (the keys are on its "
+"overview page), then create the model and its OpenRouter route in **Admin"
+" → Routing**. `config/examples/models.openrouter.json` is an example "
+"catalog to import into `MODEL_CATALOG`, including a local model with an "
+"OpenRouter fallback. Add the keys it references as secret settings first,"
+" and check its model ids and prices for your account: the gateway bills "
+"from catalog prices."
+msgstr ""
+"在 **Admin → Providers** 中添加 OpenRouter key（key 在它的概览页上），然后在 **Admin → "
+"Routing** 中创建模型及其 OpenRouter 路由。`config/examples/models.openrouter.json` "
+"是一份可以导入 `MODEL_CATALOG` 的示例模型目录，其中包括一个以 OpenRouter 作为回退的本地模型。导入前先把它引用的 "
+"key 添加为秘密设置项，并按你的账户核对其中的模型 id 和价格：网关按模型目录中的价格计费。"
+
+#: ../developer/adding-models.md:392
+#, python-brace-format
+msgid ""
+"`provider_model_id` is OpenRouter's name for the model, independent of "
+"the `id` your clients use. With `kind: openrouter`, OpenRouter picks the "
+"upstream provider. To pin one, use `kind: openrouter[<slug>]`, for "
+"example `openrouter[deepinfra]`: requests then carry `provider: {order: "
+"[<slug>], allow_fallbacks: false}`. A slug matches `[A-Za-z0-9_.-]+`, "
+"optionally in `/`-separated segments (`deepinfra/turbo`); OpenRouter "
+"lists them at <https://openrouter.ai/docs/features/provider-routing>. "
+"Each pin gets its own `endpoint_id` and circuit breaker, while "
+"`api_logs.provider` records `openrouter` for all of them."
+msgstr ""
+"`provider_model_id` 是 OpenRouter 对该模型的命名，与客户端使用的 `id` 无关。使用 `kind: "
+"openrouter` 时，由 OpenRouter 选择上游 provider。要固定一个上游，使用 `kind: "
+"openrouter[<slug>]`，例如 `openrouter[deepinfra]`：请求会带上 `provider: {order: "
+"[<slug>], allow_fallbacks: false}`。slug 须匹配 `[A-Za-z0-9_.-]+`，可以有以 `/` "
+"分隔的多段（`deepinfra/turbo`）；OpenRouter 在 "
+"<https://openrouter.ai/docs/features/provider-routing> 列出了可用的 "
+"slug。每个固定的上游都有自己的 `endpoint_id` 和熔断器，而 `api_logs.provider` 对它们都记为 "
+"`openrouter`。"
+
+#: ../developer/adding-models.md:402
+#, python-brace-format
+msgid ""
+"An unpinned route created in Admin can set `openrouter_sort` to `price`, "
+"`throughput` or `latency`, sent as `provider: {sort: <policy>}`. A pin "
+"takes precedence."
+msgstr ""
+"在 Admin 中创建的未固定上游的路由可以把 `openrouter_sort` 设为 `price`、`throughput` 或 "
+"`latency`，以 `provider: {sort: <policy>}` 发送。固定上游时以固定为准。"
+
+#: ../developer/adding-models.md:406
+msgid "`OpenRouterAdapter` also sends:"
+msgstr "`OpenRouterAdapter` 还会发送："
+
+#: ../developer/adding-models.md:408
+msgid ""
+"`X-Title` and `HTTP-Referer`, from `SITE_NAME` and `SITE_PUBLIC_BASE_URL`"
+" (or `SITE_CONFIGURATION`). OpenRouter credits leaderboard placement and "
+"free-tier limits to that site. Without a public address no `HTTP-Referer`"
+" is sent, and without a name `X-Title` is `HybridInference`."
+msgstr ""
+"`X-Title` 和 `HTTP-Referer`，取自 `SITE_NAME` 和 `SITE_PUBLIC_BASE_URL`（或 "
+"`SITE_CONFIGURATION`）。OpenRouter 把排行榜排名和免费额度记在这个站点名下。没有公开地址时不发送 `HTTP-"
+"Referer`，没有站点名称时 `X-Title` 为 `HybridInference`。"
+
+#: ../developer/adding-models.md:412
+#, python-brace-format
+msgid ""
+"`usage: {include: true}`, plus `stream_options: {include_usage: true}` "
+"when streaming, so OpenRouter reports each request's cost. It is stored "
+"as `upstream_cost_usd`, beside `cost_usd`, which is what the caller pays "
+"at catalog prices."
+msgstr ""
+"`usage: {include: true}`，流式请求还会带上 `stream_options: {include_usage: "
+"true}`，这样 OpenRouter 会报告每个请求的费用。该费用存为 `upstream_cost_usd`，与之并列的 "
+"`cost_usd` 则是调用方按模型目录价格支付的金额。"
+
+#: ../developer/adding-models.md:426
 msgid "Troubleshooting"
 msgstr "故障排查"
 
-#: ../developer/adding-models.md:310
+#: ../developer/adding-models.md:428
 msgid "Model not appearing in `/v1/models`"
 msgstr "模型没有出现在 `/v1/models` 里"
 
-#: ../developer/adding-models.md:312
-msgid "Confirm the catalog the backend actually loaded. It logs `Registered N routes from the database route catalog` at startup, and logs an error when the catalog has no models."
-msgstr "确认后端实际加载的目录。它在启动时会记录 `Registered N routes from the database route catalog`；如果目录中没有模型，则会记录一条错误日志。"
+#: ../developer/adding-models.md:430
+msgid ""
+"At startup the backend logs `Registered N routes from the database route "
+"catalog`, or an error when the catalog is empty or was refused (`The "
+"model catalog (MODEL_CATALOG in Admin > Providers > Models) was not "
+"registered: …`)."
+msgstr ""
+"后端启动时会记录 `Registered N routes from the database route "
+"catalog`；模型目录为空或被拒绝时则记录一条错误（`The model catalog (MODEL_CATALOG in Admin > "
+"Providers > Models) was not registered: …`）。"
 
-#: ../developer/adding-models.md:315
-msgid "Check that the model is an entry of the catalog's `models` list. Admin validates the JSON when you save it and names the field it refuses."
-msgstr "检查该模型是否是目录 `models` 列表中的一项。保存时 Admin 会验证 JSON，并指出被拒绝的字段。"
-
-#: ../developer/adding-models.md:316
+#: ../developer/adding-models.md:434
 #, python-brace-format
 msgid ""
-"Check for skipped models: a route whose `${VAR}`-backed key or `base_url`"
-" resolves empty drops the model, and the log names both the model and the"
-" unset variable."
+"A route whose `${VAR}` key or `base_url` is unset drops its model, and "
+"the log names the model and the variable. Mark the route `optional: true`"
+" to drop only that route."
 msgstr ""
-"检查有没有模型被跳过：如果某条路由的 key 或 `base_url` 引用的 `${VAR}` "
-"解析为空，整个模型都会被丢弃，日志里会写明模型名和未设置的变量。"
+"如果路由中 `${VAR}` 形式的 key 或 `base_url` 未设置，整个模型都会被丢弃，日志会写明模型和变量。把路由标记为 "
+"`optional: true`，则只丢弃这条路由。"
 
-#: ../developer/adding-models.md:319
+#: ../developer/adding-models.md:437
 msgid ""
-"If using `aliases`, verify the canonical `id` appears exactly once and "
-"aliases do not collide with another model's. A duplicate alias resolves "
-"to whichever model loads last, and is logged as a warning."
-msgstr "如果用了 `aliases`，确认规范的 `id` 只出现一次，且别名没有和别的模型撞名。重复的别名会解析到最后加载的那个模型，并记录一条警告。"
+"Check the model's required role, and for an Admin Routing model, whether "
+"its route is verified and applied."
+msgstr "检查模型所需的角色；对于在 Admin Routing 中创建的模型，还要检查它的路由是否已验证并生效。"
 
-#: ../developer/adding-models.md:323
+#: ../developer/adding-models.md:439
+msgid ""
+"An alias claimed by two models resolves to the one loaded last, with a "
+"warning in the log."
+msgstr "被两个模型同时声明的别名会解析到最后加载的那个模型，日志中会有警告。"
+
+#: ../developer/adding-models.md:442
 msgid "Authentication failures"
 msgstr "鉴权失败"
 
-#: ../developer/adding-models.md:325
-msgid ""
-"A 401 from the gateway means your **gateway** API key was missing or "
-"invalid, or auth is enabled and you sent no `Authorization` header."
-msgstr "网关返回的 401 表示你的**网关** API key 缺失或无效，或者鉴权已开启而你没有发送 `Authorization` 头。"
+#: ../developer/adding-models.md:444
+msgid "A `401` from the gateway means your gateway API key is missing or invalid."
+msgstr "网关返回的 `401` 表示你的网关 API key 缺失或无效。"
 
-#: ../developer/adding-models.md:327
+#: ../developer/adding-models.md:445
 msgid ""
-"A 401 surfaced from the route can mean the **upstream** key is wrong. "
-"Some gateways also return 401 for an unmatched path, so check the request"
-" URL and `embeddings_path` before replacing a valid key. Chat routing "
-"logs these failures as `upstream_auth_misconfig`; embeddings instead logs"
-" `Embedding request failed for model=...` with the upstream status and "
-"message."
+"A `401` from the upstream usually means a wrong upstream key. Chat logs "
+"it as `upstream_auth_misconfig`; embeddings log `Embedding request failed"
+" for model=...`. Some gateways also answer 401 for an unknown path, so "
+"check the URL and `embeddings_path` first."
 msgstr ""
-"从路由返回的 401 可能说明**上游**的 key 不对。不过有些网关对匹配不到的路径也返回 401，所以在换掉一个其实有效的 key "
-"之前，先检查请求 URL 和 `embeddings_path`。对话接口的路由层把这类失败记为 "
-"`upstream_auth_misconfig`；embeddings 接口则记一条 `Embedding request failed for"
-" model=...`，并附上上游的状态码和错误信息。"
+"上游返回的 `401` 通常表示上游 key 有误。chat 请求会记录为 "
+"`upstream_auth_misconfig`；embeddings 请求记录为 `Embedding request failed for "
+"model=...`。有些网关对未知路径也返回 401，所以先检查 URL 和 `embeddings_path`。"
 
-#: ../developer/adding-models.md:332
+#: ../developer/adding-models.md:449
 #, python-brace-format
 msgid ""
-"Check that `${ENV_VAR}` expansion resolved: only a value of exactly the "
-"form `${NAME}` is expanded, and only for `base_url`, `api_key`, "
-"`api_keys`, and `provider_model_id`, plus route-level `embeddings_path`."
+"Only a whole value of the form `${NAME}` is expanded, and only in "
+"`base_url`, `api_key`, `api_keys`, `provider_model_id` and a route's "
+"`embeddings_path`."
 msgstr ""
-"确认 `${ENV_VAR}` 展开成功：只有恰好是 `${NAME}` 这种形式的取值才会被展开，而且只对 "
-"`base_url`、`api_key`、`api_keys` 和 `provider_model_id`，以及路由级的 "
-"`embeddings_path` 生效。"
+"只有整个值为 `${NAME}` 形式时才会展开，而且只在 "
+"`base_url`、`api_key`、`api_keys`、`provider_model_id` 和路由的 "
+"`embeddings_path` 中展开。"
 
-#: ../developer/adding-models.md:336
-msgid "See also"
-msgstr "另见"
-
-#: ../developer/adding-models.md:338
+#: ../developer/adding-models.md:452
 msgid ""
-"[Adding a New Local Model](add-local-model.md) — registering a self-"
-"hosted vLLM/SGLang/Ollama server"
-msgstr "[添加新的本地模型](add-local-model.md)——注册自建的 vLLM/SGLang/Ollama 服务器"
+"For a runnable gateway from first request to local server, see the "
+"[Quickstart](router-tutorial.md)."
+msgstr "想从第一个请求一直跑到接入本地服务器，见[快速开始](router-tutorial.md)。"
 
-#: ../developer/adding-models.md:340
+#: ../developer/adding-models.md:417
 msgid ""
-"[Quickstart](router-tutorial.md) — a runnable deployment from first "
-"request to local server"
-msgstr "[快速开始](router-tutorial.md)——从第一个请求到接入本地服务器，一步步搭起一个能跑的部署"
-
-#: ../developer/adding-models.md:342
-msgid "[Routing through OpenRouter](openrouter.md) — architecture and endpoints"
-msgstr "[通过 OpenRouter 路由](openrouter.md)——架构与端点"
-
-#: ../developer/adding-models.md:343
-msgid "[Routing](routing.md) — central weight overrides and strategies"
-msgstr "[路由](routing.md)——集中式权重覆盖与策略"
-
-#: ../developer/adding-models.md:344
-msgid "[Configuration](configuration.md) — where each setting lives, and the application documents"
-msgstr "[配置](configuration.md)——各项设置存放在哪里，以及应用文档"
-
-
-#: ../developer/adding-models.md
-msgid "`pricing_source`"
-msgstr "`pricing_source`"
-
-
-#: ../developer/adding-models.md
-msgid "Automatically follow a supported provider: `{provider: deepseek, model: deepseek-flash}` or `deepseek-v4-pro`. Requires PostgreSQL; cannot be combined with `pricing_schedule`. Set to `null` on a route to use its own prices"
-msgstr "自动跟随已支持的 provider：`{provider: deepseek, model: deepseek-flash}` 或 `deepseek-v4-pro`。需要 PostgreSQL；不能与 `pricing_schedule` 同时使用。在路由中设为 `null` 可使用该路由自己的价格"
-
-
-#: ../developer/adding-models.md:199
-msgid ""
-"When `required_role` is omitted, entries marked `admin_only: true` "
-"default to `admin`. Otherwise, models with known or uncertain provider "
-"costs default to `pro`; this includes unpriced LAN or cluster-DNS routes, "
-"environment-variable endpoints that cannot be classified at load time, "
-"and `openai_compat` routes even when their base URL is local. Zero user-"
-"facing prices do not prove that the upstream provider is free. Add "
-"`required_role: free` to keep such a model free-tier; set it explicitly "
-"whenever a route should be available at a different tier, and that value "
-"remains authoritative. Unpriced local `sglang`, `vllm`, and `ollama` "
-"engine routes can retain the `free` default when their local endpoint is "
-"identifiable from configuration."
-msgstr "未填写 `required_role` 时，标记为 `admin_only: true` 的条目默认要求 `admin`。其他模型如果已知或无法确定 provider 成本，则默认要求 `pro`；这包括未标价的 LAN 或集群 DNS 路由、加载时无法分类的环境变量端点，以及即使 base URL 是本地地址的 `openai_compat` 路由。面向用户的价格为零，并不能证明上游 provider 不收费。若要将此类模型保持在 free 等级，请添加 `required_role: free`；路由应对其他等级开放时也请显式设置该值，显式值始终优先。未标价的本地 `sglang`、`vllm` 和 `ollama` 引擎路由，如果能从配置确认其本地端点，则仍可默认要求 `free`。"
-
-#: ../developer/adding-models.md:210
-msgid ""
-"An explicit `required_role` also takes the place of `admin_only: true`, "
-"with one exception kept from earlier releases: `admin_only: true` "
-"together with `required_role: free` stays admin-only. To open such a "
-"model to the free tier, remove `admin_only`."
-msgstr "显式的 `required_role` 同样会取代 `admin_only: true`，但保留了早期版本的一个例外：`admin_only: true` 与 `required_role: free` 同时出现时，模型仍仅限管理员使用。若要向 free 等级开放此类模型，请删除 `admin_only`。"
-
-#: ../developer/adding-models.md
-msgid "Automatic DeepSeek prices"
-msgstr "自动同步 DeepSeek 价格"
-
-
-#: ../developer/adding-models.md
-msgid "To follow DeepSeek prices automatically, configure the official API model id as a pricing source. The source is independent of the inference endpoint, so a self-hosted route can use these reference prices too. PostgreSQL stores the last validated snapshot; no API key is sent to the pricing or calendar sources."
-msgstr "要自动跟随 DeepSeek 价格，请将官方 API 模型 id 配置为价格来源。价格来源与推理端点相互独立，因此自部署路由也可以采用这些参考价。PostgreSQL 保存最近一次通过校验的快照；抓取价格和日历数据时不会发送 API 密钥。"
-
-
-#: ../developer/adding-models.md
-msgid "The gateway checks the [official English price page](https://api-docs.deepseek.com/quick_start/pricing/) every five minutes for USD input, output and cache-hit prices and UTC peak windows. It reads the current and following year from [holiday-cn](https://github.com/NateScarlet/holiday-cn), a third-party dataset generated from State Council notices. This calendar is not a DeepSeek API. Published future-year dates are picked up automatically; an empty placeholder is not treated as a year without holidays."
-msgstr "网关每五分钟检查[官方英文价格页](https://api-docs.deepseek.com/quick_start/pricing/)，读取以美元计价的输入、输出、缓存命中单价及 UTC 峰时。当前年度和下一年度的假期来自 [holiday-cn](https://github.com/NateScarlet/holiday-cn)，这是根据国务院公告生成的第三方数据集，不是 DeepSeek API。下一年度公布后会自动同步；空占位文件不会被解释为全年没有假期。"
-
-
-#: ../developer/adding-models.md
-msgid "Validated snapshots replace the stored tariff atomically. Workers reload it every ten seconds; each request keeps the snapshot and time captured at its start, including streaming requests. Peak/off-peak switching happens locally at the configured boundaries, without waiting for a network poll. This is periodic synchronization, not a real-time guarantee that all workers observe an official price change simultaneously."
-msgstr "通过校验的快照会原子替换已保存的价目表。各 worker 每十秒重新读取一次；每个请求固定使用开始时的快照和时间，流式请求也一样。峰谷切换按本地时钟在配置边界发生，不必等待网络轮询。这是定期同步，并不保证所有 worker 在官方改价的瞬间同时看到新价格。"
-
-
-#: ../developer/adding-models.md
-msgid "Fetch or parsing failures retain the last validated snapshot and are logged. A first startup needs either a usable stored snapshot or a successful fetch. Unknown calendars and unrecognized price-page rules cannot silently become zero prices or an empty holiday list. The parser currently accepts the documented weekday schedule only while its UTC peak windows stay within the same Chinese calendar day."
-msgstr "抓取或解析失败时保留最近一次有效快照并记录日志。首次启动必须能读取可用的持久化快照，或成功抓取数据。未知日历和无法识别的价格页规则不能静默变成零价格或空假期列表。当前解析器支持官方文档中的工作日规则，并要求 UTC 峰时仍处在同一个中国自然日内。"
-
-
-#: ../developer/adding-models.md
-msgid "`deployment_type`"
+"Errors follow the normal fallback and [circuit breaker](routing.md"
+"#endpoint-health-and-circuit-breaking) rules. 401 (a rejected OpenRouter "
+"key) and 407 (an egress proxy) count against the circuit and page. 402 "
+"and 403 do not count by themselves, but on an `api_keys:` pool they "
+"rotate and then mute the key, so an account out of credit soon has no "
+"usable key and the circuit opens. 403 does not page, because providers "
+"also use it to refuse single requests. If every OpenRouter request "
+"returns 401, the gateway's key is wrong: check it in **Admin → "
+"Providers**."
 msgstr ""
+"错误遵循常规的回退和[熔断](routing.md#endpoint-health-and-circuit-"
+"breaking)规则。401（OpenRouter key 被拒）和 407（出口代理要求认证）会计入熔断并发出告警。402 和 403 "
+"本身不计入，但在 `api_keys:` 池中会触发 key 轮换，随后静默该 key，所以余额耗尽的账户很快就没有可用的 "
+"key，熔断器随之打开。403 不发告警，因为 provider 也会用它拒绝单个请求。如果所有 OpenRouter 请求都返回 "
+"401，说明网关的 key 有误：请在 **Admin → Providers** 中检查。"
 
-#: ../developer/adding-models.md
-msgid "Route-only admission classification: `auto` (default, recognizes loopback/host endpoints), `self_hosted` (an engine you operate, including on a LAN), or `provider_api` (provider-key concurrency, even through a loopback proxy). Independent of `provider_type`; see [Outbound concurrency](routing.md#outbound-concurrency)"
-msgstr "只可用于路由的准入分类：`auto`（默认值，识别回环/宿主机端点）、`self_hosted`（自己运维的引擎，包括局域网中的引擎）或 `provider_api`（按 provider key 限制并发，即使通过回环代理访问）。与 `provider_type` 独立；参见[出站并发](routing.md#outbound-concurrency)。"
-
-msgid "Add a model in **Admin → Routing → Create model**. Choose its router, pricing, context/output limits, input capabilities, required role and first provider route. Verify the route, save, then grant the intended users access. Ordinary route edits propagate between registered backend processes without restarting."
-msgstr "在 **Admin → Routing → Create model** 中添加模型。选择路由器、定价、上下文和输出上限、输入能力、所需角色及第一条供应商路由。验证路由并保存，再向目标用户授予访问权限。普通路由修改会在已注册的后端进程间传播，无需重启。"
-
-msgid "For a non-OpenAI protocol, implement an adapter first; see [Writing a Provider Adapter](provider-adapters.md). Local inference still uses the OpenAI-compatible adapter; see [Adding a Local Model](add-local-model.md)."
-msgstr "对于非 OpenAI 协议，请先实现适配器，参见[编写供应商适配器](provider-adapters.md)。本地推理仍使用兼容 OpenAI 的适配器，参见[添加本地模型](add-local-model.md)。"
-
-msgid "The catalog is the `MODEL_CATALOG` JSON setting in PostgreSQL. Application YAML files and path-selection variables are retired. The gateway starts with no models until an administrator configures them. See [Configuration](configuration.md)."
-msgstr "模型目录是 PostgreSQL 中的 `MODEL_CATALOG` JSON 设置。应用 YAML 文件和路径选择变量已停用。管理员配置模型之前，网关启动后没有模型。参见[配置](configuration.md)。"
-
-msgid "For aliases or additional metadata, edit the model catalog in **Admin → Routing → Models**. Store credentials as separate secret settings and refer to them as `${NAME}`. The catalog refuses inline credentials. The JSON shape follows the field reference below; a small example is in [The model registry](configuration.md#the-model-registry)."
-msgstr "如需别名或其他元数据，请在 **Admin → Routing → Models** 中编辑模型目录。将凭据保存为独立的秘密设置，并通过 `${NAME}` 引用。目录拒绝内嵌凭据。JSON 结构遵循下方字段参考；[模型注册表](configuration.md#the-model-registry)中有一个简短示例。"
-
-msgid "Set `GATEWAY_API_KEY` in the shell when authentication is enabled. The smoke uses the real inference path and normal quota. Check streaming separately when clients depend on it. A catalog change marked **Restart required** needs `make restart s=backend`; ordinary Admin route edits do not."
-msgstr "启用认证后，请在 shell 中设置 `GATEWAY_API_KEY`。冒烟检查使用真实推理路径并消耗正常配额。客户端依赖流式响应时，请单独验证流式请求。标记为 **Restart required** 的目录修改需要执行 `make restart s=backend`；普通 Admin 路由修改无需重启。"
-
-#: ../developer/adding-models.md:95
-msgid "Reasoning effort in the model listings"
-msgstr "模型列表中的推理强度"
-
-#: ../developer/adding-models.md:97
-msgid "`/v1/models` tells a client which `reasoning_effort` values a request would deliver to each model, so a client can offer those and nothing else. The OpenAI/OpenRouter shape carries `reasoning: {\"supported_efforts\": [...]}`, in the order `reasoning_efforts` declares them; the Anthropic shape (an `anthropic-version` header, or `/anthropic/v1/models`) carries `capabilities.effort` as the Anthropic Models API spells it, with `supported` and one `{\"supported\": true|false}` for each of `low`, `medium`, `high`, `xhigh` and `max`. Only `effort` is filled in under `capabilities`."
-msgstr "`/v1/models` 告诉客户端：对每个模型，请求里的哪些 `reasoning_effort` 取值会真正送达模型，这样客户端只提供这些取值。OpenAI/OpenRouter 格式带 `reasoning: {\"supported_efforts\": [...]}`，顺序与 `reasoning_efforts` 的声明一致；Anthropic 格式（带 `anthropic-version` 请求头，或 `/anthropic/v1/models`）按 Anthropic Models API 的写法带 `capabilities.effort`：一个 `supported`，以及 `low`、`medium`、`high`、`xhigh`、`max` 各一个 `{\"supported\": true|false}`。`capabilities` 下只填写 `effort`。"
-
-#: ../developer/adding-models.md:106
-msgid "A value is published only when every route of the model delivers it:"
-msgstr "只有模型的每条路由都能送达的取值才会公布："
-
-#: ../developer/adding-models.md:108
-msgid "a route with a `reasoning_effort_map` delivers the map's public levels (its keys, in their order), never the upstream values it sends;"
-msgstr "带 `reasoning_effort_map` 的路由送达映射的公开档位（即它的键，按其顺序），而不是它发往上游的取值；"
-
-#: ../developer/adding-models.md:110
-msgid "an `openai_compat` route (OpenRouter included) with `reasoning_effort` in `supported_params` delivers its `reasoning_efforts`;"
-msgstr "`supported_params` 含 `reasoning_effort` 的 `openai_compat` 路由（包括 OpenRouter）送达它的 `reasoning_efforts`；"
-
-#: ../developer/adding-models.md:112
-msgid "a matching verified preset provides the public levels and their upstream translations when the route lacks an explicit map or legacy effort settings;"
-msgstr "路由缺少显式映射或旧版强度设置时，匹配的已验证预设会提供公开档位及其上游映射；"
-
-#: ../developer/adding-models.md:114
-msgid "a route that declares `supported_params` without `reasoning_effort` and has no matching preset delivers no effort choices, and the model is published with an empty list (`supported: false`);"
-msgstr "如果路由声明的 `supported_params` 不包含 `reasoning_effort`，且没有匹配的预设，模型会以空档位列表发布（`supported: false`）；"
-
-#: ../developer/adding-models.md:114
-msgid "for anything else nothing is published (`reasoning: null`, no `capabilities`): a route whose adapter does not forward the parameter itself (`anthropic`, `claude`, `gemini`), `reasoning_effort` without a declared domain, or a domain that is not a list of distinct level names."
-msgstr "其他情况一律不公布（`reasoning: null`，没有 `capabilities`）：适配器本身不转发该参数的路由（`anthropic`、`claude`、`gemini`）、有 `reasoning_effort` 但没有声明取值范围，或取值范围不是一组互不重复的级别名称。"
-
-#: ../developer/adding-models.md:119
-msgid "Auto models publish nothing, because selection picks the model per request."
-msgstr "自动模型不公布任何取值，因为每个请求由选择逻辑决定用哪个模型。"
-
-#: ../developer/adding-models.md:121
-msgid "Mapping reasoning-effort levels on a route"
-msgstr "在路由上映射推理强度档位"
-
-#: ../developer/adding-models.md:123
-msgid "The level a client chooses and the value a server takes are not always the same word. A route can declare the translation with `reasoning_effort_map`: each key is a **public level** (what clients send as `reasoning_effort` on Chat Completions, `reasoning.effort` on Responses or `output_config.effort` on Messages, and what `/v1/models` offers them), and each value is the **upstream value** this route's server receives as `reasoning_effort`."
-msgstr "客户端选择的档位与服务器接受的取值不一定是同一个词。路由可以用 `reasoning_effort_map` 声明这种转换：每个键是一个**公开档位**（客户端在 Chat Completions 中以 `reasoning_effort`、在 Responses 中以 `reasoning.effort`、在 Messages 中以 `output_config.effort` 发送的值，也是 `/v1/models` 向它们提供的值），每个值是这条路由的服务器作为 `reasoning_effort` 收到的**上游取值**。"
-
-#: ../developer/adding-models.md:145
-msgid "Each key is the public level and each value what this server's `reasoning_effort` takes."
-msgstr "每个键是公开档位，每个值是该服务器的 `reasoning_effort` 接收的取值。"
-
-#: ../developer/adding-models.md:148
-msgid "On that route:"
-msgstr "在这条路由上："
-
-#: ../developer/adding-models.md:150
-msgid "exactly the keys are offered and accepted, in this order: the listing above publishes `low`, `high` and `max`. Any other level, `xhigh` and `medium` included, is refused with a 400 before anything is sent; it is never dropped or rounded to a neighbour. A thinking switch such as `none` is not a level unless the map names it;"
-msgstr "提供并接受的正好是这些键，按此顺序：上面的列表发布 `low`、`high` 和 `max`。其他任何档位（包括 `xhigh` 和 `medium`）都会在发送任何内容之前以 400 拒绝，绝不会被丢弃或就近取整。像 `none` 这样的思考开关不是档位，除非映射中写了它；"
-
-#: ../developer/adding-models.md:155
-msgid "a level is translated once, on the route that serves the request, from the level the client sent. A retry, a fallback to another route or a reroute starts again from the client's level, and a route without a map sends it unchanged;"
-msgstr "档位只在实际处理请求的路由上、从客户端发送的档位转换一次。重试、回退到另一条路由或改路由都从客户端的档位重新开始，没有映射的路由原样发送它；"
-
-#: ../developer/adding-models.md:159
-msgid "the map is the whole declaration: the route forwards `reasoning_effort` whether or not `supported_params` names it, and `reasoning_efforts` is not read for it;"
-msgstr "映射就是完整的声明：无论 `supported_params` 是否列出，这条路由都会转发 `reasoning_effort`，也不会为它读取 `reasoning_efforts`；"
-
-#: ../developer/adding-models.md:162
-msgid "a request that names no level sends none, so the server's own default applies. The gateway adds no default. Clients have their own: Claude Code, for one, sends `output_config.effort: high` when its user chose nothing."
-msgstr "未指定档位的请求不发送任何档位，因此由服务器自己的默认值决定。网关不添加默认值。客户端有自己的默认值：例如 Claude Code 在用户未作选择时发送 `output_config.effort: high`。"
-
-#: ../developer/adding-models.md:166
-msgid "The map is a fact about one server, so it is declared on the route and rejected on the model (including a shorthand model without a route list), and only a route whose adapter sends `reasoning_effort` (an OpenAI-compatible kind) may carry one: on `anthropic`, `claude` or `gemini` it is a configuration error. Each key and value is one short word of letters, digits, `_`, `.` or `-`. Routes without a map behave as they always did. An admin can set or replace a route's map from the console; see [Route capabilities](configuration.md#routing-tab)."
-msgstr "映射是关于某一台服务器的事实，因此在路由上声明，在模型上声明会被拒绝（包括没有路由列表的简写模型）；并且只有适配器会发送 `reasoning_effort` 的路由（OpenAI 兼容类）才能携带映射：在 `anthropic`、`claude` 或 `gemini` 上它是配置错误。每个键和值都是由字母、数字、`_`、`.` 或 `-` 组成的一个短词。没有映射的路由行为不变。管理员可以在控制台设置或替换路由的映射；参见[路由能力](configuration.md#routing-tab)。"
-
-#: ../developer/adding-models.md:178
-msgid "Deployment presets"
-msgstr "部署预设"
-
-#: ../developer/adding-models.md:180
-msgid "A trusted backend extension can call `register_reasoning_effort_preset` from `serving.config.reasoning_effort_presets` in its `register()` hook. Register the upstream provider, adapter kind, exact upstream model ID and base URL that were verified together, with a short display label and a `reasoning_effort_map`. The upstream provider follows the route target, independent of its analytics label. For an OpenRouter pin, use provider `openrouter` and adapter kind `openrouter[<pin>]`. A different endpoint, model or protocol requires its own verification. Explicit admin overrides and route maps retain precedence. Legacy effort declarations keep precedence on their original upstream. A preset with an identity map still supplies a public domain and enables forwarding."
-msgstr "受信任的后端扩展可在 `register()` 钩子中调用 `serving.config.reasoning_effort_presets` 的 `register_reasoning_effort_preset`。注册经过整体验证的上游供应商、适配器类型、确切的上游模型 ID 和基础 URL，同时填写简短的显示名称和 `reasoning_effort_map`。上游供应商取自路由目标，与统计标签独立。OpenRouter 固定上游时，供应商填写 `openrouter`，适配器类型填写 `openrouter[<pin>]`。不同的端点、模型或协议需要单独验证。管理员显式覆盖和路由映射仍然优先。旧版强度声明在原上游仍然优先。档位原样映射的预设同样会声明公开档位并启用转发。"
-
-#: ../developer/adding-models.md
-msgid "`include_usage_in_stream`"
-msgstr "`include_usage_in_stream`"
-
-#: ../developer/adding-models.md
-msgid "`reasoning_effort_map`"
-msgstr "`reasoning_effort_map`"
-
-#: ../developer/adding-models.md
-msgid "Whether this OpenAI-compatible upstream answers `stream_options.include_usage` with a final usage chunk, so cached-token counts and completion tokens on tool-call-only streams are measured rather than estimated. Route-level only, and a boolean: Admin refuses a model-wide or non-boolean value (`\"false\"`, `null`) when the catalog is saved, and a stored catalog with one registers no catalog model and logs an error. An explicit route value wins; otherwise defaults per `kind`: on for `deepseek`, `zai`, `kimi`, `minimax`, `vllm`, `sglang`, off otherwise. OpenRouter always requests usage regardless of this flag; native Anthropic, Claude, and Gemini adapters do not use it. Set `false` on a compatible endpoint that rejects unknown body fields"
-msgstr "此 OpenAI 兼容上游是否会响应 `stream_options.include_usage` 并返回最终用量数据块，以便在仅包含工具调用的流中测量缓存 token 数和 completion token 数，而不是估算。此项仅适用于路由，且必须是布尔值：保存目录时，Admin 会拒绝模型级配置或非布尔值（`\"false\"`、`null`）；已保存的目录若含有这样的值，不会注册任何目录模型，并会记录一条错误。显式路由值优先；否则默认值因 `kind` 而异：`deepseek`、`zai`、`kimi`、`minimax`、`vllm` 和 `sglang` 为启用，其他类型为关闭。OpenRouter 始终请求用量，不受此标志影响；原生 Anthropic、Claude 和 Gemini 适配器不使用此标志。若兼容端点会拒绝未知请求体字段，请设为 `false`。"
-
-#: ../developer/adding-models.md:0
-msgid "Route-only. The public reasoning-effort levels this route takes, each mapped to the value its upstream receives as `reasoning_effort`; see [Mapping reasoning-effort levels on a route](#mapping-reasoning-effort-levels-on-a-route)"
-msgstr "仅限路由。这条路由接受的公开推理强度档位，每个映射到其上游作为 `reasoning_effort` 收到的取值；参见[在路由上映射推理强度档位](#mapping-reasoning-effort-levels-on-a-route)"
-
-#: ../developer/adding-models.md:26
-msgid ""
-"Removing a model"
-msgstr ""
-"移除模型"
-
-#: ../developer/adding-models.md:28
-msgid ""
-"In **Admin → Routing**, delete a model's last route. That removes the model from the stored `MODEL_CATALOG`. It stops serving on this process now. Other processes drop it on their next configuration refresh, and the next start does not register it. Deleting one route while others remain only hides that route; Restore brings it back, and the catalog is left as it is."
-msgstr ""
-"在 **Admin → Routing** 中删除模型的最后一条路由，即可把该模型从已保存的 `MODEL_CATALOG` 中移除。当前进程会立即停止提供该模型；其他进程在下一次配置刷新时丢弃它，之后的启动也不会再注册它。模型还有其他路由时，删除其中一条只会隐藏该路由；Restore 可以把它恢复，模型目录保持不变。"
-
-msgid "Base cost information in `pricing_currency`. `prompt`, `completion`, `input_cache_reads` and `input_cache_writes` are per 1M tokens; `request` is per request and `image` per image"
-msgstr "以 `pricing_currency` 为单位的基础成本信息。`prompt`、`completion`、`input_cache_reads` 和 `input_cache_writes` 按每百万 token 计；`request` 按每次请求计，`image` 按每张图片计"
-
-msgid "`pricing_currency`"
-msgstr ""
-
-msgid "`USD` (default) or `CNY`; applies to configured `pricing` and `pricing_schedule`. See [Accounting Currency](accounting.md) for normalization into the deployment ledger"
-msgstr "`USD`（默认）或 `CNY`，适用于配置中的 `pricing` 和 `pricing_schedule`。转换为部署记账币种的规则见[记账币种](accounting.md)"
-
-msgid "The gateway checks the [official English price page](https://api-docs.deepseek.com/quick_start/pricing/) for USD accounting or the [official Chinese price page](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/) for CNY accounting every five minutes. It reads input, output and cache-hit prices directly in that currency and resolves peak windows in UTC. It reads the current and following year from [holiday-cn](https://github.com/NateScarlet/holiday-cn), a third-party dataset generated from State Council notices. This calendar is not a DeepSeek API. Published future-year dates are picked up automatically; an empty placeholder is not treated as a year without holidays."
-msgstr "网关每五分钟检查价格页面：USD 记账使用[官方英文价格页面](https://api-docs.deepseek.com/quick_start/pricing/)，CNY 记账使用[官方中文价格页面](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)。它直接读取对应币种的输入、输出和缓存命中价格，并按 UTC 解析高峰时段。当前及下一年的日历来自 [holiday-cn](https://github.com/NateScarlet/holiday-cn)，这是根据国务院通知生成的第三方数据集，并非 DeepSeek API。后续年份的已发布日期会自动同步；空的占位文件不会被当作没有节假日的一年。"

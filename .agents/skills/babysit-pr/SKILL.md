@@ -5,8 +5,8 @@ description: Follow one HybridInference PR, address valid feedback and CI failur
 
 # Babysit PR
 
-Follow `AGENTS.md`. Select the PR explicitly named by the user, or the single open
-PR for the current task branch. For branch-based selection:
+Follow `AGENTS.md`. Work on the PR the user names, or else the single open PR
+for the current task branch:
 
 ```bash
 BRANCH=$(git branch --show-current)
@@ -14,51 +14,51 @@ gh pr list --head "$BRANCH" --base dev --state open \
   --json number,title,headRefName,isDraft,url
 ```
 
-If detached, missing or ambiguous, report that state rather than guessing. If the
-PR is closed or merged, report completion and end this run. Draft PRs may be
-inspected and repaired when requested, but remain drafts unless the user asks
-otherwise.
+If the branch is detached or there is no single open PR, report that instead of
+guessing. If the PR is closed or merged, report it complete and end the run.
+Inspect and repair a draft only when asked, and leave it a draft unless the
+user says otherwise.
 
 ## One bounded follow-up
 
-Use the sibling `check-pr` skill for evidence-based review and CI repair when
-available. The same permissions and worktree rules apply: fix only valid issues,
-verify changes, push only intended commits, and leave unsupported review claims
-for the user. Read [PR signals](../check-pr/references/pr-signals.md) for commands
-and interpretation, including paginated threads and current-head checks.
+Use the sibling `check-pr` skill for review and CI repair, under the same
+permissions and worktree rules: fix only valid issues, verify, push only
+intended commits, and leave unsupported review claims for the user.
+[PR signals](../check-pr/references/pr-signals.md) has the commands and how to
+read them.
 
-A manual invocation may follow checks for up to 30 minutes using short,
-interruptible waits. Stop on an actionable blocker, repeated failure without
-new evidence, or the time limit. For an already configured recurring run, make
-one pass and let the next scheduled run continue; do not create nested loops or
-new schedules. Create recurring monitoring only on the user's request, and keep
-unchanged/non-actionable runs quiet unless periodic updates were requested.
+A manual invocation may follow checks for up to 30 minutes with short,
+interruptible waits. Stop at an actionable blocker, a repeated failure with no
+new evidence, or the time limit. In an already configured recurring run, make
+one pass and leave the rest to the next run; never create nested loops or new
+schedules. Create recurring monitoring only when the user asks, and keep runs
+with nothing new or actionable quiet unless the user asked for periodic updates.
 
 ## Merge only when authorized and ready
 
-"Babysit", a skill invocation, or a schedule alone does not authorize merging.
-Honor an explicit "do not merge" instruction. Without merge authorization for
-this PR, report readiness and stop. With authorization, re-fetch the PR just
-before merging and require all of the following:
+"Babysit", a skill invocation or a schedule does not authorize a merge. Honor
+an explicit "do not merge". Without merge authorization for this PR, report
+readiness and stop. With it, re-fetch the PR just before merging and require
+all of the following:
 
-- The PR is open, not a draft, and targets `dev` in the intended repository.
-- Its head matches the revision reviewed and tested after the latest push.
-- Required checks have completed successfully, required approvals are satisfied,
-  and no unresolved review threads or requested changes remain.
-- GitHub reports it mergeable and branch protection permits the operation.
+- It is open, not a draft, and targets `dev` in the intended repository.
+- Its head is the revision you reviewed and tested after the latest push.
+- Required checks completed successfully, required approvals are in place, and
+  no unresolved review threads or requested changes remain.
+- GitHub reports it mergeable and branch protection permits the merge.
   Unknown, empty or errored signals need investigation, not a merge attempt.
 
-Use the repository's permitted merge method and match the verified head:
+Merge with the repository's permitted method, pinned to the verified head. The
+PR template says `dev` is squash-merged; use `--merge` or `--rebase` only when
+repository policy and the task call for it.
 
 ```bash
 gh pr merge <N> --squash --match-head-commit <verified-head-sha>
 ```
 
-The PR template specifies squash merging into `dev`. Choose `--merge` or
-`--rebase` instead only when appropriate to repository policy
-and the task. Never use `--admin`, bypass protection, or force-push. If GitHub
-refuses the merge, report the reason. Branch/worktree deletion is separate
-cleanup: preserve active work and remove it only within the authorized scope.
+Never use `--admin`, bypass branch protection or force-push. If GitHub refuses
+the merge, report why. Deleting the branch or worktree is separate cleanup:
+preserve active work and delete only within the authorized scope.
 
-Report the PR URL, verified head, changes, check/review status and any action
-needed. Claim a merge only after GitHub confirms it.
+Report the PR URL, verified head, changes, check and review status, and any
+action needed. Claim a merge only after GitHub confirms it.
