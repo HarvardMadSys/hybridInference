@@ -426,22 +426,34 @@ async def test_database_configuration_across_real_processes(tmp_path):
                 )
                 assert second_key.status_code == 201, second_key.text
                 second_key_id = second_key.json()["key"]["id"]
+                second_route = {
+                    "route_type": "on_demand",
+                    "upstream_provider": "openai_compat",
+                    "base_url": f"http://127.0.0.1:{second_upstream.server_port}/v1",
+                    "provider_model_id": "second",
+                    "api_key_id": second_key_id,
+                    "capabilities": {
+                        "context_length": 8192,
+                        "max_output_length": 4096,
+                        "input_modalities": ["text"],
+                        "supports_tools": False,
+                    },
+                }
+                # Another port on the same host is somewhere the provider's
+                # keys do not go yet: the administrator is asked to confirm,
+                # and the save is sent again with the password, as the console
+                # does.
+                asked = await first.post(
+                    "/admin/routing/provider-route-candidates/runtime-chat",
+                    headers=auth,
+                    json=second_route,
+                )
+                assert asked.status_code == 403, asked.text
+                assert asked.json()["error_code"] == "ADMIN_CONFIRMATION_REQUIRED"
                 added = await first.post(
                     "/admin/routing/provider-route-candidates/runtime-chat",
                     headers=auth,
-                    json={
-                        "route_type": "on_demand",
-                        "upstream_provider": "openai_compat",
-                        "base_url": f"http://127.0.0.1:{second_upstream.server_port}/v1",
-                        "provider_model_id": "second",
-                        "api_key_id": second_key_id,
-                        "capabilities": {
-                            "context_length": 8192,
-                            "max_output_length": 4096,
-                            "input_modalities": ["text"],
-                            "supports_tools": False,
-                        },
-                    },
+                    json={**second_route, "password": password},
                 )
                 assert added.status_code == 200, added.text
 
