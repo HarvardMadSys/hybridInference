@@ -274,10 +274,12 @@ def insert_sql(table_plan: Plan, *, before: bool = False) -> str:
         for column in columns
     )
     order = " ORDER BY u.ts" if any(column.name == "ts" for column in columns) else ""
+    # Request events have no key column but a unique identity: a duplicate in
+    # the export, or one the gateway already holds, is skipped as well.
     conflict = (
         f" ON CONFLICT ({', '.join(table_plan.table.key)}) DO NOTHING"
         if table_plan.table.key
-        else ""
+        else " ON CONFLICT DO NOTHING"
     )
     return (
         f"INSERT INTO {table_plan.table.target} ({names}) "

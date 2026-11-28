@@ -82,6 +82,8 @@ def build_d1(path) -> None:
         [
             ("chat-a", T0 - 2_000, "org/chat", 100, 0.5),
             ("chat-a", T0 - 1_000, "org/chat", 7.6, 0.25),
+            # D1 kept a duplicate; the gateway keeps one.
+            ("chat-a", T0 - 2_000, "org/chat", 100, 0.5),
         ],
     )
     conn.execute("INSERT INTO sglang_rollups VALUES (1200000, ?, 'chat-a', 2, 2, 12)", (T0,))
@@ -120,7 +122,7 @@ async def test_an_export_lands_in_the_gateways_tables(conn, tmp_path):
 
     assert results["gpu_samples"] == (4, 1)
     assert results["gpus"] == (1, 0)
-    assert results["request_events"] == (2, 0)
+    assert results["request_events"] == (3, 0)
     assert results["gpu_rollups"] == (0, 0)  # absent from this export
     nodes = await rows(
         conn,

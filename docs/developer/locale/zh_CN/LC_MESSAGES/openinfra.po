@@ -326,17 +326,6 @@ msgstr ""
 "`POST /internal/openinfra/ingest` 接收一台主机的快照，用 `Authorization: Bearer "
 "<token>`（或 `x-ingest-token: <token>`）携带 `OPENINFRA_INGEST_TOKEN`："
 
-#: ../developer/openinfra.md:148
-msgid ""
-"`sglang` holds every engine on the host, vLLM included (`engine` says "
-"which), and may also be a single object. An engine sends parsed "
-"`metrics`, its raw `prometheus` text, or both; text that exposes several "
-"models gives each model its own engine row, `<id>:<model>`."
-msgstr ""
-"`sglang` 包含主机上的每个引擎，包括 vLLM（`engine` 说明是哪一种），也可以是单个对象。引擎可以发送解析后的 "
-"`metrics`、原始的 `prometheus` 文本，或两者都发送；暴露了多个模型的文本会为每个模型生成单独的引擎行，即 "
-"`<id>:<model>`。"
-
 #: ../developer/openinfra.md:152
 msgid ""
 "Parsing is lenient, so reporters of any age keep working: a number may "
@@ -430,17 +419,6 @@ msgstr ""
 "`offline`）、集群总体数据、每台主机、每块 GPU 和每个引擎（在 `sglang` 下，按标签页顺序）、最近一小时和一天处理的请求与 "
 "token，以及每个引擎最近的 40 个请求。"
 
-#: ../developer/openinfra.md:176
-msgid ""
-"`GET /public-openinfra/history?hours=2&node=`: time series for every "
-"host, or one, over the last `hours` (0.25 to 168, rounded to a quarter "
-"hour). Points are a minute apart up to two hours, 20 minutes apart up to "
-"a day, and an hour apart beyond; `grain_ms` says which."
-msgstr ""
-"`GET /public-openinfra/history?hours=2&node=`：所有主机或某一台主机在最近 `hours` "
-"小时内的时间序列（0.25 到 168，取整到一刻钟）。两小时以内的数据点间隔一分钟，一天以内间隔 20 "
-"分钟，更长则间隔一小时；`grain_ms` 说明是哪一种。"
-
 #: ../developer/openinfra.md:181
 msgid ""
 "Each answer is computed at most once every 10 seconds (the dashboard) or "
@@ -490,10 +468,6 @@ msgid ""
 msgstr ""
 "**汇总**，按 20 "
 "分钟和每小时的时间桶，由网关的调度器在每个第五分钟过后一分钟刷新，每次只在一个副本上运行。汇总保留其时间桶的最后一个样本，以及服务总量需要的累加值。"
-
-#: ../developer/openinfra.md:204
-msgid "**Request events**, as the reporter reads them from the engine logs."
-msgstr "**请求事件**，即 reporter 从引擎日志中读到的内容。"
 
 #: ../developer/openinfra.md:206
 msgid ""
@@ -607,3 +581,33 @@ msgid ""
 "The snapshots are kept in the `openinfra_*` tables (revision "
 "`0026_openinfra`):"
 msgstr "快照保存在 `openinfra_*` 表中（修订版本 `0026_openinfra`）："
+
+#: ../developer/openinfra.md:177
+msgid ""
+"`GET /public-openinfra/history?hours=2&node=`: time series for every "
+"host, or one, over the last `hours`, rounded up to one of 0.25, 0.5, 1, "
+"2, 3, 6, 12, 24, 48, 72 and 168. A `node` that has never reported answers"
+" `404`. Points are a minute apart up to two hours, 20 minutes apart up to"
+" a day, and an hour apart beyond; `grain_ms` says which."
+msgstr ""
+"`GET /public-openinfra/history?hours=2&node=`：所有主机或某一台主机在最近 `hours` "
+"小时内的时间序列，向上取整为 0.25、0.5、1、2、3、6、12、24、48、72 或 168 之一。从未上报过的 `node` 返回 "
+"`404`。两小时以内的数据点间隔一分钟，一天以内间隔 20 分钟，更长则间隔一小时；`grain_ms` 说明是哪一种。"
+
+#: ../developer/openinfra.md:206
+msgid ""
+"**Request events**, as the reporter reads them from the engine logs, each"
+" stored once however often it is sent."
+msgstr "**请求事件**，即 reporter 从引擎日志中读到的内容，无论发送多少次都只保存一次。"
+
+#: ../developer/openinfra.md:148
+msgid ""
+"`sglang` holds every engine on the host, vLLM included (`engine` says "
+"which), and may also be a single object. An engine sends parsed "
+"`metrics`, its raw `prometheus` text, or both; text that exposes several "
+"models gives each model its own engine row, `<id>:<model>`, and lists the"
+" server's request events under each."
+msgstr ""
+"`sglang` 包含主机上的每个引擎，包括 vLLM（`engine` 说明是哪一种），也可以是单个对象。引擎可以发送解析后的 "
+"`metrics`、原始的 `prometheus` 文本，或两者都发送；暴露了多个模型的文本会为每个模型生成单独的引擎行，即 "
+"`<id>:<model>`，该服务器的请求事件会列在其中每一行下。"

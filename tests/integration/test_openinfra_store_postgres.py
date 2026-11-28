@@ -410,7 +410,9 @@ async def test_request_events_list_each_engines_newest_first(pool):
         T0 + 6_000,
     )
     async with pool.acquire() as conn:
-        rows = await store.load_recent_requests(conn, ["chat-a", "missing"])
+        rows = await store.load_recent_requests(
+            conn, [("chat-a", "chat-a"), ("missing", "missing")]
+        )
     assert len(rows) == 21
     # Seconds are read as milliseconds' thousandths: 1_800_000_100 s.
     assert rows[0]["ts"] == 1_800_000_100_000
@@ -511,4 +513,60 @@ async def test_the_day_counts_only_the_time_a_reporter_was_reporting(pool):
             "first_ts": T0 + 10 * MINUTE,
             "last_ts": T0 + 10 * MINUTE + 99 * 6_000,
         },
+    ]
+
+
+async def test_a_server_with_two_models_lists_its_requests_under_each(pool):
+    text = 'sglang:num_running_reqs{model_name="m-one"} 1\nsglang:num_running_reqs{model_name="m-two"} 2\n'
+    payload = {
+        "node": {"id": "node-a"},
+        "sglang": {
+            "server": {"id": "multi", "node_id": "node-a"},
+            "prometheus": text,
+            "requests": [{"ts": T0, "input_len": 10, "e2e_s": 1.0}],
+        },
+    }
+    await ingest(pool, payload, T0)
+    async with pool.acquire() as conn:
+        doc = await dashboard.build_dashboard(conn, now=T0 + 1_000)
+    assert [e["id"] for e in doc["sglang"]] == ["multi:m-one", "multi:m-two"]
+    assert sorted(r["server_id"] for r in doc["requests"]) == ["multi:m-one", "multi:m-two"]
+    assert {r["input_len"] for r in doc["requests"]} == {10}
+
+
+async def test_text_and_metrics_for_one_model_make_one_engine(pool):
+    payload = {
+        "node": {"id": "node-a"},
+        "sglang": {
+            "server": {"id": "chat-a", "node_id": "node-a", "model_name": "org/chat"},
+            "prometheus": 'sglang:num_running_reqs{model_name="org/chat"} 1\n'
+            'sglang:num_queue_reqs{model_name="org/chat"} 4\n',
+            "metrics": {"model_name": "org/chat", "num_running_reqs": 7},
+        },
+    }
+    await ingest(pool, payload, T0)
+    rows = await fetch(
+        pool, "SELECT id, server_id, num_running_reqs, num_queue_reqs FROM openinfra_engines"
+    )
+    # One row, the parsed metrics winning and the text filling in the rest.
+    assert rows == [
+        {"id": "chat-a", "server_id": "chat-a", "num_running_reqs": 7.0, "num_queue_reqs": 4.0}
+    ]
+    assert len(await fetch(pool, "SELECT 1 FROM openinfra_engine_samples")) == 1
+
+
+async def test_a_request_event_sent_twice_is_stored_once(pool):
+    events = [
+        {"ts": T0, "input_len": 10, "output_len": 5, "e2e_s": 1.5},
+        {"ts": T0, "input_len": 10},  # NULL fields still identify it
+        {"ts": T0, "input_len": 11, "output_len": 5, "e2e_s": 1.5},  # a different request
+    ]
+    await ingest(pool, body(engines=[engine(requests=events)]), T0)
+    # The reporter resends the same window after a lost answer.
+    await ingest(pool, body(engines=[engine(requests=events)]), T0 + 6_000)
+    rows = await fetch(pool, "SELECT input_len, output_len FROM openinfra_request_events")
+    assert sorted((r["input_len"], r["output_len"] or 0) for r in rows) == [
+        (10, 0),
+        (10, 5),
+        (11, 5),
     ]

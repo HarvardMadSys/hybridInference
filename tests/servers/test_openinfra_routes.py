@@ -39,11 +39,13 @@ def _clean(monkeypatch):
     get_distribution_config.cache_clear()
     openinfra._DASHBOARDS.clear()
     openinfra._HISTORIES.clear()
+    openinfra._KNOWN_NODES.clear()
     yield
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
     openinfra._DASHBOARDS.clear()
     openinfra._HISTORIES.clear()
+    openinfra._KNOWN_NODES.clear()
 
 
 def _publish(monkeypatch, tmp_path, extra: str = "  openinfra: true\n") -> None:
@@ -62,8 +64,15 @@ def _settings(monkeypatch, **values: str) -> None:
 class FakeConn:
     """Records statements; transactions are no-ops."""
 
-    def __init__(self) -> None:
+    def __init__(self, nodes: tuple[str, ...] = ("node-a",)) -> None:
         self.statements: list[str] = []
+        self.nodes = nodes
+        self.node_reads = 0
+
+    async def fetch(self, sql, *args):
+        assert sql == "SELECT id FROM openinfra_nodes"
+        self.node_reads += 1
+        return [{"id": node} for node in self.nodes]
 
     @asynccontextmanager
     async def _transaction(self):
@@ -168,7 +177,20 @@ async def test_history_passes_the_normalized_window_and_node(monkeypatch, tmp_pa
     resp = await _call(_db(), "GET", "/public-openinfra/history?hours=1.3&node=node-a")
     assert resp.status_code == 200
     assert resp.headers["cache-control"] == "public, max-age=30"
-    assert builds == [("history", {"hours": 1.25, "node": "node-a", "retired": ()})]
+    assert builds == [("history", {"hours": 2.0, "node": "node-a", "retired": ()})]
+
+
+@pytest.mark.asyncio
+async def test_a_node_that_never_reported_is_not_found(monkeypatch, tmp_path, builds):
+    _publish(monkeypatch, tmp_path)
+    conn = FakeConn(nodes=("node-a",))
+    db = _db(conn)
+    async with AsyncClient(transport=ASGITransport(app=_app(db)), base_url="http://test") as client:
+        misses = [await client.get(f"/public-openinfra/history?node=made-up-{i}") for i in range(5)]
+    assert {resp.status_code for resp in misses} == {404}
+    # Refused from memory: one read of the host list, no history built.
+    assert conn.node_reads == 1
+    assert builds == []
 
 
 @pytest.mark.parametrize(
@@ -180,9 +202,14 @@ async def test_history_passes_the_normalized_window_and_node(monkeypatch, tmp_pa
         ("inf", 2.0),
         ("0", 0.25),
         ("0.1", 0.25),
+        ("0.3", 0.5),
+        ("1.3", 2.0),
+        ("2", 2.0),
+        ("2.5", 3.0),
+        ("6.9", 12.0),
         ("24", 24.0),
+        ("100", 168.0),
         ("1000", 168.0),
-        ("6.9", 7.0),
     ],
 )
 def test_history_hours(raw, hours):

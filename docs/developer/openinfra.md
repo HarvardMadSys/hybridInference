@@ -148,7 +148,8 @@ gateway address), `--token`, `--node-id`, `--hostname`, `--region`,
 - `sglang` holds every engine on the host, vLLM included (`engine` says which),
   and may also be a single object. An engine sends parsed `metrics`, its raw
   `prometheus` text, or both; text that exposes several models gives each model
-  its own engine row, `<id>:<model>`.
+  its own engine row, `<id>:<model>`, and lists the server's request events
+  under each.
 - Parsing is lenient, so reporters of any age keep working: a number may arrive
   as a numeric string, unknown fields are ignored, and a value of the wrong type
   is dropped. A body of the wrong shape is refused whole.
@@ -174,7 +175,8 @@ Both reads are unauthenticated, serve only what the page shows, and answer
   in tab order), the requests and tokens served in the last hour and day, and
   each engine's 40 most recent requests.
 - `GET /public-openinfra/history?hours=2&node=`: time series for every host, or
-  one, over the last `hours` (0.25 to 168, rounded to a quarter hour). Points
+  one, over the last `hours`, rounded up to one of 0.25, 0.5, 1, 2, 3, 6, 12,
+  24, 48, 72 and 168. A `node` that has never reported answers `404`. Points
   are a minute apart up to two hours, 20 minutes apart up to a day, and an hour
   apart beyond; `grain_ms` says which.
 
@@ -201,7 +203,8 @@ The snapshots are kept in the `openinfra_*` tables (revision `0026_openinfra`):
 - **Rollups** for 20-minute and hourly buckets, refreshed by the gateway's
   scheduler one minute past every fifth minute, on one replica at a time. A
   rollup keeps its bucket's last sample and the sums the served totals need.
-- **Request events**, as the reporter reads them from the engine logs.
+- **Request events**, as the reporter reads them from the engine logs, each
+  stored once however often it is sent.
 
 Nothing is deleted. A sample row takes roughly 200 bytes for a GPU and 400 for
 an engine, index included, and each one gets 14,400 a day: a host with eight

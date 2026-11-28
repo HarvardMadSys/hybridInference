@@ -224,7 +224,9 @@ async def build_dashboard(
     nodes, gpus, engines = await store.load_snapshot(conn, retired=retired, now=now)
     engines = order_engines(engines, order)
     served = await store.load_served(conn, retired=retired, now=now)
-    requests = await store.load_recent_requests(conn, [engine["id"] for engine in engines])
+    requests = await store.load_recent_requests(
+        conn, [(engine["id"], engine.get("server_id") or engine["id"]) for engine in engines]
+    )
     node_by_id = {node["id"]: node for node in nodes}
 
     online_gpus = [gpu for gpu in gpus if gpu["status"] != "offline"]

@@ -6,13 +6,14 @@ table hold what it sends:
 
 - live rows, one per host, GPU and engine, overwritten by every snapshot:
   ``openinfra_nodes``, ``openinfra_gpus`` (id ``<node id>:<index>``) and
-  ``openinfra_engines`` (an SGLang or vLLM server, or one model of it);
+  ``openinfra_engines`` (an SGLang or vLLM server, or one model of it, with
+  ``server_id`` naming the server);
 - samples, at most one per host, GPU and engine in each 6-second bucket
   (``bucket`` is ``ts / 6000``, and the first sample of a bucket is kept):
   ``openinfra_cpu_samples``, ``openinfra_gpu_samples`` and
   ``openinfra_engine_samples``, plus ``openinfra_request_events``, the shape
   and latency of individual requests, without prompts, completions or
-  addresses;
+  addresses, each stored once however often it is sent;
 - rollups, per 20-minute and per hourly bucket (``grain`` in milliseconds):
   the bucket's last sample and the sums the served totals integrate,
   ``openinfra_cpu_rollups``, ``openinfra_gpu_rollups`` and
@@ -233,6 +234,7 @@ STATEMENTS: tuple[str, ...] = (
     "model_name TEXT, "
     "endpoint TEXT, "
     "engine TEXT, "
+    "server_id TEXT, "
     "status TEXT NOT NULL DEFAULT 'unknown', "
     "gpu_indexes TEXT, "
     f"{_metrics(_ENGINE)}, "
@@ -279,8 +281,9 @@ STATEMENTS: tuple[str, ...] = (
     "spec_accept_rate DOUBLE PRECISION, "
     "batch_size BIGINT"
     ")",
-    "CREATE INDEX IF NOT EXISTS idx_openinfra_request_events_engine_ts "
-    "ON openinfra_request_events (engine_id, ts DESC)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_openinfra_request_events_identity "
+    "ON openinfra_request_events (engine_id, ts, COALESCE(input_len, -1), "
+    "COALESCE(output_len, -1), COALESCE(e2e_s, -1))",
     "CREATE TABLE IF NOT EXISTS openinfra_gpu_rollups ("
     "grain BIGINT NOT NULL, "
     "bucket_ts BIGINT NOT NULL, "

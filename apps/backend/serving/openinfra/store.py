@@ -186,7 +186,15 @@ _INSERT_GPU_SAMPLE = (
     "ON CONFLICT (gpu_id, bucket) DO NOTHING"
 )
 
-_ENGINE_IDENTITY = ("node_id", "name", "model_name", "endpoint", "engine", "gpu_indexes")
+_ENGINE_IDENTITY = (
+    "node_id",
+    "name",
+    "model_name",
+    "endpoint",
+    "engine",
+    "gpu_indexes",
+    "server_id",
+)
 _ENGINE_COLUMNS = (
     "id",
     *_ENGINE_IDENTITY,
@@ -212,9 +220,12 @@ _INSERT_ENGINE_SAMPLE = (
     f"VALUES ($1, $2, $3, {_placeholders(len(ENGINE_METRICS), 4)}) "
     "ON CONFLICT (engine_id, bucket) DO NOTHING"
 )
+#: A request event a reporter sends again (a retry after a lost answer, or
+#: overlapping log windows) meets the table's unique identity and is skipped.
 _INSERT_REQUEST = (
     f"INSERT INTO openinfra_request_events (engine_id, ts, {_columns(REQUEST_FIELDS)}) "
-    f"VALUES ($1, $2, {_placeholders(len(REQUEST_FIELDS), 3)})"
+    f"VALUES ($1, $2, {_placeholders(len(REQUEST_FIELDS), 3)}) "
+    "ON CONFLICT DO NOTHING"
 )
 
 
@@ -238,8 +249,11 @@ def _engine_status(metrics: dict[str, Any]) -> str:
 def _engine_rows(engine: EngineIngest) -> list[tuple[ServerIngest, str, dict[str, Any]]]:
     """Each engine row a snapshot's engine yields: (identity, id, metrics).
 
-    Raw Prometheus text can expose several models; each becomes its own row,
-    ``<server id>:<model>``. Parsed ``metrics`` add one more.
+    Raw Prometheus text can expose several models, and parsed ``metrics`` add
+    one more entry. Entries of the same model merge, a parsed value winning
+    over one read from the text. A server that reports more than one model
+    gets a row per model, ``<server id>:<model>``; otherwise its row is the
+    server id.
 
     Raises:
         IngestError: The engine sent neither metrics nor Prometheus text.
@@ -251,10 +265,18 @@ def _engine_rows(engine: EngineIngest) -> list[tuple[ServerIngest, str, dict[str
         listed.append(engine.metrics)
     if not listed:
         raise IngestError("sglang requires metrics or prometheus text")
-    rows = []
+    by_model: dict[str | None, dict[str, Any]] = {}
     for metrics in listed:
         model = metrics.get("model_name") or engine.server.model_name
-        row_id = f"{engine.server.id}:{model}" if len(listed) > 1 and model else engine.server.id
+        seen = by_model.get(model)
+        if seen is None:
+            by_model[model] = dict(metrics)
+        else:
+            seen.update({key: value for key, value in metrics.items() if value is not None})
+    split = len(by_model) > 1
+    rows = []
+    for model, metrics in by_model.items():
+        row_id = f"{engine.server.id}:{model}" if split and model else engine.server.id
         rows.append((engine.server, row_id, {**metrics, "model_name": model}))
     return rows
 
@@ -332,6 +354,7 @@ class SnapshotWrite:
                         server.endpoint,
                         server.engine,
                         server.gpu_indexes,
+                        server.id,
                         _engine_status(metrics),
                         *(metrics.get(name) for name in ENGINE_METRICS),
                         now,
@@ -398,18 +421,27 @@ async def load_snapshot(
     return _live(nodes, now), _live(gpus, now), _live(engines, now)
 
 
-async def load_recent_requests(conn: Any, engine_ids: Sequence[str]) -> list[dict[str, Any]]:
-    """Each engine's newest :data:`REQUESTS_PER_ENGINE` request events, engine by engine."""
-    if not engine_ids:
+async def load_recent_requests(
+    conn: Any, engines: Sequence[tuple[str, str]]
+) -> list[dict[str, Any]]:
+    """Each engine's newest :data:`REQUESTS_PER_ENGINE` request events, engine by engine.
+
+    *engines* are (row id, server id) pairs. An event carries no model, so a
+    server split into a row per model has its events, stored under the server
+    id, listed under each of its rows; ``server_id`` in the result is the row.
+    """
+    if not engines:
         return []
     rows = await conn.fetch(
-        f"SELECT r.engine_id AS server_id, r.ts, {_columns(f'r.{n}' for n in REQUEST_FIELDS)} "
-        "FROM unnest($1::text[]) WITH ORDINALITY AS ids(id, position) "
+        f"SELECT ids.row_id AS server_id, r.ts, {_columns(f'r.{n}' for n in REQUEST_FIELDS)} "
+        "FROM unnest($1::text[], $2::text[]) WITH ORDINALITY AS ids(row_id, base_id, position) "
         "CROSS JOIN LATERAL ("
-        "SELECT * FROM openinfra_request_events e WHERE e.engine_id = ids.id "
-        "ORDER BY e.ts DESC LIMIT $2"
+        "SELECT * FROM openinfra_request_events e "
+        "WHERE e.engine_id = ids.row_id OR e.engine_id = ids.base_id "
+        "ORDER BY e.ts DESC LIMIT $3"
         ") r ORDER BY ids.position, r.ts DESC",
-        list(engine_ids),
+        [row_id for row_id, _ in engines],
+        [base_id for _, base_id in engines],
         REQUESTS_PER_ENGINE,
     )
     return [dict(row) for row in rows]

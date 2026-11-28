@@ -75,6 +75,11 @@ async def test_one_sample_per_bucket_and_one_rollup_per_bucket(scratch):
         event = await conn.fetchval(
             "INSERT INTO openinfra_request_events (engine_id, ts) VALUES ('e', 1) RETURNING id"
         )
+        # The same event again, NULL fields and all, is the same row.
+        with pytest.raises(asyncpg.UniqueViolationError):
+            await conn.execute(
+                "INSERT INTO openinfra_request_events (engine_id, ts) VALUES ('e', 1)"
+            )
     assert event == 1
 
 

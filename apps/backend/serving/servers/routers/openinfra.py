@@ -9,14 +9,16 @@
 - ``GET /public-openinfra``: the dashboard document
   (:func:`serving.openinfra.dashboard.build_dashboard`).
 - ``GET /public-openinfra/history?hours=2&node=``: the time series of the last
-  ``hours`` (0.25 to 168, in steps of a quarter hour), for every host or one.
+  ``hours``, rounded up to one of :data:`HISTORY_WINDOWS`, for every host or
+  one that has reported (any other ``node`` answers 404).
 
 The reads are unauthenticated and serve only what the page shows, but answer
 404 unless the distribution publishes OpenInfra (``features.openinfra``).
 Each document is computed at most once per :data:`DASHBOARD_TTL_SEC` or
 :data:`HISTORY_TTL_SEC` per distinct request, whoever asks and however often,
 and callers arriving meanwhile share the read; browsers and the edge may reuse
-it as long.
+it as long. The distinct requests are few by construction: a fixed set of
+windows times the hosts that exist, so no caller can make every request miss.
 """
 
 from __future__ import annotations
@@ -53,9 +55,14 @@ DASHBOARD_TTL_SEC = 10.0
 HISTORY_TTL_SEC = 30.0
 #: The longest ``node`` a history request may name.
 MAX_NODE_ID_LENGTH = 200
+#: The windows history is served at, in hours. A request for any other gets
+#: the next longer one, so the page's 2 h, 24 h and 7 d are served as asked.
+HISTORY_WINDOWS: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0, 3.0, 6.0, 12.0, 24.0, 48.0, 72.0, 168.0)
 
 _DASHBOARDS: SingleFlightCache[bytes] = SingleFlightCache(DASHBOARD_TTL_SEC, max_entries=4)
-_HISTORIES: SingleFlightCache[bytes] = SingleFlightCache(HISTORY_TTL_SEC, max_entries=256)
+_HISTORIES: SingleFlightCache[bytes] = SingleFlightCache(HISTORY_TTL_SEC, max_entries=512)
+#: The ids of the hosts that have reported, for checking a history ``node``.
+_KNOWN_NODES: SingleFlightCache[frozenset[str]] = SingleFlightCache(HISTORY_TTL_SEC, max_entries=4)
 
 _UNAVAILABLE = "OpenInfra is temporarily unavailable."
 
@@ -113,7 +120,7 @@ async def get_dashboard(db=Depends(get_db_logger)) -> Response:
 
 
 def history_hours(raw: str | None) -> float:
-    """The window a ``hours`` parameter asks for: clamped, to the nearest quarter hour.
+    """The window a ``hours`` parameter is served: the shortest of :data:`HISTORY_WINDOWS` it fits.
 
     Anything unreadable is the default two hours, as the original Worker had it.
     """
@@ -123,7 +130,14 @@ def history_hours(raw: str | None) -> float:
         hours = dashboard.DEFAULT_HISTORY_HOURS
     if not math.isfinite(hours):
         hours = dashboard.DEFAULT_HISTORY_HOURS
-    return dashboard.clamp_hours(round(dashboard.clamp_hours(hours) * 4) / 4)
+    hours = dashboard.clamp_hours(hours)
+    return next(window for window in HISTORY_WINDOWS if window >= hours)
+
+
+async def _load_known_nodes(pool: Any) -> frozenset[str]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT id FROM openinfra_nodes")
+    return frozenset(row["id"] for row in rows)
 
 
 @router.get("/public-openinfra/history")
@@ -136,6 +150,14 @@ async def get_history(
     pool = _published_pool(db)
     if len(node) > MAX_NODE_ID_LENGTH:
         raise HTTPException(status_code=400, detail="node is too long")
+    if node:
+        try:
+            known = await _KNOWN_NODES.get(pool, lambda: _load_known_nodes(pool))
+        except Exception:
+            logger.warning("openinfra host list read failed", exc_info=True)
+            raise HTTPException(status_code=503, detail=_UNAVAILABLE) from None
+        if node not in known:
+            raise HTTPException(status_code=404, detail="No such node has reported.")
     window = history_hours(hours)
     retired = config.retired_engines()
 
