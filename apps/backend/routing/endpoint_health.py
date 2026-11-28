@@ -105,14 +105,47 @@ _CALLERS_IN_ALERT = 10
 # others around before the outage, whose repeats stay skipped: a probe it
 # fails passes to the next caller. Equally, a caller's failures with nobody
 # served in between all count -- a burst from one caller looks, from here,
-# like the start of an outage. A failure with no caller attached always
-# counts, and so does a credential rejection, which is never the caller's
-# (``_AUTH_MISCONFIG_STATUSES``).
+# like the start of an outage -- though they cannot open the circuit until
+# somebody else's failure joins them (next comment). A failure with no caller
+# attached always counts, and so does a credential rejection, which is never
+# the caller's (``_AUTH_MISCONFIG_STATUSES``).
 #
 # Bound on the callers one endpoint remembers as charged and not yet served
 # since. Past it the oldest is forgotten, which only makes that caller's next
 # failure count again -- what every failure did before callers were told apart.
 _MAX_CHARGED_CALLERS = 1024
+
+# Nor can one caller open a circuit with nobody else around.
+#
+# The rule above needs somebody else to be served, and a quiet endpoint serves
+# nobody else: a local model with one active user. There a caller retrying a
+# request the engine fails on still opened the circuit on its third try -- with
+# nobody served in between, every failure counted -- and whoever arrived next
+# got ``AllCircuitsOpenError`` for a cooldown, then again whenever that caller's
+# next retry took the half-open probe and failed it.
+#
+# So a failure that stands alone does not open the circuit. It stands alone when
+# it is a caller's (``_caller_key``), that caller's request could have caused it
+# (``_request_may_be_at_fault``), and no other source has a counted failure on
+# the endpoint since the endpoint's last success or within
+# ``CIRCUIT_CALLER_WINDOW_SECONDS``. It still extends the run of consecutive
+# failures, so the first failure from anyone else on top of it opens the circuit
+# at once: an endpoint that fails everyone who tries is down however few try. It
+# does not reach availability, which its run would otherwise leave sagging under
+# the floor, where one unrelated failure from anyone would open the circuit. It
+# is logged as ``lone_caller_hold_breaker``.
+#
+# No request could have caused a credential rejection, a rate limit on the
+# gateway's account or a connection that was never made, and a failure with no
+# caller attached is nobody's request. Each of those can open the circuit on its
+# own, as before, so an engine that is down still leaves rotation on its third
+# refused connection whoever is calling. ``CIRCUIT_CALLER_WINDOW_SECONDS=0``
+# stops telling callers apart here too: every counted failure can open the
+# circuit.
+#
+# Upstream statuses that limit the gateway's account, which every caller
+# shares, so no one request can have caused them.
+_ACCOUNT_LIMIT_STATUSES = frozenset({429})
 
 # Upstream statuses that can only mean the *gateway's* configured credential was
 # rejected, whoever the provider is. The client's own credential is validated by
@@ -414,6 +447,21 @@ def failed_handling_request(exc: BaseException) -> bool:
     )
 
 
+def _request_may_be_at_fault(exc: BaseException | None, status: int | None) -> bool:
+    """Return whether the request that met this failure could have caused it.
+
+    False for a credential rejection (the gateway's key, never the caller's), a
+    rate limit on the gateway's account, which every caller shares, and a
+    connection that was never made, so the request never reached the endpoint.
+    Anything else might be the request's doing: an engine can answer one prompt
+    with a 5xx, crash or drop the connection on it, or outrun a timeout
+    generating it. See the module comment above ``_ACCOUNT_LIMIT_STATUSES``.
+    """
+    if _is_auth_misconfig(status) or status in _ACCOUNT_LIMIT_STATUSES:
+        return False
+    return not isinstance(exc, (aiohttp.ClientConnectorError, ConnectionRefusedError))
+
+
 def _detail_str(s: str | None, *, limit: int = 500) -> str | None:
     """Normalize an upstream error message for inclusion in alerts."""
     if not s:
@@ -660,6 +708,12 @@ class _CircuitBreaker:
         # the ``_monotonic()`` instant of that failure, oldest first. Bounded by
         # ``_MAX_CHARGED_CALLERS``.
         self._charged_callers: dict[str, float] = {}
+        # The endpoint's most recent counted failures for their two most recent
+        # sources, newest first, as ``(source, _monotonic() instant)``: the
+        # caller, or None for a failure that is no caller's. Two answer "has
+        # anyone other than this caller failed here, and when" for every caller,
+        # as ``_served`` does for successes. See ``stands_alone``.
+        self._failed: list[tuple[str | None, float]] = []
         self.consecutive_failures = 0
         self.last_opened: float | None = None
         # ``time.perf_counter()`` instant at which the live half-open probe claim
@@ -857,6 +911,51 @@ class _CircuitBreaker:
                 return at > since
         return False
 
+    def stands_alone(self, source: str | None) -> bool:
+        """Record a counted failure from ``source``; return whether it stands alone.
+
+        It stands alone, and cannot open the circuit, when ``source`` is a caller
+        and no other source has a counted failure here since the endpoint's last
+        success or within the caller window. Recorded either way, so that it
+        stands behind a later failure from somebody else. See the module comment
+        above ``_ACCOUNT_LIMIT_STATUSES``.
+
+        Args:
+            source: The current request's ``_caller_key``, or None for a failure
+                that is no caller's: none attached, or one the request could not
+                have caused (``_request_may_be_at_fault``).
+        """
+        now = _monotonic()
+        with self._lock:
+            alone = (
+                source is not None
+                # Spelled so a NaN window, like a zero one, tells no caller apart,
+                # as ``counts_caller_failure`` reads it.
+                and self.caller_window_seconds > 0
+                and not self._failed_other_lately_locked(source, now)
+            )
+            if self._failed and self._failed[0][0] == source:
+                self._failed[0] = (source, now)
+            else:
+                self._failed = [(source, now), *self._failed[:1]]
+            return alone
+
+    def _failed_other_lately_locked(self, source: str, now: float) -> bool:
+        """Return whether a source other than ``source`` failed here lately.
+
+        Lately: after the endpoint's last success, however long ago, because the
+        run of failures it belongs to is still going; or within the caller
+        window, so that on an endpoint failing a share of everyone's requests a
+        caller's failure still reaches availability. Only the newest such
+        failure needs asking: an older one is later than neither bound.
+        """
+        last_success = self._served[0][1] if self._served else None
+        for failed, at in self._failed:
+            if failed != source:
+                in_run = last_success is None or at > last_success
+                return in_run or now - at < self.caller_window_seconds
+        return False
+
     def on_success(self) -> None:
         with self._lock:
             self.consecutive_failures = 0
@@ -960,7 +1059,14 @@ class _CircuitBreaker:
         reason: str = "error",
         detail: str | None = None,
         caller: str | None = None,
+        alone: bool = False,
     ) -> None:
+        """Record a counted failure, and open the circuit if it calls for that.
+
+        ``alone`` (from ``stands_alone``) extends the streak and the
+        affected-caller list but opens nothing, so the next failure from
+        somebody else does.
+        """
         with self._lock:
             self.consecutive_failures += 1
             # Reason-blind on purpose: the list is who this streak hit, and that
@@ -971,6 +1077,8 @@ class _CircuitBreaker:
                 or len(self._affected_callers) < _MAX_TRACKED_CALLERS
             ):
                 self._affected_callers[caller] += 1
+            if alone:
+                return
             by_streak = self.consecutive_failures >= self.failure_threshold
             by_availability = availability is not None and availability < self.min_availability
             if not (by_streak or by_availability):
@@ -1376,7 +1484,9 @@ class EndpointHealthRegistry:
         Not recorded: a failure nothing was sent for, or one the endpoint answered
         as designed (``_uncharged_failure_event``); a client error; and a caller's
         repeat failure while the endpoint is serving other callers
-        (``_CircuitBreaker.counts_caller_failure``).
+        (``_CircuitBreaker.counts_caller_failure``). Recorded against the streak
+        only, and unable to open the circuit: a failure that is one caller's
+        alone (``_CircuitBreaker.stands_alone``).
         """
         uncharged = _uncharged_failure_event(exc) if exc is not None else None
         if uncharged is not None:
@@ -1420,9 +1530,16 @@ class EndpointHealthRegistry:
             # caller must not reach availability either, or the same caller
             # would open the circuit through the availability floor instead.
             counted = circuit.counts_caller_failure(caller, always=auth_misconfig)
+            alone = False
             if counted:
+                # Likewise for a failure that stands alone: kept out of
+                # availability, so the floor cannot open the circuit for it.
+                alone = circuit.stands_alone(
+                    caller if _request_may_be_at_fault(exc, status) else None
+                )
                 health = self._health[endpoint_id]
-                health.record(False)
+                if not alone:
+                    health.record(False)
                 auth_rejections = health.note_failure(status=status, auth_misconfig=auth_misconfig)
                 availability = health.availability
                 circuit.on_failure(
@@ -1430,7 +1547,27 @@ class EndpointHealthRegistry:
                     reason=_reason_str(reason),
                     detail=safe_detail,
                     caller=_caller_str(),
+                    alone=alone,
                 )
+                consecutive = circuit.consecutive_failures
+        if alone:
+            logger.info(
+                "lone_caller_hold_breaker",
+                extra={
+                    "event": "lone_caller_hold_breaker",
+                    "endpoint_id": endpoint_id,
+                    "status": status,
+                    "reason": _reason_str(reason),
+                    "detail": safe_detail,
+                    "caller": caller,
+                    # How long the caller's run is. A failure from anyone else
+                    # adds one, and opens the circuit if that reaches threshold.
+                    "consecutive_failures": consecutive,
+                    "threshold": circuit.failure_threshold,
+                    "window_sec": circuit.caller_window_seconds,
+                },
+            )
+            return
         if not counted:
             logger.info(
                 "caller_repeat_skip_breaker",

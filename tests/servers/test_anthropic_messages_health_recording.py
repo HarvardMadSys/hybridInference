@@ -235,6 +235,10 @@ async def test_non_streaming_upstream_5xx_records_failure(
 ):
     """A 5xx is an endpoint fault and must degrade its recorded availability."""
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")
+    # One test key sends every request, and one caller alone cannot open a
+    # circuit (tests/unit/routing/test_caller_repeat_breaker.py); with callers
+    # not told apart, this reads the surface's health wiring on its own.
+    monkeypatch.setenv("CIRCUIT_CALLER_WINDOW_SECONDS", "0")
     registry = anthropic_compat_router.endpoint_health_registry
     endpoint_id = _endpoint_id(anthropic_compat_router)
 
@@ -389,6 +393,10 @@ async def test_streaming_upstream_exception_opens_the_circuit(
 ):
     """An upstream that dies mid-dispatch must trip the breaker."""
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")
+    # One test key sends every request, and one caller alone cannot open a
+    # circuit (tests/unit/routing/test_caller_repeat_breaker.py); with callers
+    # not told apart, this reads the surface's health wiring on its own.
+    monkeypatch.setenv("CIRCUIT_CALLER_WINDOW_SECONDS", "0")
     monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "300")
     registry = anthropic_compat_router.endpoint_health_registry
     endpoint_id = _endpoint_id(anthropic_compat_router)
@@ -455,6 +463,10 @@ async def test_streaming_idle_timeout_records_failure(
     call; without one the endpoint that stalls every stream never trips.
     """
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")
+    # One test key sends every request, and one caller alone cannot open a
+    # circuit (tests/unit/routing/test_caller_repeat_breaker.py); with callers
+    # not told apart, this reads the surface's health wiring on its own.
+    monkeypatch.setenv("CIRCUIT_CALLER_WINDOW_SECONDS", "0")
     monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "300")
     registry = anthropic_compat_router.endpoint_health_registry
     endpoint_id = _endpoint_id(anthropic_compat_router)

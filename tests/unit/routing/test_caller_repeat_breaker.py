@@ -17,16 +17,24 @@ did, but it can tell callers apart: an endpoint that served other callers after
 failing one, and then fails that one again, has said something about that
 caller. A success from *before* the failure says nothing of the kind -- an
 outage that starts right after it serves nobody -- so it excuses nothing.
+
+That left the quiet endpoint: with nobody else being served, the same caller's
+three retries still opened the circuit. Nor, then, can one caller open a circuit
+on its own: its failures count, and run up the streak, but the circuit opens
+only once a failure from somebody else joins them -- or one no request could
+have caused, such as a refused connection.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
+import aiohttp
 import pytest
+from aiohttp.client_reqrep import ConnectionKey
 
 from routing import endpoint_health
 from routing.endpoint_health import EndpointHealthRegistry, _CircuitState
@@ -35,6 +43,9 @@ from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.observability.alerts import reset_dedupe_state, reset_transition_state
 from serving.utils import context as req_ctx
 from serving.utils.logging import _STRUCTURED_LOG_KEYS, JsonFormatter
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _MODEL = "deepseek-v4-flash"
 _LOCAL = f"{_MODEL}:local-8003"
@@ -217,6 +228,9 @@ def test_repeat_failures_leave_the_circuit_and_availability_alone(
 ) -> None:
     registry = EndpointHealthRegistry()
     _serve(registry, "alice")
+    # Somebody else's failure, so that mallory's first is not one caller's alone
+    # (which stays out of availability too; see the lone-caller tests below).
+    _fail(registry, "bob")
 
     with caplog.at_level(logging.INFO, logger="routing.routers"):
         for _ in range(10):
@@ -227,7 +241,7 @@ def test_repeat_failures_leave_the_circuit_and_availability_alone(
 
     snapshot = registry.snapshot()[_LOCAL]
     assert snapshot["circuit_state"] == _CircuitState.CLOSED
-    # Only the first failure reached availability; the ten successes after it did.
+    # Only mallory's first failure reached availability; the ten successes after it did.
     assert snapshot["availability"] == pytest.approx(1 - 0.1 * 0.9**10)
     skips = _skips(caplog)
     assert len(skips) == 9
@@ -244,18 +258,26 @@ def test_a_success_from_before_a_callers_failure_excuses_nothing(clock: _Clock) 
         clock.now += 1
         _fail(registry, "mallory")
 
+    # Every one counted. Being one caller's alone, they open the circuit only
+    # once somebody else's failure joins them.
+    assert registry._circuits[_LOCAL].consecutive_failures == 3
+    _fail(registry, "bob")
     assert _state(registry) == _CircuitState.OPEN
 
 
-def test_a_success_stamped_with_the_same_instant_excuses_nothing(clock: _Clock) -> None:
+def test_a_success_stamped_with_the_same_instant_excuses_nothing(
+    clock: _Clock, caplog: pytest.LogCaptureFixture
+) -> None:
     """A tie cannot be told apart from a success just before the failure."""
     registry = EndpointHealthRegistry()
 
-    for _ in range(3):
-        _fail(registry, "mallory")
-        _serve(registry, "alice")
-    # Each success reset the streak, so read what reached availability instead.
-    assert registry.snapshot()[_LOCAL]["availability"] < 0.8
+    with caplog.at_level(logging.INFO, logger="routing.routers"):
+        for _ in range(3):
+            _fail(registry, "mallory")
+            _serve(registry, "alice")
+
+    # Each success reset the streak, so read what was skipped instead: nothing.
+    assert not _skips(caplog)
 
 
 def test_an_outage_seen_by_two_callers_opens_the_circuit_at_once(clock: _Clock) -> None:
@@ -282,16 +304,6 @@ def test_several_callers_failing_in_a_row_still_open_the_circuit(clock: _Clock) 
     _fail(registry, "carol")
     assert _state(registry) == _CircuitState.CLOSED
     _fail(registry, "dave")
-
-    assert _state(registry) == _CircuitState.OPEN
-
-
-def test_a_lone_caller_still_opens_the_circuit_when_nobody_else_is_served(clock: _Clock) -> None:
-    registry = EndpointHealthRegistry()
-
-    for _ in range(3):
-        clock.now += 1
-        _fail(registry, "mallory")
 
     assert _state(registry) == _CircuitState.OPEN
 
@@ -324,7 +336,6 @@ def test_being_served_rearms_a_callers_failures(clock: _Clock) -> None:
 
     # The success reset the streak; the failure after it counted again.
     assert registry._circuits[_LOCAL].consecutive_failures == 1
-    assert registry.snapshot()[_LOCAL]["availability"] < 0.9
 
 
 def test_a_success_from_the_same_caller_is_not_somebody_else(clock: _Clock) -> None:
@@ -336,7 +347,8 @@ def test_a_success_from_the_same_caller_is_not_somebody_else(clock: _Clock) -> N
         clock.now += 1
         _fail(registry, "mallory")
 
-    assert _state(registry) == _CircuitState.OPEN
+    # None was skipped as a repeat.
+    assert registry._circuits[_LOCAL].consecutive_failures == 3
 
 
 def test_failures_with_no_caller_always_count(clock: _Clock) -> None:
@@ -380,6 +392,213 @@ def test_client_errors_are_still_exempt_before_caller_attribution(
     # A later real fault from the same caller is its first counted one.
     _fail(registry, "mallory")
     assert registry._circuits[_LOCAL].consecutive_failures == 1
+
+
+# ---------------------------------------------------------------------------
+# A caller alone
+# ---------------------------------------------------------------------------
+
+
+def _holds(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.getMessage() == "lone_caller_hold_breaker"]
+
+
+def _refused() -> aiohttp.ClientConnectorError:
+    key = ConnectionKey("localhost", 8003, False, True, None, None, None, None)
+    return aiohttp.ClientConnectorError(key, ConnectionRefusedError(111, "Connection refused"))
+
+
+async def test_a_lone_callers_retries_cannot_take_a_quiet_model_from_everyone(
+    clock: _Clock,
+) -> None:
+    """The reported shape with nobody else being served while it happens.
+
+    No success came between mallory's retries, so each one counted, and the
+    third used to open the circuit: whoever came next met ``AllCircuitsOpenError``.
+    """
+    router = _deepseek_router()
+
+    for _ in range(10):
+        # The engine's own failure every time, never a refusal at the router.
+        with pytest.raises(_StatusError):
+            await _chat(router, "mallory")
+        clock.now += 5
+
+    assert _state(router.endpoint_health_registry) == _CircuitState.CLOSED
+    assert (await _chat(router, "alice"))["choices"][0]["message"]["content"] == "ok"
+
+
+async def test_with_the_window_off_a_lone_caller_opens_the_circuit_as_before(
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    monkeypatch.setenv("CIRCUIT_CALLER_WINDOW_SECONDS", "0")
+    router = _deepseek_router()
+
+    for _ in range(3):
+        with pytest.raises(_StatusError):
+            await _chat(router, "mallory")
+
+    with pytest.raises(AllCircuitsOpenError):
+        await _chat(router, "alice")
+
+
+def test_a_lone_caller_runs_up_the_streak_but_opens_nothing(
+    clock: _Clock, caplog: pytest.LogCaptureFixture
+) -> None:
+    registry = EndpointHealthRegistry()
+
+    with caplog.at_level(logging.INFO, logger="routing.routers"):
+        for _ in range(5):
+            clock.now += 1
+            _fail(registry, "mallory")
+
+    snapshot = registry.snapshot()[_LOCAL]
+    assert snapshot["circuit_state"] == _CircuitState.CLOSED
+    # Kept out of availability too, or its floor would open the circuit instead.
+    assert snapshot["availability"] == 1.0
+    assert registry._circuits[_LOCAL].consecutive_failures == 5
+    holds = _holds(caplog)
+    assert [r.consecutive_failures for r in holds] == [1, 2, 3, 4, 5]
+    assert {r.caller for r in holds} == {_key("mallory")}
+    assert not _skips(caplog)
+
+
+def test_the_first_failure_from_anyone_else_opens_the_circuit_at_once(clock: _Clock) -> None:
+    """An endpoint that fails everyone who tries is down, however few try."""
+    registry = EndpointHealthRegistry()
+    for _ in range(5):
+        clock.now += 1
+        _fail(registry, "mallory")
+
+    clock.now += 1
+    _fail(registry, "bob")
+
+    assert _state(registry) == _CircuitState.OPEN
+    # The page names the whole run, the held failures included.
+    assert dict(registry._circuits[_LOCAL]._affected_callers) == {
+        "mallory (mallory)": 5,
+        "bob (bob)": 1,
+    }
+
+
+def test_a_failure_with_no_caller_joins_a_lone_callers_run(clock: _Clock) -> None:
+    registry = EndpointHealthRegistry()
+    _fail(registry, "mallory")
+    _fail(registry, "mallory")
+    assert _state(registry) == _CircuitState.CLOSED
+
+    _fail(registry, None)
+
+    assert _state(registry) == _CircuitState.OPEN
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(_refused, id="connection-refused"),
+        pytest.param(lambda: ConnectionRefusedError(111, "Connection refused"), id="refused-raw"),
+        pytest.param(lambda: _StatusError(429), id="rate-limited"),
+        pytest.param(lambda: _StatusError(401), id="credential-rejected"),
+    ],
+)
+def test_a_failure_no_request_could_cause_opens_the_circuit_for_a_lone_caller(
+    clock: _Clock, error: Callable[[], BaseException]
+) -> None:
+    """An engine that is down still leaves rotation, whoever is calling."""
+    registry = EndpointHealthRegistry()
+
+    for _ in range(3):
+        clock.now += 1
+        with _as("mallory"):
+            registry.record_failure(_LOCAL, reason="chat_exception", exc=error())
+
+    assert _state(registry) == _CircuitState.OPEN
+
+
+def test_a_lone_callers_run_leaves_the_endpoint_no_easier_to_open(clock: _Clock) -> None:
+    """Out of availability, the run leaves no hair trigger behind it.
+
+    Had its ten failures reached availability they would have sunk it to about
+    0.35, and after one success anybody's single failure would have taken it back
+    under the floor and opened the circuit.
+    """
+    registry = EndpointHealthRegistry()
+    for _ in range(10):
+        clock.now += 1
+        _fail(registry, "mallory")
+    clock.now += 1
+    _serve(registry, "alice")
+
+    clock.now += 1
+    _fail(registry, "bob")
+
+    assert _state(registry) == _CircuitState.CLOSED
+
+
+def test_another_callers_failure_within_the_window_stands_behind_a_lone_caller(
+    clock: _Clock,
+) -> None:
+    """An endpoint failing a share of everyone's requests is failing, success or not."""
+    registry = EndpointHealthRegistry()
+    _fail(registry, "bob")
+    clock.now += 1
+    _serve(registry, "alice")
+
+    for _ in range(3):
+        clock.now += 1
+        _fail(registry, "mallory")
+
+    assert _state(registry) == _CircuitState.OPEN
+
+
+def test_a_failure_before_both_the_last_success_and_the_window_stands_behind_nothing(
+    clock: _Clock,
+) -> None:
+    registry = EndpointHealthRegistry()
+    _fail(registry, "bob")
+    clock.now += 1
+    _serve(registry, "alice")
+    clock.now += 60
+
+    for _ in range(3):
+        clock.now += 1
+        _fail(registry, "mallory")
+
+    assert _state(registry) == _CircuitState.CLOSED
+
+
+def test_a_failure_in_the_same_run_stands_behind_a_lone_caller_however_old(
+    clock: _Clock,
+) -> None:
+    """With nobody served since, an hour-old failure belongs to the same outage."""
+    registry = EndpointHealthRegistry()
+    _fail(registry, "bob")
+    clock.now += 3600
+
+    _fail(registry, "mallory")
+    assert _state(registry) == _CircuitState.CLOSED
+    _fail(registry, "mallory")
+
+    assert _state(registry) == _CircuitState.OPEN
+
+
+def test_the_held_caller_reaches_production_logs(
+    clock: _Clock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Both formatters emit only allowlisted keys; the hold needs its caller and run."""
+    registry = EndpointHealthRegistry()
+
+    with caplog.at_level(logging.INFO, logger="routing.routers"):
+        _fail(registry, "mallory")
+
+    (record,) = _holds(caplog)
+    rendered = json.loads(JsonFormatter().format(record))
+    assert rendered["event"] == "lone_caller_hold_breaker"
+    assert rendered["endpoint_id"] == _LOCAL
+    assert rendered["caller"] == _key("mallory")
+    assert rendered["status"] == 500
+    assert rendered["consecutive_failures"] == 1
+    assert rendered["threshold"] == 3
 
 
 # ---------------------------------------------------------------------------

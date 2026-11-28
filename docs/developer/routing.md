@@ -172,7 +172,19 @@ every failure in it counts and the circuit opens, and reopens after a failed
 test request, as fast as before. A burst of failures from one caller with
 nobody served in between counts too: from the breaker's side it looks like the
 start of an outage. Failures with no caller attached, and credential rejections
-(401, 407), always count. The five settings:
+(401, 407), always count.
+
+Nor can one caller open a circuit on its own when nobody else is around, as on
+a local model with a single active user. A failure stands alone when it is one
+caller's, and no other caller has failed on the endpoint since its last success
+or within `CIRCUIT_CALLER_WINDOW_SECONDS`. Such a failure still counts toward
+the run of consecutive failures, but it cannot open the circuit and does not
+lower the success rate. It is logged as `lone_caller_hold_breaker`. The first
+failure from anyone else on top of the run opens the circuit at once. A failure
+that no request could have caused can always open the circuit by itself: a
+refused connection, a rate limit on the gateway's account (429), a credential
+rejection, or a failure with no caller attached. So an engine that is down
+still leaves rotation however few people are calling it. The five settings:
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -180,7 +192,7 @@ start of an outage. Failures with no caller attached, and credential rejections
 | `CIRCUIT_COOLDOWN_SECONDS` | `30` | Seconds before a half-open probe is admitted. |
 | `CIRCUIT_MIN_AVAILABILITY` | `0.7` | Success-rate floor: a failure that leaves the endpoint's average below it opens the circuit. |
 | `ROUTER_HEALTH_EWMA_ALPHA` | `0.1` | Smoothing factor for the availability EWMA. |
-| `CIRCUIT_CALLER_WINDOW_SECONDS` | `60` | Seconds after one caller's counted failure during which its repeat failures are kept off the circuit, if another caller has been served since. `0` counts every failure. |
+| `CIRCUIT_CALLER_WINDOW_SECONDS` | `60` | Seconds after one caller's counted failure during which its repeat failures are kept off the circuit, if another caller has been served since. Also how recent another caller's failure must be, unless it is part of the current run of failures, before one caller's failures can open the circuit. `0` stops telling callers apart: every failure counts and any failure can open the circuit. |
 
 `GET /health/deep` shows each endpoint's availability and circuit state. It
 also marks an endpoint degraded from the first time a provider rejects the
