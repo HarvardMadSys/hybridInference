@@ -5076,6 +5076,8 @@ async def test_every_check_is_audited_with_its_outcome(admin_client):
 #: A host no route of OpenRouter sends its keys to.
 NEW_HOST_URL = "https://keys.elsewhere.example/v1"
 ADMIN_PASSWORD = "correct-admin-password"
+#: A password that is not the administrator's.
+WRONG_PASSWORD = "wrong-password"
 SAVES = ["add-route", "create-model", "edit-runtime-route", "edit-config-route"]
 #: The store write each save makes once its check passed.
 SAVE_WRITES = {
@@ -5202,7 +5204,7 @@ async def test_the_admin_token_cannot_send_a_providers_keys_to_a_new_host(admin_
 
     responses = [
         await _save(client, save, base_url=NEW_HOST_URL),
-        await _save(client, save, base_url=NEW_HOST_URL, password="token-caller-guess-4821"),
+        await _save(client, save, base_url=NEW_HOST_URL, password=WRONG_PASSWORD),
     ]
 
     for response in responses:
@@ -5213,7 +5215,7 @@ async def test_the_admin_token_cannot_send_a_providers_keys_to_a_new_host(admin_
     # Nothing was sent, and each refused attempt is on record, without the password.
     refused = _refused_confirmations(403)
     assert len(refused) == 2
-    assert "token-caller-guess-4821" not in repr(refused)
+    assert WRONG_PASSWORD not in repr(refused)
 
 
 @pytest.mark.asyncio
@@ -5231,7 +5233,7 @@ async def test_a_new_host_is_confirmed_before_anything_is_sent(console_admin, sa
     assert "the provider's stored API keys" in asked.json()["detail"]
     provider_routes.log_admin_action.assert_not_awaited()
 
-    wrong = await _save(client, save, base_url=NEW_HOST_URL, password="wrong-guess-7350")
+    wrong = await _save(client, save, base_url=NEW_HOST_URL, password=WRONG_PASSWORD)
 
     assert wrong.status_code == 400, wrong.text
     assert op_store.get_user_by_id.await_count == 1
@@ -5240,7 +5242,7 @@ async def test_a_new_host_is_confirmed_before_anything_is_sent(console_admin, sa
     # The refused password is on record as a failed check; the password is not.
     (refused,) = _refused_confirmations(400)
     assert refused["actor"] == AuditActor.admin("u-admin", "127.0.0.1")
-    assert "wrong-guess-7350" not in repr(refused)
+    assert WRONG_PASSWORD not in repr(refused)
 
 
 @pytest.mark.asyncio
