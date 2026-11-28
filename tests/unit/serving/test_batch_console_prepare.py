@@ -221,21 +221,34 @@ def _chat_line(index: int, body: dict) -> dict:
     }
 
 
-async def test_other_parameters_are_listed_up_to_a_cap_and_the_rest_counted(monkeypatch):
+async def test_other_parameters_are_listed_up_to_a_cap_and_the_lines_past_it_counted(
+    monkeypatch,
+):
     # Each line names three keys of its own: one file can hold millions.
     lines = [_chat_line(n, {"top_p": 1, f"a{n}": 1, f"b{n}": 1, f"c{n}": 1}) for n in range(100)]
+    # A name first seen once the list is full is not listed, however common.
+    lines += [_chat_line(n, {"seed": 1}) for n in range(100, 110)]
     report = await _identify(monkeypatch, lines)
     listed = report["other_params"]
     assert len(listed) == cp._MAX_OTHER_PARAMS
     assert listed["top_p"] == 100
-    assert sum(listed.values()) + report["other_params_other"] == 400
-    assert report["other_params_other"] == 400 - 100 - (cp._MAX_OTHER_PARAMS - 1)
+    assert "seed" not in listed
+    # top_p and 3 names a line fill the list on line 16: it and every later line
+    # carry a name past the cap, each line counted once.
+    full_at = (cp._MAX_OTHER_PARAMS - 1) // 3
+    assert report["other_params_other_rows"] == 110 - full_at
 
 
-async def test_a_long_file_model_name_is_cut_in_the_report(monkeypatch):
+async def test_a_long_file_model_name_is_cut_in_the_report_and_marked(monkeypatch):
     name = "m" * 100_000
-    lines = [{**_chat_line(0, {}), "body": {"model": name, "messages": []}}]
+    lines = [
+        {**_chat_line(0, {}), "body": {"model": name, "messages": []}},
+        {**_chat_line(1, {}), "body": {"model": name + "x", "messages": []}},
+        {**_chat_line(2, {}), "body": {"model": "m" * cp._MAX_MODEL_NAME, "messages": []}},
+    ]
     report = await _identify(monkeypatch, lines)
-    (model,) = report["detected"]["models"]
-    assert model["name"] == name[: cp._MAX_MODEL_NAME]
-    assert model["rows"] == 1
+    cut, other, whole = report["detected"]["models"]
+    assert cut["name"] == other["name"] == name[: cp._MAX_MODEL_NAME - 1] + "…"
+    assert len(cut["name"]) == cp._MAX_MODEL_NAME
+    assert (cut["rows"], other["rows"]) == (1, 1)
+    assert whole["name"] == "m" * cp._MAX_MODEL_NAME

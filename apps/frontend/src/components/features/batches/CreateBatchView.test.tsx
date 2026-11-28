@@ -125,6 +125,7 @@ function report(
     },
     params: { temperature: { values: { '0': 2 }, other: 0, unset: 0 } },
     other_params: {},
+    other_params_other_rows: 0,
     model_resolution: null,
     valid: false,
     request_count: 0,
@@ -710,6 +711,25 @@ describe('CreateBatchView: the upload step', () => {
     expect(screen.getByLabelText(/Use the file's model \(not possible/)).toBeDisabled();
     expect(screen.getByLabelText('Use one model for every request:')).toBeChecked();
     expect(screen.getByRole('button', { name: 'Check and preview' })).toBeDisabled();
+  });
+
+  it('lists two file models whose shortened names read the same', async () => {
+    // The report cuts a long name to 256 characters, so two can come back equal.
+    const cut = `${'m'.repeat(255)}…`;
+    const model = { name: cut, rows: 1, available: true, canonical: null };
+    vi.mocked(preflightSource).mockResolvedValue(
+      report({ detected: { ...report().detected, models: [model, { ...model }] } }),
+    );
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      render(<CreateBatchView copyFrom={null} />);
+      await screen.findByText('Upload data', { selector: 'h2' });
+      await uploadAFile();
+      expect(await screen.findAllByText(`Model ${cut}: 1 lines`)).toHaveLength(2);
+      expect(error.mock.calls.flat().join(' ')).not.toContain('same key');
+    } finally {
+      error.mockRestore();
+    }
   });
 });
 
