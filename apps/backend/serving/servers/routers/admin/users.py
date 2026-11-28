@@ -212,11 +212,8 @@ async def list_users(
         deleted=sc.get("deleted", 0),
     )
     roles = sc.get("roles") or {}
-    role_counts = RoleCounts(
-        free=roles.get("free", 0),
-        pro=roles.get("pro", 0),
-        internal=roles.get("internal", 0),
-        admin=roles.get("admin", 0),
+    role_counts = RoleCounts.model_validate(
+        {name: int(roles.get(name) or 0) for name in RoleCounts.model_fields}
     )
 
     if not rows:

@@ -1724,15 +1724,23 @@ class PostgresOperationalStore(
             )
             total = count_row["total"] if count_row else 0
 
-            # Status and tier counts, unfiltered, in one round trip. The list
-            # filters do not apply: both are navigation counts for the whole table.
+            # Status and tier counts, unfiltered, in one pass. The list filters
+            # do not apply: both are navigation counts for the whole table.
+            # Each row is one (status, role) pair, so both totals sum. Rows from
+            # unit doubles may carry only status; a missing key is skipped.
             count_rows = await conn.fetch(
-                "SELECT status, NULL::text AS role, COUNT(*) AS cnt FROM users GROUP BY status "
-                "UNION ALL "
-                "SELECT NULL::text, role, COUNT(*) FROM users GROUP BY role"
+                "SELECT status, role, COUNT(*) AS cnt FROM users GROUP BY status, role"
             )
-            sc = {r["status"]: r["cnt"] for r in count_rows if r.get("status")}
-            by_role = {r["role"]: r["cnt"] for r in count_rows if r.get("role")}
+            sc: dict[str, int] = {}
+            by_role: dict[str, int] = {}
+            for row in count_rows:
+                count = row["cnt"]
+                status_name = row.get("status")
+                if status_name:
+                    sc[status_name] = sc.get(status_name, 0) + count
+                tier = row.get("role")
+                if tier:
+                    by_role[tier] = by_role.get(tier, 0) + count
             status_counts: Row = {
                 "all": sum(sc.values()),
                 "pending_approval": sc.get("pending_approval", 0),
@@ -1740,12 +1748,7 @@ class PostgresOperationalStore(
                 "suspended": sc.get("suspended", 0),
                 "rejected": sc.get("rejected", 0),
                 "deleted": sc.get("deleted", 0),
-                "roles": {
-                    "free": by_role.get("free", 0),
-                    "pro": by_role.get("pro", 0),
-                    "internal": by_role.get("internal", 0),
-                    "admin": by_role.get("admin", 0),
-                },
+                "roles": {tier: by_role.get(tier, 0) for tier in VALID_ROLES},
             }
 
             # Main query — always uses CTE form (filtered_users) so we can

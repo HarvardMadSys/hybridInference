@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal, get_args, get_origin, get_type_hints
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -15,8 +15,11 @@ from httpx import ASGITransport, AsyncClient
 from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.audit import AuditActor, AuditTarget
+from serving.config.settings import VALID_ROLES
+from serving.schemas_admin import RoleCounts
 from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin as admin_router
+from serving.servers.routers.admin.users import list_users
 from serving.utils import password as password_utils
 from serving.utils.login_rate_limit import reset_login_rate_limit_state
 
@@ -271,6 +274,17 @@ async def test_list_users_rejects_an_unknown_role(admin_client):
 
     assert response.status_code == 422
     op_store.list_users.assert_not_awaited()
+
+
+def test_account_tier_lists_match_valid_roles():
+    """RoleCounts and the list filter accept exactly the roles the gateway knows."""
+    assert set(RoleCounts.model_fields) == set(VALID_ROLES)
+
+    accepted: set[str] = set()
+    for option in get_args(get_type_hints(list_users)["role"]):
+        if get_origin(option) is Literal:
+            accepted.update(get_args(option))
+    assert accepted == set(VALID_ROLES)
 
 
 @pytest.mark.asyncio
