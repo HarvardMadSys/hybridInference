@@ -196,13 +196,6 @@ def _finite(text: str) -> float:
     return value
 
 
-def _shown_name(name: str) -> str:
-    """A file model's name as a report shows it: at most ``_MAX_MODEL_NAME`` characters."""
-    if len(name) <= _MAX_MODEL_NAME:
-        return name
-    return name[: _MAX_MODEL_NAME - 1] + "…"
-
-
 def parse_line(raw: bytes, line_no: int) -> dict[str, Any]:
     """One line of a source file as a JSON object, parsed strictly.
 
@@ -513,6 +506,13 @@ class DerivedWriter:
             max_total_bytes=self._cap,
         )
         self._seq += 1
+
+
+def _shown_name(name: str) -> str:
+    """A file model's name as a report shows it: at most ``_MAX_MODEL_NAME`` characters."""
+    if len(name) <= _MAX_MODEL_NAME:
+        return name
+    return name[: _MAX_MODEL_NAME - 1] + "…"
 
 
 class ConsoleScan:
