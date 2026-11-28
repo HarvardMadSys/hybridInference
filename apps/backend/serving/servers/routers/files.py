@@ -32,10 +32,17 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from serving.batch.admission import declared_length_exceeds
 from serving.batch.config import batch_config, may_use_batch
-from serving.batch.delivery import DownloadInterrupted, stream_lines, stream_upload
+from serving.batch.delivery import (
+    DOWNLOAD_RETRY_AFTER_SECONDS,
+    DownloadInterrupted,
+    hold_download,
+    stream_lines,
+    stream_upload,
+)
 from serving.batch.multipart import MultipartError, boundary_of, limited, read_multipart
 from serving.servers.auth import reads_every_owner, verify_batch_management_identity
 from serving.servers.deps import get_batch_file_store, get_batch_store
+from serving.servers.streaming_response import ClosingStreamingResponse
 from serving.servers.streaming_state import STREAMING_RESPONSE_SCOPE_STATE_KEY
 from serving.storage.batch_file_store import (
     CHUNK_BYTES,
@@ -126,7 +133,11 @@ def content_disposition(name: str) -> str:
 
 
 def jsonl_download(
-    request: Request, body: AsyncIterator[bytes], *, headers: dict[str, str]
+    request: Request,
+    body: AsyncIterator[bytes],
+    *,
+    headers: dict[str, str],
+    owner: str | None = None,
 ) -> StreamingResponse:
     """A JSONL download, marked as the long-lived stream it is.
 
@@ -134,9 +145,24 @@ def jsonl_download(
     (120 s by default) even after its status went out, so a large file would
     stop short behind a ``200``. Marked as streaming, a download gets the
     stream cap (``STREAM_REQUEST_TIMEOUT_SECONDS``) instead, as SSE does.
+
+    A body rendered from a batch's rows names its *owner*: it then takes one
+    of this process's download slots while it runs (see
+    :data:`serving.batch.delivery.MAX_DOWNLOADS`), and with none free the
+    download is refused 429 before anything is read. The response closes its
+    body however it ends, which gives the slot back.
     """
+    if owner is not None:
+        held = hold_download(body, owner)
+        if held is None:
+            raise HTTPException(
+                429,
+                "Too many batch downloads at once; wait for one to finish and try again",
+                headers={"Retry-After": str(DOWNLOAD_RETRY_AFTER_SECONDS)},
+            )
+        body = held
     request.scope.setdefault("state", {})[STREAMING_RESPONSE_SCOPE_STATE_KEY] = True
-    return StreamingResponse(body, media_type="application/jsonl", headers=headers)
+    return ClosingStreamingResponse(body, media_type="application/jsonl", headers=headers)
 
 
 def _not_found(file_id: str) -> HTTPException:
@@ -408,6 +434,7 @@ async def file_content(
                 expected=row,
             )
         )
+        return jsonl_download(request, body, headers=headers, owner=_owner(user_ctx))
     return jsonl_download(request, body, headers=headers)
 
 

@@ -816,6 +816,20 @@ msgstr ""
 "永久删除文件；已删除的输出文件不会再次写入，尽管批次仍然引用它，而删除输入文件不影响用它创建的批次。"
 
 #: ../developer/batches.md:316
+#, python-brace-format
+msgid ""
+"A download rendered from a batch's results or stored requests (a result "
+"file, `GET /v1/batches/{id}/output.jsonl`, the console's downloads) holds"
+" one of a gateway process's download slots while it runs: each process "
+"serves at most 8 at once, 2 per user. Another is refused with `429` and a"
+" `Retry-After`; try again once one of yours has finished. An uploaded "
+"input file takes no slot."
+msgstr ""
+"从批次的结果或已存储请求渲染的下载（结果文件、`GET /v1/batches/{id}/output.jsonl`、控制台的下载）"
+"在进行期间占用网关进程的一个下载名额：每个进程同时最多处理 8 个，每个用户 2 个。超出的下载会收到 `429` 和 "
+"`Retry-After`；请等你的某个下载完成后再试。上传的输入文件不占用名额。"
+
+#: ../developer/batches.md:316
 msgid "With the OpenAI Python SDK:"
 msgstr "使用 OpenAI Python SDK："
 
