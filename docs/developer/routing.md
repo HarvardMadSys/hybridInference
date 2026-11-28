@@ -863,6 +863,15 @@ as removed. The key leaves the admin list and the pools. Enabling a removed
 key is refused until the credential is configured again. A database row holding
 the same credential is left alone; delete that row instead.
 
+A model catalog route that names a removed setting (`api_key: ${DEEPSEEK_API_KEY}`
+or an `api_keys` entry) keeps serving after a restart. The registry treats a key
+setting an administrator cleared (a stored empty row) as removed, not missing.
+The route uses the provider's other key settings, and the Keys-tab keys added at
+boot. A blank that comes from the environment, or a setting never set, still
+skips the model. Remove returns 409 when such a route would have no key at all,
+because the provider has no other key; disable the key instead, or add another
+key first.
+
 `apps/backend/serving/adapters/dynamic_keys.py` owns the enforced tier, because
 pools are built from adapter config (which carries no tier) and are rebuilt
 often. Declarations are cached per provider and refreshed from the database at

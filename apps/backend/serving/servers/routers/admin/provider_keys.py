@@ -598,6 +598,67 @@ async def _resolve_removable_env_key(
     raise HTTPException(404, "Env provider key not found")
 
 
+def _catalog_models_left_keyless(cleared: set[str]) -> list[str]:
+    """Return catalog models with a required route that has no key once *cleared* is blank.
+
+    Read from the catalog the next restart registers. A route that still names
+    a configured setting keeps its own key; one that names only cleared or
+    blank settings falls back to its provider's other keys at boot, so whether
+    it can serve depends on the provider having one (see
+    :func:`_provider_keeps_another_key`).
+    """
+    from serving.config.documents import get as get_document
+    from serving.servers.registry import _template_var
+
+    try:
+        catalog = get_document("models", configured=True)
+    except Exception:
+        return []
+    models = catalog.get("models") if isinstance(catalog, dict) else None
+    if not isinstance(models, list):
+        return []
+
+    def keeps_a_key(ref: object) -> bool:
+        var = _template_var(ref)
+        if var is None:
+            return isinstance(ref, str) and bool(ref.strip())
+        return var not in cleared and bool((app_config.configured_value(var) or "").strip())
+
+    stranded: list[str] = []
+    for model in models:
+        if not isinstance(model, dict):
+            continue
+        for route in model.get("route") or [{}]:
+            if not isinstance(route, dict) or route.get("optional"):
+                continue
+            refs = route.get("api_keys")
+            if not isinstance(refs, list):
+                refs = [route.get("api_key") or model.get("api_key")]
+            if any(_template_var(ref) in cleared for ref in refs) and not any(
+                keeps_a_key(ref) for ref in refs
+            ):
+                stranded.append(str(model.get("id")))
+                break
+    return stranded
+
+
+async def _provider_keeps_another_key(op_store, provider: str, key_hash: str) -> bool:
+    """Whether *provider* has a key other than *key_hash* to serve a keyless route.
+
+    Another configured key setting that is not tombstoned, or an active Keys-tab
+    key: what a catalog route whose own key setting was cleared serves on after
+    a restart.
+    """
+    try:
+        if await op_store.list_provider_keys_full(provider):
+            return True
+        disabled = set(await op_store.list_disabled_provider_env_key_hashes(provider))
+    except Exception as exc:
+        raise HTTPException(503, f"Failed to load provider keys for {provider}: {exc}") from exc
+    others = dynamic_keys.configured_env_key_hashes(provider) - disabled - {key_hash}
+    return bool(others)
+
+
 @router.post("/provider-keys/remove-env", response_model=RemoveProviderEnvKeyResponse)
 async def remove_provider_env_key(
     payload: RemoveProviderEnvKeyRequest,
@@ -612,6 +673,13 @@ async def remove_provider_env_key(
     an empty row beats the environment — and tombstones the hash as removed, so
     the key leaves the list and every worker's pools. Nothing is tombstoned when
     clearing the setting is refused.
+
+    A catalog route that names a cleared setting keeps serving on the
+    provider's other keys after a restart (the registry treats an
+    administrator-cleared key setting as removed, not missing). Removal is
+    refused with 409 when the provider has no other key, because such a route
+    would then have nothing to serve on: disable the key instead, or add
+    another first.
     """
     if not op_store:
         raise HTTPException(500, "Database not configured")
@@ -625,6 +693,15 @@ async def remove_provider_env_key(
 
     cleared = dynamic_keys.provider_settings_holding_key(payload.provider, key_hash)
     if cleared:
+        stranded = _catalog_models_left_keyless(set(cleared))
+        if stranded and not await _provider_keeps_another_key(op_store, payload.provider, key_hash):
+            raise HTTPException(
+                409,
+                f"The model catalog names {', '.join(cleared)} for "
+                f"{', '.join(stranded)}, and {payload.provider} has no other key to "
+                "serve them after a restart. Disable this key instead, or add "
+                "another key first.",
+            )
         try:
             await app_config.update(dict.fromkeys(cleared, ""), updated_by=admin_id)
         except app_config.ConfigUpdateError as exc:

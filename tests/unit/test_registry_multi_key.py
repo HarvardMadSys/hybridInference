@@ -298,3 +298,145 @@ def test_optional_route_included_when_key_set(tmp_path, monkeypatch):
     adapters = router.routes["glm-test"].adapters
     assert len(adapters) == 2
     assert adapters[1][0].config.api_keys == ["staging-key"]
+
+
+def _clear_setting(name: str) -> None:
+    """Store an empty row for *name*, as an administrator clearing it does."""
+    from serving.config import app_config
+    from serving.config.app_config_store import ConfigRow
+
+    row = ConfigRow(key=name, value="", secret=True, source="admin", updated_by="admin")
+    app_config._STATE.rows[name] = row
+    app_config._STATE.boot_rows[name] = row
+    app_config._STATE.effective[name] = row
+    # reset_state() skips a process that never applied a load.
+    app_config._STATE.generation += 1
+
+
+_ZAI_SINGLE_KEY_YAML = """
+    models:
+      - id: glm-test
+        name: glm-test
+        provider: zai
+        base_url: https://api.example.com
+        route:
+          - kind: zai
+            weight: 1.0
+            base_url: https://api.example.com
+            api_key: ${ZAI_API_KEY}
+    """
+
+
+def _clear_numbered_zai_settings(monkeypatch) -> None:
+    for index in range(1, 21):
+        monkeypatch.delenv(f"ZAI_API_KEY{index}", raising=False)
+
+
+def test_cleared_provider_key_setting_falls_back_to_the_providers_other_keys(tmp_path, monkeypatch):
+    """A key an administrator cleared is gone, not missing: the model stays.
+
+    Removing an env key on the Keys tab stores an empty row while the
+    environment may still hold the secret. The route then serves on the
+    provider's remaining key settings (and Keys-tab keys added at boot).
+    """
+    _clear_numbered_zai_settings(monkeypatch)
+    monkeypatch.setenv("ZAI_API_KEY", "removed-but-still-in-env")
+    monkeypatch.setenv("ZAI_API_KEY3", "numbered-survivor")
+    _clear_setting("ZAI_API_KEY")
+
+    router = FixedRouter()
+    register_from_models_yaml(router, _write_yaml(tmp_path, _ZAI_SINGLE_KEY_YAML))
+
+    cfg = router.routes["glm-test"].adapters[0][0].config
+    assert cfg.api_key is None
+    assert cfg.api_keys == ["numbered-survivor"]
+
+
+def test_cleared_provider_key_setting_with_no_other_setting_registers_keyless(
+    tmp_path, monkeypatch
+):
+    """With no key setting left the route takes no static key at all.
+
+    Keys-tab keys reach it at boot (``apply_db_keys_at_boot`` injects them into
+    every adapter that is not bound to a route key).
+    """
+    _clear_numbered_zai_settings(monkeypatch)
+    monkeypatch.setenv("ZAI_API_KEY", "removed-but-still-in-env")
+    _clear_setting("ZAI_API_KEY")
+
+    router = FixedRouter()
+    register_from_models_yaml(router, _write_yaml(tmp_path, _ZAI_SINGLE_KEY_YAML))
+
+    adapter = router.routes["glm-test"].adapters[0][0]
+    assert adapter.config.api_key is None
+    assert adapter.config.api_keys is None
+    assert hasattr(adapter, "add_runtime_key")
+
+
+def test_blank_environment_key_is_still_missing(tmp_path, monkeypatch):
+    """``ZAI_API_KEY=`` in the environment, with no stored row, still skips the model."""
+    _clear_numbered_zai_settings(monkeypatch)
+    monkeypatch.setenv("ZAI_API_KEY", "")
+    monkeypatch.setenv("ZAI_API_KEY3", "numbered-survivor")
+
+    router = FixedRouter()
+    with pytest.raises(ValueError, match="after env expansion"):
+        register_from_models_yaml(router, _write_yaml(tmp_path, _ZAI_SINGLE_KEY_YAML))
+
+
+def test_cleared_setting_outside_the_providers_key_settings_is_still_missing(tmp_path, monkeypatch):
+    """Only a provider's own key settings have "other keys" to fall back to."""
+    monkeypatch.setenv("ZAI_API_KEY", "unrelated-provider-key")
+    _clear_setting("CUSTOM_GATEWAY_KEY")
+    yaml_path = _write_yaml(
+        tmp_path,
+        """
+        models:
+          - id: glm-test
+            name: glm-test
+            provider: zai
+            base_url: https://api.example.com
+            route:
+              - kind: zai
+                weight: 1.0
+                base_url: https://api.example.com
+                api_keys:
+                  - ${CUSTOM_GATEWAY_KEY}
+        """,
+    )
+
+    router = FixedRouter()
+    with pytest.raises(ValueError, match="was cleared"):
+        register_from_models_yaml(router, yaml_path)
+    assert "glm-test" not in router.routes
+
+
+def test_cleared_entry_beside_a_live_one_is_just_dropped(tmp_path, monkeypatch):
+    """A route that still lists a configured key keeps exactly that key."""
+    _clear_numbered_zai_settings(monkeypatch)
+    monkeypatch.setenv("ZAI_API_KEY", "removed-but-still-in-env")
+    monkeypatch.setenv("ZAI_API_KEY2", "listed-survivor")
+    monkeypatch.setenv("ZAI_API_KEY3", "unlisted-numbered")
+    _clear_setting("ZAI_API_KEY")
+    yaml_path = _write_yaml(
+        tmp_path,
+        """
+        models:
+          - id: glm-test
+            name: glm-test
+            provider: zai
+            base_url: https://api.example.com
+            route:
+              - kind: zai
+                weight: 1.0
+                base_url: https://api.example.com
+                api_keys:
+                  - ${ZAI_API_KEY}
+                  - ${ZAI_API_KEY2}
+        """,
+    )
+
+    router = FixedRouter()
+    register_from_models_yaml(router, yaml_path)
+
+    assert router.routes["glm-test"].adapters[0][0].config.api_keys == ["listed-survivor"]
