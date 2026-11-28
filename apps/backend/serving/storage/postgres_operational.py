@@ -1483,6 +1483,7 @@ class PostgresOperationalStore(
         anomaly: bool | None = None,
         include_usage_totals: bool = True,
         tag: str | None = None,
+        role: str | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Return ``(total_count, user_rows, status_counts_row)``.
 
@@ -1512,6 +1513,7 @@ class PostgresOperationalStore(
           window.
         - ``tag``: keep only users the tag applies to (a manual or automatic
           member; not a dismissed one).
+        - ``role``: keep only accounts in that tier (``users.role``).
         - ``anomaly``: when ``True``, keep only *active* users whose today's
           spend is anomalously high vs. their prior 7-day average (today >=
           $1, history >= 3 days, today >= 5x avg). Uses ``user_daily_cost``
@@ -1521,7 +1523,9 @@ class PostgresOperationalStore(
         ``status_counts`` is intentionally computed from the unfiltered users
         table (no filters applied) — it serves as a global navigation aid
         showing how many users exist per status across the whole dataset,
-        independent of the table view's filters.
+        independent of the table view's filters. ``status_counts["roles"]``
+        is the same kind of aid for tiers (``free``, ``pro``, ``internal``,
+        ``admin``).
         """
         # ──────────────────────────────────────────────────────────────────
         # Shared SQL fragments used by both the count query and the row
@@ -1544,6 +1548,9 @@ class PostgresOperationalStore(
         if status:
             where_clauses.append(f"u.status = ${len(filter_params) + 1}")
             filter_params.append(status)
+        if role:
+            where_clauses.append(f"u.role = ${len(filter_params) + 1}")
+            filter_params.append(role)
         if search:
             # Search matches email, login name, phone and display name as
             # substrings, plus a user.id prefix and an active key_prefix
@@ -1717,11 +1724,23 @@ class PostgresOperationalStore(
             )
             total = count_row["total"] if count_row else 0
 
-            # Status counts (unfiltered — global navigation aid).
+            # Status and tier counts, unfiltered, in one pass. The list filters
+            # do not apply: both are navigation counts for the whole table.
+            # Each row is one (status, role) pair, so both totals sum. Rows from
+            # unit doubles may carry only status; a missing key is skipped.
             count_rows = await conn.fetch(
-                "SELECT status, COUNT(*) as cnt FROM users GROUP BY status"
+                "SELECT status, role, COUNT(*) AS cnt FROM users GROUP BY status, role"
             )
-            sc = {r["status"]: r["cnt"] for r in count_rows}
+            sc: dict[str, int] = {}
+            by_role: dict[str, int] = {}
+            for row in count_rows:
+                count = row["cnt"]
+                status_name = row.get("status")
+                if status_name:
+                    sc[status_name] = sc.get(status_name, 0) + count
+                tier = row.get("role")
+                if tier:
+                    by_role[tier] = by_role.get(tier, 0) + count
             status_counts: Row = {
                 "all": sum(sc.values()),
                 "pending_approval": sc.get("pending_approval", 0),
@@ -1729,6 +1748,7 @@ class PostgresOperationalStore(
                 "suspended": sc.get("suspended", 0),
                 "rejected": sc.get("rejected", 0),
                 "deleted": sc.get("deleted", 0),
+                "roles": {tier: by_role.get(tier, 0) for tier in VALID_ROLES},
             }
 
             # Main query — always uses CTE form (filtered_users) so we can
